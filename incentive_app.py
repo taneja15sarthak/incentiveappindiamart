@@ -1225,7 +1225,7 @@ with st.expander("What columns does the app read from this file?", expanded=True
 
 if structure_file:
     struct_map = load_structure_dump(structure_file)
-    if struct_map:
+    if struct_map is not None and len(struct_map) > 0:
         struct_preview = pd.DataFrame([
             {"Employee ID": k, "Name": v["Employee Name"],
              "Vertical": v["Vertical"], "Vintage": v["Vintage"],
