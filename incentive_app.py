@@ -1223,8 +1223,8 @@ with st.expander("What columns does the app read from this file?", expanded=True
 | **L2–L6 Name** | Manager hierarchy in report |
     """)
 
-if struct_file:
-    struct_map = load_structure_dump(struct_file)
+if structure_file:
+    struct_map = load_structure_dump(structure_file)
     if struct_map:
         struct_preview = pd.DataFrame([
             {"Employee ID": k, "Name": v["Employee Name"],
@@ -1247,7 +1247,7 @@ st.subheader("Step 2 — Calculate Incentives")
 # ── Step 2: Calculate ─────────────────────────────────────────
 st.subheader("Step 2 — Calculate Incentives")
 
-if not (receipt_file and refund_file and renewal_file and struct_file):
+if not (receipt_file and refund_file and renewal_file and structure_file):
     st.info("4 files required: Receipt + Refund + Renewal + Employee Structure Dump. "
             "CMR Targets and Slab Config are optional.", icon="📂")
     st.stop()
@@ -1255,7 +1255,7 @@ if not (receipt_file and refund_file and renewal_file and struct_file):
 receipt_df  = clean_receipt(load_excel(receipt_file))
 refund_df   = load_excel(refund_file)
 renewal_df  = load_excel(renewal_file)
-struct_map  = load_structure_dump(struct_file)
+struct_map  = load_structure_dump(structure_file)
 cmr_targets = load_cmr_targets(cmr_target_file)
 
 if not struct_map:
