@@ -384,6 +384,127 @@ def parse_slabs(cfg):
     }
 
 
+
+def build_march_slab_config():
+    """March 2026 scheme slabs (PCR-based)."""
+    import pandas as pd
+
+    # CSD New 0-30D and 31-90D (PCR)
+    csd_new = pd.DataFrame([
+        {"PCDV_Threshold": 5000, "Payout": 10500},
+        {"PCDV_Threshold": 4500, "Payout": 7000},
+        {"PCDV_Threshold": 4000, "Payout": 5100},
+        {"PCDV_Threshold": 3500, "Payout": 3100},
+        {"PCDV_Threshold": 3000, "Payout": 3100},
+    ])
+    csd_new_params = pd.DataFrame([
+        {"Parameter": "Incremental_Threshold", "Value": 5000},
+        {"Parameter": "Incremental_Rate_%",    "Value": 3.0},
+        {"Parameter": "Slab2_CMR_Multiplier_%","Value": 120},
+        {"Parameter": "Min_Txn_0_30D",         "Value": 3},
+        {"Parameter": "Min_Txn_31_90D",         "Value": 4},
+    ])
+    # CSD SPS 91-270D (PCR)
+    csd_sps_91 = pd.DataFrame([
+        {"PCDV_Threshold": 5000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 4500, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCDV_Threshold": 4000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+    ])
+    # CSD SPS 270D+ (PCR)
+    csd_sps_270 = pd.DataFrame([
+        {"PCDV_Threshold": 6000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 5500, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCDV_Threshold": 5000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+    ])
+    csd_sps_mult = pd.DataFrame([
+        {"Parameter": "MDC1_Above_%",      "Value": 35, "Multiplier_%": 120},
+        {"Parameter": "MDC1_Between_%",    "Value": 25, "Multiplier_%": 100},
+        {"Parameter": "MDC1_Below_%",      "Value": 0,  "Multiplier_%": 50},
+        {"Parameter": "Booster_TAT_Below", "Value": 1,  "Multiplier_%": 120},
+        {"Parameter": "Booster_60D_Below", "Value": 10, "Multiplier_%": 120},
+    ])
+    csd_spot = pd.DataFrame([
+        {"Parameter": "Min_NR_Upsell_AMR", "Value": 3},
+        {"Parameter": "Base_Reward",        "Value": 1500},
+        {"Parameter": "Per_Txn_After_Min",  "Value": 750},
+    ])
+    pop = pd.DataFrame([
+        {"Product_Keywords": "MDC,MDC1,MDC-1,MDC 1,TS 1,TS1", "Incentive_Per_Txn": 500},
+        {"Product_Keywords": "MDC2,MDC 2,MDC3,MDC 3,TS 2,TS2,MAXI ANNUAL,MAXIMISER,VE,IVE,WS-A", "Incentive_Per_Txn": 1000},
+        {"Product_Keywords": "TS 3,TS3,MAXI 2,WS-M", "Incentive_Per_Txn": 1500},
+    ])
+    # KCD March (PCR-based)
+    kcd_270 = pd.DataFrame([
+        {"PCDV_Threshold": 32000, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"PCDV_Threshold": 29000, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"PCDV_Threshold": 26000, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+    ])
+    kcd_91_270 = pd.DataFrame([
+        {"PCDV_Threshold": 30000, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"PCDV_Threshold": 25000, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"PCDV_Threshold": 22000, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+    ])
+    kcd_0_90 = pd.DataFrame([
+        {"PCDV_Threshold": 21000, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"PCDV_Threshold": 18000, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"PCDV_Threshold": 15000, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+    ])
+    kcd_hvri = pd.DataFrame([
+        {"PCDV_Threshold": 30000, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"PCDV_Threshold": 25000, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"PCDV_Threshold": 22000, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+    ])
+    kcd_nagpur = pd.DataFrame([
+        {"PCDV_Threshold": 88000, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"PCDV_Threshold": 84000, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"PCDV_Threshold": 80000, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+    ])
+    kcd_incr = pd.DataFrame([
+        {"Vintage": "270D+",   "Incr_Threshold": 32000, "Incr_Rate_%": 1.4},
+        {"Vintage": "91-270D", "Incr_Threshold": 30000, "Incr_Rate_%": 1.4},
+        {"Vintage": "31-90D",  "Incr_Threshold": 21000, "Incr_Rate_%": 1.4},
+        {"Vintage": "0-30D",   "Incr_Threshold": 21000, "Incr_Rate_%": 1.4},
+        {"Vintage": "HVRI",    "Incr_Threshold": 30000, "Incr_Rate_%": 1.4},
+        {"Vintage": "Nagpur",  "Incr_Threshold": 88000, "Incr_Rate_%": 0.85},
+    ])
+    kcd_listing = pd.DataFrame([
+        {"Target_Pct": 140, "CMR70_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"Target_Pct": 120, "CMR70_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"Target_Pct": 100, "CMR70_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+        {"Target_Pct": 95,  "CMR70_Per_Txn": 1750, "CMR80_Per_Txn": 2000},
+    ])
+    kcd_listing_rates = pd.DataFrame([
+        {"Vintage": "270D+",   "Base_Client_Rate": 8500, "Listing_Client_Rate": 48000},
+        {"Vintage": "91-270D", "Base_Client_Rate": 8500, "Listing_Client_Rate": 48000},
+        {"Vintage": "31-90D",  "Base_Client_Rate": 6000, "Listing_Client_Rate": 34000},
+        {"Vintage": "0-30D",   "Base_Client_Rate": 6000, "Listing_Client_Rate": 34000},
+    ])
+    kcd_catalog = pd.DataFrame([
+        {"Target_Pct": 140, "CMR72_Per_Txn": 3250, "CMR80_Per_Txn": 3600},
+        {"Target_Pct": 120, "CMR72_Per_Txn": 2750, "CMR80_Per_Txn": 3000},
+        {"Target_Pct": 100, "CMR72_Per_Txn": 2250, "CMR80_Per_Txn": 2400},
+        {"Target_Pct": 90,  "CMR72_Per_Txn": 1750, "CMR80_Per_Txn": 2000},
+    ])
+    kcd_spot = pd.DataFrame([
+        {"Spot_Key": "Listing_270D",  "PCDV_Threshold": 11000, "Base_Reward": 2500, "Per_1K_After": 1000},
+        {"Spot_Key": "Listing_other", "PCDV_Threshold": 7500,  "Base_Reward": 2500, "Per_1K_After": 1000},
+        {"Spot_Key": "Catalog_270D",  "PCDV_Threshold": 3500,  "Base_Reward": 2500, "Per_1K_After": 1000},
+        {"Spot_Key": "Catalog_other", "PCDV_Threshold": 2500,  "Base_Reward": 2500, "Per_1K_After": 1000},
+        {"Spot_Key": "ROI_Exec",      "PCDV_Threshold": 4000,  "Base_Reward": 2500, "Per_1K_After": 1000},
+        {"Spot_Key": "KCD_0_90D",     "PCDV_Threshold": 4000,  "Base_Reward": 2500, "Per_1K_After": 1000},
+    ])
+    return {
+        "CSD_New_Slabs": csd_new, "CSD_New_Params": csd_new_params,
+        "CSD_SPS_91_270D": csd_sps_91, "CSD_SPS_270D_Plus": csd_sps_270,
+        "CSD_SPS_Multipliers": csd_sps_mult, "CSD_Spot": csd_spot,
+        "Power_of_Productivity": pop,
+        "KCD_Regular_270D": kcd_270, "KCD_Regular_91_270D": kcd_91_270,
+        "KCD_Regular_0_90D": kcd_0_90, "KCD_HVRI": kcd_hvri,
+        "KCD_Nagpur_Pharma": kcd_nagpur, "KCD_Incremental_Rates": kcd_incr,
+        "KCD_Listing_Slabs": kcd_listing, "KCD_Listing_Rates": kcd_listing_rates,
+        "KCD_Catalog_Slabs": kcd_catalog, "KCD_Spot": kcd_spot,
+    }
+
 def make_slab_config_excel():
     """Generate the downloadable Slab_Config.xlsx template."""
     defaults = build_default_slab_config()
@@ -864,7 +985,8 @@ def pop_for_product(prod_str, prod_to_pop):
 
 
 def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
-                 rnl_prods, rnl_modes, vintage, S, svc_tiers=None):
+                 rnl_prods, rnl_modes, vintage, S, svc_tiers=None,
+                 pop_cmr_floor=None, metric_label="PCDV"):
     """
     CSD 0-30D / 31-90D base + PoP.
     - Base: fixed PCDV slab, CMR slab multiplier (slab 0 still earns at 100%)
@@ -884,8 +1006,9 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     # PoP eligibility: min transactions AND min 55% CMR
     pop = 0
     pop_reason = ""
-    if cmr_pct_achieved < POP_CMR_FLOOR:
-        pop_reason = f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {POP_CMR_FLOOR}% min"
+    _pop_floor = pop_cmr_floor if pop_cmr_floor is not None else POP_CMR_FLOOR
+    if cmr_pct_achieved < _pop_floor:
+        pop_reason = f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {_pop_floor}% min"
     elif prod_score < min_txn:
         pop_reason = f"PoP blocked: {prod_score} txns < {min_txn} min"
     else:
@@ -901,13 +1024,13 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
             pop = sum(pop_for_product(p, S["prod_to_pop"]) for p in eligible)
             pop_reason = f"PoP: {prod_score} txns × CMR {cmr_pct_achieved:.1f}%"
 
-    notes = (f"CSD {vintage} | PCDV:{round(pcdv)} | clients:{int(client_c)} | "
+    notes = (f"CSD {vintage} | {metric_label}:{round(pcdv)} | clients:{int(client_c)} | "
              f"CMR slab:{cmr_slab} | {pop_reason}")
     return round(base_total, 0), round(pop, 0), notes
 
 
 def calc_csd_sps(pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
-                mdc1_cmr, ext_tat, d60, S):
+                mdc1_cmr, ext_tat, d60, S, metric_label="PCDV"):
     """
     CSD SPS 91-270D / 270D+.
     - No PoP scheme for this vintage.
@@ -934,7 +1057,7 @@ def calc_csd_sps(pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
                                   and d60 < S["boost_d60"]) else 1.0
 
     total = per_txn * txn_count * mdc1_mult * booster
-    notes = (f"CSD SPS {vintage} | PCDV:{round(pcdv)} | CMR slab:{cmr_slab} | "
+    notes = (f"CSD SPS {vintage} | {metric_label}:{round(pcdv)} | CMR slab:{cmr_slab} | "
              f"₹{per_txn}/txn×{txn_count} (score:{prod_score:.1f} incl {insta_cnt}×Insta) | "
              f"MDC1:{mdc1_mult} boost:{booster} | No PoP")
     return round(total, 0), notes
@@ -1121,7 +1244,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     team       = str(cfg_row.get("Team",      ""))
     client_cnt = max(float(cfg_row.get("Client Count", 100) or 100),
                      50 if "CSD" in vertical else 1)
-    pcdv       = net_dv / client_cnt if client_cnt > 0 else 0
+    # PCR and PCDV both use WT AMT (net_dv) — metric name differs by scheme month
+    use_pcr    = sb.get("use_pcr", False)
+    metric_val = net_dv / client_cnt if client_cnt > 0 else 0
+    pcdv       = metric_val   # variable name kept as pcdv internally for compatibility
+    metric_label = "PCR" if use_pcr else "PCDV"
 
     cmr_pct    = cmr_data.get("cmr_pct",    0.0)
     ss_cmr_pct = cmr_data.get("ss_cmr_pct", 0.0)
@@ -1153,12 +1280,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # PoP scheme only for new joiners
             base_inc, pop_inc, notes = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
-                rnl_prods, rnl_modes, vintage, S, svc_tiers=svc_tiers)
+                rnl_prods, rnl_modes, vintage, S,
+                svc_tiers=svc_tiers,
+                pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
+                metric_label=metric_label)
         else:
             # SPS — no PoP; Insta = 0.5; productivity from renewal file
             base_inc, notes = calc_csd_sps(
                 pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
-                sb["mdc1_cmr"], sb["ext_tat"], sb["d60"], S)
+                sb["mdc1_cmr"], sb["ext_tat"], sb["d60"], S,
+                metric_label=metric_label)
             spot_inc = calc_spot_csd(sb["nr_upsell"], S)
 
     # ── KCD ──────────────────────────────────────────────────
@@ -1244,18 +1375,36 @@ with st.sidebar:
     st.info("Individual Slab 1 & 2 targets are loaded per employee from this file.\n\n≤3 renewals sent → auto-forced Slab 1", icon="ℹ️")
 
     st.divider()
-    st.header("⚙️ Other Parameters")
+    st.header("⚙️ Scheme Settings")
+
+    metric_mode = st.radio(
+        "Base metric",
+        ["PCDV (Per Client Deal Value)", "PCR (Per Client Collection)"],
+        index=0,
+        help="PCDV uses deal value; PCR uses actual collection. Both use WT AMT column — "
+             "select to match the month's scheme. Change slabs via Slab Config file."
+    )
+    use_pcr = metric_mode.startswith("PCR")
+
+    pop_cmr_floor = st.number_input(
+        "Min CMR% to earn PoP",
+        0.0, 100.0, 55.0, 1.0,
+        help="CSD 0-90D: minimum CMR% employee must achieve to earn Power of Productivity. "
+             "Apr=55%, Mar=50%"
+    )
+
     with st.expander("CSD SPS (91D+ vintage)"):
         def_mdc1 = st.number_input("MDC-1 CMR+1%",   0.0, 100.0, 30.0)
         def_tat  = st.number_input("Ext. Ticket TAT", 0.0, 10.0,  1.5)
         def_d60  = st.number_input("60D Not Met %",   0.0, 100.0, 12.0)
-    with st.expander("Spot Rate (Apr 1–16 only)"):
+    with st.expander("Spot Rate"):
         def_nr   = st.number_input("CSD NR Upsell/AMR count", 0, 50, 0)
         def_btl  = st.number_input("KCD Base-to-Listing sales", 0, 20, 0)
         def_spot = st.checkbox("KCD Spot multiplier met (≥2 SS+ sales)?")
 
     sb = dict(mdc1_cmr=def_mdc1, ext_tat=def_tat, d60=def_d60,
-              nr_upsell=def_nr, btl_sales=def_btl, spot_met=def_spot)
+              nr_upsell=def_nr, btl_sales=def_btl, spot_met=def_spot,
+              use_pcr=use_pcr, pop_cmr_floor=pop_cmr_floor)
 
     st.divider()
     st.header("📅 Select Month")
@@ -1297,12 +1446,37 @@ Sheets included:
 | KCD_Spot | Spot rate thresholds + rewards |
     """)
 
-st.download_button(
-    "⬇️ Download Slab Config template",
-    data=make_slab_config_excel(),
-    file_name="Slab_Config.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+col_a, col_b = st.columns(2)
+with col_a:
+    st.download_button(
+        "⬇️ Download April 2026 Slab Config (PCDV)",
+        data=make_slab_config_excel(),
+        file_name="Slab_Config_April2026_PCDV.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+with col_b:
+    def _make_march_excel():
+        import io
+        defaults = build_march_slab_config()
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+            hdr_fmt  = w.book.add_format({"bold": True, "bg_color": "#1F4E79", "font_color": "#FFFFFF", "border": 1})
+            note_fmt = w.book.add_format({"italic": True, "font_color": "#595959"})
+            for sheet_name, df in defaults.items():
+                df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
+                ws = w.sheets[sheet_name]
+                ws.set_column(0, len(df.columns) - 1, 22)
+                for col_num, col_name in enumerate(df.columns):
+                    ws.write(1, col_num, col_name, hdr_fmt)
+                ws.write(0, 0, f"MARCH 2026 (PCR) — {sheet_name} | Edit values below, do NOT rename columns.", note_fmt)
+        return buf.getvalue()
+
+    st.download_button(
+        "⬇️ Download March 2026 Slab Config (PCR)",
+        data=_make_march_excel(),
+        file_name="Slab_Config_March2026_PCR.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 # Load and parse slab config (uses defaults if not uploaded)
 slab_cfg_raw = load_slab_config(slab_cfg_file)
