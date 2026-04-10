@@ -873,7 +873,7 @@ def load_structure_dump(uploaded_file):
             "L4 Name":       str(row[l4_col]).strip() if l4_col else "",
             "L5 Name":       str(row[l5_col]).strip() if l5_col else "",
             "Vintage Bucket":vbucket,
-            "Remarks":       remarks,
+            "Remarks":       team_from_file,
         }
     return result
 
