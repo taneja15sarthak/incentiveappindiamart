@@ -1133,15 +1133,22 @@ def calc_spot_csd(nr_upsell, S):
 
 @st.cache_data
 def load_excel(f):
-    """Load xlsx or xlsb files."""
+    """Load xlsx or xlsb files. Accepts both formats for all uploads."""
     name = f.name if hasattr(f, "name") else str(f)
-    if name.lower().endswith(".xlsb"):
-        try:
+    ext  = name.lower().rsplit(".", 1)[-1] if "." in name else "xlsx"
+    try:
+        if ext == "xlsb":
             return pd.read_excel(f, engine="pyxlsb")
-        except Exception:
-            st.error("Reading .xlsb files requires pyxlsb. Run: pip install pyxlsb")
-            return pd.DataFrame()
-    return pd.read_excel(f)
+        else:
+            return pd.read_excel(f, engine="openpyxl")
+    except Exception as e:
+        err = str(e)
+        if "pyxlsb" in err or "xlsb" in err.lower():
+            st.error("📦 Reading .xlsb files requires pyxlsb. "
+                     "Run in your terminal: `pip install pyxlsb`")
+        else:
+            st.error(f"Could not read file '{name}': {err}")
+        return pd.DataFrame()
 
 
 def clean_receipt(df):
@@ -1362,11 +1369,11 @@ st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs 
 # ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
     st.header("📂 Upload Files")
-    receipt_file    = st.file_uploader("1. Receipt file",           type=["xlsx"])
-    refund_file     = st.file_uploader("2. Refund file",            type=["xlsx"])
-    renewal_file    = st.file_uploader("3. Renewal file",           type=["xlsx"])
-    structure_file  = st.file_uploader("4. Employee Structure Dump",type=["xlsx"])
-    slab_cfg_file   = st.file_uploader("5. Slab Config (optional)", type=["xlsx"])
+    receipt_file    = st.file_uploader("1. Receipt file",           type=["xlsx", "xlsb"])
+    refund_file     = st.file_uploader("2. Refund file",            type=["xlsx", "xlsb"])
+    renewal_file    = st.file_uploader("3. Renewal file",           type=["xlsx", "xlsb"])
+    structure_file  = st.file_uploader("4. Employee Structure Dump",type=["xlsx", "xlsb"])
+    slab_cfg_file   = st.file_uploader("5. Slab Config (optional)",   type=["xlsx", "xlsb"])
 
     st.divider()
     st.header("🎯 CMR% Targets File")
