@@ -26,6 +26,47 @@ st.set_page_config(page_title="IndiaMart Incentive Calculator", layout="wide", p
 # SS+ KEYWORDS (not in slab config — product classification)
 # ═══════════════════════════════════════════════════════════════
 SS_PLUS_KEYWORDS  = ["IM STAR", "IM LEADER", "STAR", "LEADER", "PREF STAR", "PREF LEADER"]
+
+# ── Productivity tier mapping (Receipt file: Product + Upsell columns) ──
+# Maps to PoP incentive: Tier1=₹500, Tier2=₹1000, Tier3=₹1500
+PURE_RENEWAL_PRODUCTS = {
+    "Renewal","TS1Renewal","TS2Renewal","TS3Renewal","WS Renewal","IVE Renewal",
+    "SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal","Pref SS Renewal",
+    "Pref LS Renewal","FPL Renewal","IM IL Renewal","CL Renewal","IL Renewal",
+    "Pref IL Renewal","Adv Renewal","Adv WS Renewal","Adv SS Renewal",
+    "Adv LS Renewal","Adv IM SS Renewal","Adv IM LS Renewal","Adv IVE Renewal",
+    "IM Insta Renewal","Adv Pref Renewal","Adv Pref SS Renewal",
+}
+
+# Upsell column values → service tier
+UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","Maxi Pro-1","TS pro-1"}
+UPSELL_TIER2 = {
+    "MYR","Combo 2YR","Maximiser","TS Pro-2","Maxi Pro-2",
+    "VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6",
+    "VEXPD-12","VEXPG-6","VEXPG-MYR","VEXPP-12","VEXPP-MYR","VEXPD-MYR",
+}
+UPSELL_TIER3 = {
+    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi pro-3","Maximiser-2",
+    "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro",
+}
+
+# Product column values → service tier (when Upsell is blank)
+PROD_TIER1 = {"Renewal","MDC Annual","TS1Renewal","TS Pro-1","TS pro-1","Maxi Pro-1"}
+PROD_TIER2 = {"TS2Renewal","WS Renewal","IVE Renewal","Combo 2YR","Maxi Pro-2",
+              "TS Pro-2","Maximiser","VEXPS-12","VEXPS-MYR","VEXPG-12","VEXPG-MYR",
+              "VEXPD-12","VEXPD-MYR","VEXPP-12","VEXPP-MYR","Adv WS Renewal","Adv IVE Renewal"}
+PROD_TIER3 = {"TS3Renewal","SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal",
+              "Pref SS Renewal","Pref LS Renewal","CL Renewal","IL Renewal",
+              "IM IL Renewal","Pref IL Renewal","Combo 3YR","TS Pro-3","Maxi Pro-3",
+              "Maximiser-3","Maxi pro-3","Adv SS Renewal","Adv LS Renewal",
+              "Adv IM SS Renewal","Adv IM LS Renewal","Adv Pref SS Renewal",
+              "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro"}
+
+TIER_REWARD = {1: 500, 2: 1000, 3: 1500}
+
+# IM Insta products (0.5 productivity)
+INSTA_PRODUCTS = {"IM InstaDiamond","IM InstaGold","IM InstaPlatinum",
+                  "IM insta Diamond","IM Insta Renewal"}
 INSTA_KEYWORDS    = ["INSTA"]          # IM Insta = 0.5 productivity (KCD/CSD SPS)
 HALF_YEAR_MODES   = ["HALF-YEARLY", "HALF YEARLY", "HY", "6M", "6 MONTHS"]
 POP_CMR_FLOOR     = 55.0              # CSD: min CMR% to earn PoP
@@ -376,6 +417,157 @@ def find_col(df, candidates):
     return None
 
 
+
+
+def get_available_months(receipt_df, renewal_df):
+    """Return sorted list of available months as 'Mon-YY' strings."""
+    months = set()
+    # From receipt Entry Date
+    date_col = find_col(receipt_df, ["Entry Date", "Clear Date", "Receipt Date"])
+    if date_col:
+        dates = pd.to_datetime(receipt_df[date_col], errors="coerce").dropna()
+        for d in dates:
+            months.add(d.strftime("%b-%y"))
+    # From renewal Month column (format: "Feb'26")
+    if renewal_df is not None:
+        rnl_month_col = find_col(renewal_df, ["Month", "MONTH"])
+        if rnl_month_col:
+            for m in renewal_df[rnl_month_col].dropna().unique():
+                try:
+                    parsed = pd.to_datetime(str(m), format="%b'%y", errors="coerce")
+                    if pd.notna(parsed):
+                        months.add(parsed.strftime("%b-%y"))
+                except Exception:
+                    pass
+    return sorted(months, key=lambda x: pd.to_datetime(x, format="%b-%y"))
+
+
+def filter_by_month(receipt_df, refund_df, renewal_df, selected_month):
+    """
+    Filter all three dataframes to the selected month.
+    selected_month format: 'Feb-26'
+    """
+    target = pd.to_datetime(selected_month, format="%b-%y")
+    target_month = target.month
+    target_year  = target.year
+    target_str   = target.strftime("%b'%y")   # e.g. "Feb'26" for renewal
+
+    # ── Receipt: filter by Entry Date ────────────────────────
+    r = receipt_df.copy()
+    date_col = find_col(r, ["Entry Date", "Clear Date", "Receipt Date"])
+    if date_col:
+        r[date_col] = pd.to_datetime(r[date_col], errors="coerce")
+        r = r[r[date_col].dt.month == target_month]
+        r = r[r[date_col].dt.year  == target_year]
+
+    # ── Refund: filter by Clear Date ─────────────────────────
+    ref = refund_df.copy()
+    ref_date = find_col(ref, ["Clear Date", "Month"])
+    if ref_date:
+        ref[ref_date] = pd.to_datetime(ref[ref_date], errors="coerce")
+        mask = (ref[ref_date].dt.month == target_month) &                (ref[ref_date].dt.year  == target_year)
+        ref = ref[mask]
+
+    # ── Renewal: filter by Month column ──────────────────────
+    rnl = renewal_df.copy() if renewal_df is not None else None
+    if rnl is not None:
+        rnl_m = find_col(rnl, ["Month", "MONTH"])
+        if rnl_m:
+            # Renewal Month format is "Feb'26" / "Mar'26" etc.
+            def _match(val):
+                try:
+                    s = str(val).strip()
+                    parsed = pd.to_datetime(s, format="%b'%y", errors="coerce")
+                    if pd.notna(parsed):
+                        return parsed.month == target_month and parsed.year == target_year
+                except Exception:
+                    pass
+                return False
+            rnl = rnl[rnl[rnl_m].apply(_match)]
+
+    return r, ref, rnl
+
+def enrich_receipt(df):
+    """
+    Add Productivity (1/0) and Service_Tier (1/2/3/0) columns to receipt df.
+    Mirrors the script logic using actual column names in receipt file.
+
+    Productivity = 1 if:
+      - Upsell column is not blank  (upsell deal)
+      - OR Product is pure renewal AND no upsell exists for that receipt ID
+
+    Service_Tier:
+      1 = MDC Annual / TS-1 / Combo 1YR  → ₹500 PoP
+      2 = MYR / TS-2 / Maxi Annual / VE  → ₹1,000 PoP
+      3 = TS-3 / Maxi-2 / SS / LS        → ₹1,500 PoP
+      0 = Insta (0.5), Balance, TDS etc.
+    """
+    df = df.copy()
+
+    # Normalise columns
+    prod_col   = find_col(df, ["Product", "Prod", "PRODUCT"])
+    upsell_col = find_col(df, ["Upsell", "UPSELL"])
+    rcpt_id    = find_col(df, ["Receipts ID", "Receipt ID", "ReceiptID"])
+
+    def _str(val):
+        return str(val).strip() if val is not None and str(val).strip() != "nan" else ""
+
+    # Step 1: flag upsell rows
+    if upsell_col:
+        df["_is_upsell"] = df[upsell_col].apply(lambda x: _str(x) != "")
+    else:
+        df["_is_upsell"] = False
+
+    # Step 2: flag pure renewal rows
+    if prod_col:
+        df["_is_pure_renewal"] = df[prod_col].apply(
+            lambda x: _str(x) in PURE_RENEWAL_PRODUCTS)
+    else:
+        df["_is_pure_renewal"] = False
+
+    # Step 3: set of receipt IDs that have any upsell
+    if rcpt_id:
+        upsell_ids = set(df.loc[df["_is_upsell"], rcpt_id].tolist())
+        df["_has_upsell_on_receipt"] = df[rcpt_id].isin(upsell_ids)
+    else:
+        df["_has_upsell_on_receipt"] = df["_is_upsell"]
+
+    # Step 4: Productivity
+    df["Productivity"] = (
+        df["_is_upsell"] |
+        (df["_is_pure_renewal"] & ~df["_has_upsell_on_receipt"])
+    ).astype(int)
+
+    # Step 5: Service tier
+    def _tier(row):
+        if row["Productivity"] != 1:
+            prod = _str(row[prod_col]) if prod_col else ""
+            if prod in INSTA_PRODUCTS:
+                return 0.5   # Insta = 0.5 productivity
+            return 0
+
+        upsell = _str(row[upsell_col]) if upsell_col else ""
+        prod   = _str(row[prod_col])   if prod_col   else ""
+
+        if upsell:
+            if upsell in UPSELL_TIER1:  return 1
+            if upsell in UPSELL_TIER2:  return 2
+            if upsell in UPSELL_TIER3:  return 3
+            if "MYR" in upsell.upper(): return 2
+            return 3   # unknown upsell → highest tier
+        else:
+            if prod in PROD_TIER1: return 1
+            if prod in PROD_TIER2: return 2
+            if prod in PROD_TIER3: return 3
+            return 0
+
+    df["Service_Tier"] = df.apply(_tier, axis=1)
+
+    # Cleanup helper cols
+    df.drop(columns=["_is_upsell","_is_pure_renewal","_has_upsell_on_receipt"],
+            inplace=True, errors="ignore")
+    return df
+
 def load_structure_dump(uploaded_file):
     """
     Load the Employee Structure Dump file.
@@ -669,7 +861,7 @@ def pop_for_product(prod_str, prod_to_pop):
 
 
 def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
-                 rnl_prods, rnl_modes, vintage, S):
+                 rnl_prods, rnl_modes, vintage, S, svc_tiers=None):
     """
     CSD 0-30D / 31-90D base + PoP.
     - Base: fixed PCDV slab, CMR slab multiplier (slab 0 still earns at 100%)
@@ -694,11 +886,17 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     elif prod_score < min_txn:
         pop_reason = f"PoP blocked: {prod_score} txns < {min_txn} min"
     else:
-        eligible = [p for p, m in zip(rnl_prods, rnl_modes)
-                    if str(m).upper() in ("ANNUAL", "MULTI YEAR", "MULTIYEAR", "MYR")
-                    and not is_insta(p)]
-        pop = sum(pop_for_product(p, S["prod_to_pop"]) for p in eligible)
-        pop_reason = f"PoP earned: {prod_score} txns × CMR {cmr_pct_achieved:.1f}%"
+        # Use service tiers from enriched receipt (accurate) if available
+        if svc_tiers:
+            pop = sum(TIER_REWARD.get(int(t), 0) for t in svc_tiers
+                      if isinstance(t, (int, float)) and t in (1, 2, 3))
+            pop_reason = f"PoP: {len([t for t in svc_tiers if t in (1,2,3)])} txns (receipt tiers)"
+        else:
+            eligible = [p for p, m in zip(rnl_prods, rnl_modes)
+                        if str(m).upper() in ("ANNUAL","MULTI YEAR","MULTIYEAR","MYR")
+                        and not is_insta(p)]
+            pop = sum(pop_for_product(p, S["prod_to_pop"]) for p in eligible)
+            pop_reason = f"PoP: {prod_score} txns × CMR {cmr_pct_achieved:.1f}%"
 
     notes = (f"CSD {vintage} | PCDV:{round(pcdv)} | clients:{int(client_c)} | "
              f"CMR slab:{cmr_slab} | {pop_reason}")
@@ -851,6 +1049,13 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     txn_count = len(rec)
     _prod_col = find_col(receipt_df, ["Prod", "Product", "PRODUCT"])
     prods     = rec[_prod_col].fillna("").tolist() if _prod_col else []
+    # Productive rows only — with their service tier
+    prod_rows  = rec[rec["Productivity"] == 1] if "Productivity" in rec.columns else rec
+    svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
+    insta_rows = rec[rec["Service_Tier"] == 0.5] if "Service_Tier" in rec.columns else rec.iloc[0:0]
+    insta_count_receipt = len(insta_rows)
+    prod_score_receipt  = (len(prod_rows) + insta_count_receipt * 0.5 - insta_count_receipt
+                          ) if "Productivity" in rec.columns else txn_count
     ref       = refund_df[refund_df["Sales Ex. ID"] == eid]
     total_ref = ref["WT Amount"].fillna(0).sum()
     rnl_prods = []
@@ -877,7 +1082,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
         if _eid_all:
             all_rnl_count = len(renewal_df[renewal_df[_eid_all] == eid])
 
-    return total_dv - total_ref, txn_count, prods, rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count
+    return (total_dv - total_ref, txn_count, prods,
+            rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
+            svc_tiers, insta_count_receipt, prod_score_receipt)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -895,7 +1102,8 @@ def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
 
 
 def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
-               rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None):
+               rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
+               svc_tiers=None, prod_score_receipt=None):
     """
     Main routing. All fixes applied:
     - Days Since Joining calculated
@@ -942,7 +1150,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # PoP scheme only for new joiners
             base_inc, pop_inc, notes = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
-                rnl_prods, rnl_modes, vintage, S)
+                rnl_prods, rnl_modes, vintage, S, svc_tiers=svc_tiers)
         else:
             # SPS — no PoP; Insta = 0.5; productivity from renewal file
             base_inc, notes = calc_csd_sps(
@@ -1047,6 +1255,14 @@ with st.sidebar:
               nr_upsell=def_nr, btl_sales=def_btl, spot_met=def_spot)
 
     st.divider()
+    st.header("📅 Select Month")
+    selected_month = st.selectbox(
+        "Calculate incentives for",
+        options=["(Upload files first)"],
+        key="month_selector",
+        help="All calculations — PCDV, CMR%, Productivity — will be for this month only"
+    )
+    st.divider()
     calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True)
 
 
@@ -1143,25 +1359,56 @@ if not (receipt_file and refund_file and renewal_file and structure_file):
             "CMR Targets and Slab Config are optional.", icon="📂")
     st.stop()
 
-receipt_df  = clean_receipt(load_excel(receipt_file))
-refund_df   = load_excel(refund_file)
-renewal_df  = load_excel(renewal_file)
-struct_map  = load_structure_dump(structure_file)
-cmr_targets = load_cmr_targets(cmr_target_file)
+# ── Load all files ───────────────────────────────────────────
+receipt_df_raw  = clean_receipt(load_excel(receipt_file))
+refund_df_raw   = load_excel(refund_file)
+renewal_df_raw  = load_excel(renewal_file)
+struct_map      = load_structure_dump(structure_file)
+cmr_targets     = load_cmr_targets(cmr_target_file)
 
-if not struct_map:
-    st.error("Could not read Employee Structure Dump. Check the file format.")
+if not struct_map or len(struct_map) == 0:
+    st.error("Could not load Employee Structure file. Check column names.")
     st.stop()
 if not cmr_targets:
-    st.warning("⚠️ No CMR Targets file — fallback defaults: Slab 1=70%, Slab 2=80% applied.", icon="⚠️")
+    st.warning("⚠️ No CMR Targets file — fallback: Slab 1=70%, Slab 2=80%", icon="⚠️")
 
-# Normalise EMP ID column in renewal file
-_eid = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
+# ── Normalise EMP ID in renewal ───────────────────────────────
+_eid = find_col(renewal_df_raw, ["EMP ID","Emp ID","EmpID","Employee ID"])
 if _eid:
-    renewal_df[_eid] = renewal_df[_eid].astype(str)
+    renewal_df_raw[_eid] = renewal_df_raw[_eid].astype(str)
+
+# ── Month selector: show available months dynamically ─────────
+available_months = get_available_months(receipt_df_raw, renewal_df_raw)
+if available_months:
+    sel_month = st.sidebar.selectbox(
+        "Calculate incentives for",
+        options=available_months,
+        index=len(available_months)-1,
+        key="month_selector_live",
+        help="All calculations (PCDV, CMR%, Productivity) will be for this month only"
+    )
+else:
+    sel_month = None
+    st.warning("Could not detect months from the uploaded files.", icon="⚠️")
+
+# ── Filter all files to selected month ───────────────────────
+if sel_month:
+    receipt_df, refund_df, renewal_df = filter_by_month(
+        receipt_df_raw, refund_df_raw, renewal_df_raw, sel_month)
+    st.info(f"📅 **{sel_month}** — "
+            f"Receipt: {len(receipt_df)} rows | "
+            f"Refund: {len(refund_df)} rows | "
+            f"Renewal: {len(renewal_df) if renewal_df is not None else 0} rows")
+else:
+    receipt_df, refund_df, renewal_df = receipt_df_raw, refund_df_raw, renewal_df_raw
+
+# ── Enrich receipt: Productivity + Service_Tier ───────────────
+receipt_df = enrich_receipt(receipt_df)
+
+# ── CMR% from month-filtered renewal data ────────────────────
 cmr_map = calc_cmr_per_employee(renewal_df)
 
-# Build emp_df for receipt-side hierarchy fallback
+# Build emp hierarchy fallback from receipt
 emp_df = build_emp_list(receipt_df)
 
 with st.expander("Loaded file summary"):
@@ -1201,8 +1448,9 @@ if calc_btn:
                   "kcd_slab1_target": emp_targets["slab1"],
                   "kcd_slab2_target": emp_targets["slab2"]}
 
-        net_dv, txn_count, prods, rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count = \
-            get_transactions(receipt_df, refund_df, renewal_df, emp_id)
+        (net_dv, txn_count, prods, rnl_prods, rnl_modes,
+         rnl_count, total_ref, all_rnl_count,
+         svc_tiers, insta_cnt_receipt, prod_score_receipt) =             get_transactions(receipt_df, refund_df, renewal_df, emp_id)
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
@@ -1225,11 +1473,14 @@ if calc_btn:
         inc = route_calc(emp_row, cfg_row, emp_cmr,
                          net_dv, txn_count, prods,
                          rnl_prods, rnl_modes, rnl_count,
-                         emp_sb, S, joining_date=s["Joining Date"])
+                         emp_sb, S, joining_date=s["Joining Date"],
+                         svc_tiers=svc_tiers,
+                         prod_score_receipt=prod_score_receipt)
 
         results.append({
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
+            "Calc Month":         sel_month if sel_month else "All",
             "Vertical":           s["Vertical"],
             "Vintage":            s["Vintage"],
             "Team":               s["Team"],
