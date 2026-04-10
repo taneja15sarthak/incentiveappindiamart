@@ -71,6 +71,34 @@ INSTA_KEYWORDS    = ["INSTA"]          # IM Insta = 0.5 productivity (KCD/CSD SP
 HALF_YEAR_MODES   = ["HALF-YEARLY", "HALF YEARLY", "HY", "6M", "6 MONTHS"]
 POP_CMR_FLOOR     = 55.0              # CSD: min CMR% to earn PoP
 CALC_DATE         = __import__("datetime").date(2026, 4, 30)  # reference date for days-since-joining
+EXCEL_EPOCH       = __import__("datetime").date(1899, 12, 30)  # Excel serial date base
+
+def _to_date(val):
+    """Convert any date-like value to a Python date object.
+    Handles: Excel serial ints, pandas Timestamp, datetime, date string."""
+    import datetime as _dt
+    import pandas as _pd
+    if val is None:
+        return None
+    if isinstance(val, _dt.date) and not isinstance(val, _dt.datetime):
+        return val
+    if isinstance(val, _dt.datetime):
+        return val.date()
+    if isinstance(val, _pd.Timestamp):
+        return val.date()
+    # Excel serial number (xlsb stores dates as integers ~40000-50000 for 2009-2036)
+    try:
+        fval = float(val)
+        if not (fval != fval):  # not NaN
+            if 30000 < fval < 60000:  # reasonable Excel serial range for 1982-2064
+                return EXCEL_EPOCH + __import__("datetime").timedelta(days=int(fval))
+    except (TypeError, ValueError):
+        pass
+    # Try string parsing
+    try:
+        return _pd.to_datetime(str(val)).date()
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -627,7 +655,7 @@ def enrich_receipt(df):
 
     # Normalise columns
     prod_col   = find_col(df, ["Product", "Prod", "PRODUCT"])
-    upsell_col = find_col(df, ["Upsell", "UPSELL"])
+    upsell_col = find_col(df, ["Upsell", "UPSELL", "Unique", "UNIQUE"])  # March receipt uses "Unique"
     rcpt_id    = find_col(df, ["Receipts ID", "Receipt ID", "ReceiptID"])
 
     def _str(val):
@@ -824,12 +852,13 @@ def load_structure_dump(uploaded_file):
         else:
             cc = 100
 
-        # ── Joining Date ──
+        # ── Joining Date — convert Excel serials (from xlsb) to proper dates ──
         jd = None
         if joining_col:
             jd_raw = row[joining_col]
-            if jd_raw and str(jd_raw).strip() not in ("", "nan", "NaT"):
-                jd = jd_raw
+            raw_str = str(jd_raw).strip()
+            if raw_str not in ("", "nan", "NaT", "None"):
+                jd = _to_date(jd_raw)
 
         result[eid] = {
             "Employee Name": str(row[name_col]).strip() if name_col else "",
@@ -844,7 +873,7 @@ def load_structure_dump(uploaded_file):
             "L4 Name":       str(row[l4_col]).strip() if l4_col else "",
             "L5 Name":       str(row[l5_col]).strip() if l5_col else "",
             "Vintage Bucket":vbucket,
-            "Remarks":       team_from_file,
+            "Remarks":       remarks,
         }
     return result
 
@@ -1118,7 +1147,7 @@ def calc_csd_sps(pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
     return round(total, 0), notes
 
 
-def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location, ss_cmr_pct, S):
+def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location, ss_cmr_pct, S, metric_label="PCDV"):
     loc = str(location).upper()
     if "NAGPUR" in loc:
         _, per_txn = pcdv_slab(pcdv, S["kcd_nagpur_slabs"], cmr_col_val)
@@ -1136,7 +1165,7 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location, ss_cmr_pct
         incr = (pcdv - i_thresh) * i_rate if pcdv > i_thresh else 0
     ss_mult = 1.0 if ss_cmr_pct >= 72 else 0.5
     return round((per_txn * txn_count + incr) * ss_mult, 0), \
-           f"KCD Regular {vintage} | PCDV:{round(pcdv)} | ₹{per_txn}/txn | SS+:{ss_mult}"
+           f"KCD Regular {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn | SS+:{ss_mult}"
 
 
 def calc_kcd_listing(net_dv, base_c, list_c, txn_count, cmr_col_val, vintage, ss_cmr_pct, S):
@@ -1231,7 +1260,9 @@ def build_emp_list(receipt_df):
 
 
 def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
-    eid       = int(emp_id) if str(emp_id).isdigit() else emp_id
+    # Use string comparison to handle both int and string EMP IDs across files
+    eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
+    eid       = int(eid_str) if eid_str.isdigit() else eid_str
     rec       = receipt_df[receipt_df["Sales Exec ID"] == eid]
     total_dv  = rec["WT AMT"].fillna(0).sum()
     txn_count = len(rec)
@@ -1244,7 +1275,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     insta_count_receipt = len(insta_rows)
     prod_score_receipt  = (len(prod_rows) + insta_count_receipt * 0.5 - insta_count_receipt
                           ) if "Productivity" in rec.columns else txn_count
-    ref       = refund_df[refund_df["Sales Ex. ID"] == eid]
+    ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
+    ref       = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     total_ref = ref["WT Amount"].fillna(0).sum()
     rnl_prods = []
     rnl_modes = []
@@ -1256,8 +1288,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
                                              "Product", "Prod", "Service", "WS MDC Main"])
         _mode_col    = find_col(renewal_df, ["Mode", "MODE", "Deal Mode", "Renewal Mode"])
         if _eid_col and _status_col:
+            # Compare as string to handle int/string mismatch from xlsb files
             rnl = renewal_df[
-                (renewal_df[_eid_col] == eid) &
+                (renewal_df[_eid_col].astype(str) == eid_str) &
                 (renewal_df[_status_col].astype(str).str.upper().str.contains("RECEIVED", na=False))
             ]
             rnl_prods = rnl[_product_col].fillna("").tolist() if _product_col else []
@@ -1316,13 +1349,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     ss_cmr_pct = cmr_data.get("ss_cmr_pct", 0.0)
     rnl_sent   = cmr_data.get("renewal_sent", 0)   # total sent (all statuses)
 
-    # Days since joining
+    # Days since joining (handles Excel serial ints from xlsb files)
     days_since_joining = ""
-    if joining_date:
+    if joining_date is not None:
         try:
-            import datetime
-            jd = joining_date if isinstance(joining_date, datetime.date) else                  __import__("pandas").to_datetime(joining_date).date()
-            days_since_joining = (CALC_DATE - jd).days
+            jd = _to_date(joining_date)
+            if jd is not None:
+                days_since_joining = (CALC_DATE - jd).days
         except Exception:
             days_since_joining = ""
 
@@ -1385,11 +1418,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 sb["spot_met"], S)
         elif "ROI" in team_up:
             base_inc, notes = calc_kcd_regular(
-                pcdv, txn_count, kcd_col, vintage, location, ss_cmr_pct, S)
+                pcdv, txn_count, kcd_col, vintage, location, ss_cmr_pct, S, metric_label)
             spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb["spot_met"], S)
         else:
             base_inc, notes = calc_kcd_regular(
-                pcdv, txn_count, kcd_col, vintage, location, ss_cmr_pct, S)
+                pcdv, txn_count, kcd_col, vintage, location, ss_cmr_pct, S, metric_label)
             if vintage in ("0-30D", "31-90D"):
                 spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb["spot_met"], S)
 
@@ -1409,7 +1442,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Spot Incentive (₹)":  int(spot_inc),
         "Total Incentive (₹)": int(base_inc + pop_inc + spot_inc),
         "Net Deal Value (₹)":  int(net_dv),
-        "PCDV":                round(pcdv, 0),
+        metric_label:          round(pcdv, 0),   # "PCDV" or "PCR" based on sidebar
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
         "Scheme":              notes,
@@ -1611,10 +1644,11 @@ if not struct_map or len(struct_map) == 0:
 if not cmr_targets:
     st.warning("⚠️ No CMR Targets file — fallback: Slab 1=70%, Slab 2=80%", icon="⚠️")
 
-# ── Normalise EMP ID in renewal ───────────────────────────────
+# ── Normalise EMP ID in renewal (keep as string for consistent comparison) ──
 _eid = find_col(renewal_df_raw, ["EMP ID","Emp ID","EmpID","Employee ID"])
 if _eid:
-    renewal_df_raw[_eid] = renewal_df_raw[_eid].astype(str)
+    renewal_df_raw[_eid] = renewal_df_raw[_eid].apply(
+        lambda x: str(int(float(x))) if str(x).replace(".","").isdigit() else str(x))
 
 # ── Month selector: show available months dynamically ─────────
 available_months = get_available_months(receipt_df_raw, renewal_df_raw)
@@ -1775,7 +1809,8 @@ if calc_btn:
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
         "SS+ CMR% (auto)", "Renewals Sent", "Renewals Received", "CMR Slab",
         "Productivity Score", "Insta Txns (0.5×)",
-        "Receipt Txns", "Renewal Txns", "Net Deal Value (₹)", "Refund (₹)", "PCDV",
+        "Receipt Txns", "Renewal Txns", "Net Deal Value (₹)", "Refund (₹)",
+        "PCDV" if "PCDV" in filtered.columns else "PCR",
         "Base Incentive (₹)", "PoP Incentive (₹)", "Spot Incentive (₹)",
         "Total Incentive (₹)", "Scheme",
     ] if c in filtered.columns]
