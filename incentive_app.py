@@ -704,20 +704,37 @@ def load_structure_dump(uploaded_file):
     df = load_excel(uploaded_file)
     df.columns = df.columns.str.strip()
 
-    emp_col     = find_col(df, ["Employee ID", "Emp ID", "EmpID"])
-    name_col    = find_col(df, ["Employee Name", "Name"])
-    vertical_col= find_col(df, ["IIL Vertical Name", "Vertical", "IIL Vertical"])
-    location_col= find_col(df, ["Location", "LOCATION"])
-    joining_col = find_col(df, ["Joining Date", "DOJ", "Date of Joining"])
-    final_grp   = find_col(df, ["Final Group", "FinalGroup"])
-    vintage_bkt = find_col(df, ["Vintage Bucket", "VintageBucket"])
-    remarks_col = find_col(df, ["Remarks"])
-    client_a    = find_col(df, ["Client-A", "Client A", "ClientA", "Actual Client"])
-    client_c    = find_col(df, ["Client-C", "Client C", "ClientC", "Calculated Client"])
-    l2_col      = find_col(df, ["L2 Name", "L2Name", "L2"])
-    l3_col      = find_col(df, ["L3 Name", "L3Name", "L3"])
-    l4_col      = find_col(df, ["L4 Name", "L4Name", "L4"])
-    l5_col      = find_col(df, ["L5 Name", "L5Name", "L5"])
+    # Normalise column names to lowercase for flexible matching
+    df.columns = [str(c).strip() for c in df.columns]
+
+    emp_col     = find_col(df, ["Employee ID", "Emp ID", "EmpID", "employeeid"])
+    name_col    = find_col(df, ["Employee Name", "Name", "employeename"])
+    vertical_col= find_col(df, ["IIL Vertical Name", "Vertical", "IIL Vertical",
+                                "emp_vertical_name", "emp_fun_area_name"])
+    location_col= find_col(df, ["Location", "LOCATION", "emp_loc"])
+    joining_col = find_col(df, ["Joining Date", "DOJ", "Date of Joining",
+                                "emp_joining_date"])
+    final_grp   = find_col(df, ["Final Group", "FinalGroup", "bucket"])
+    vintage_bkt = find_col(df, ["Vintage Bucket", "VintageBucket", "bucket",
+                                "Team", "emp_level"])
+    remarks_col = find_col(df, ["Remarks", "Team"])
+    client_a    = find_col(df, ["Client-A", "Client A", "ClientA",
+                                "Actual Client", "Total Client"])
+    client_c    = find_col(df, ["Client-C", "Client C", "ClientC",
+                                "Calculated Client", "Total Client"])
+    # Listing/Catalog client counts (for KCD)
+    list_c_col  = find_col(df, ["Listing Client", "ListingClient"])
+    cat_c_col   = find_col(df, ["Catalog Client", "CatalogClient"])
+    l2_col      = find_col(df, ["L2 Name", "L2Name", "L2",
+                                "level2_name", "emp_manager_name"])
+    l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
+    l4_col      = find_col(df, ["L4 Name", "L4Name", "L4", "level4_name"])
+    l5_col      = find_col(df, ["L5 Name", "L5Name", "L5", "level5_name"])
+
+    # Determine vertical from emp_vertical_name or emp_fun_area_name
+    # (Delhi structure uses emp_fun_area_name = "Client Servicing" + emp_vertical_name = "KCD/CSD")
+    if vertical_col is None:
+        vertical_col = find_col(df, ["emp_vertical_name", "emp_fun_area_name"])
 
     result = {}
     for _, row in df.iterrows():
@@ -729,12 +746,36 @@ def load_structure_dump(uploaded_file):
 
         vertical = str(row[vertical_col]).strip().upper() if vertical_col else ""
         location = str(row[location_col]).strip()        if location_col else ""
-        vintage  = str(row[final_grp]).strip()           if final_grp    else "91-270D"
-        vbucket  = str(row[vintage_bkt]).strip()         if vintage_bkt  else ""
-        remarks  = str(row[remarks_col]).strip()         if remarks_col  else "-"
+        vintage  = str(row[final_grp]).strip()  if final_grp  else "91-270D"
+        vbucket  = str(row[vintage_bkt]).strip() if vintage_bkt else ""
         loc_up   = location.upper()
         vbucket_up = vbucket.upper()
-        rem_up   = remarks.upper()
+
+        # Map bucket values from Delhi structure to standard Final Group
+        # Delhi file 'bucket' column may have values like "0-30D","31-90D","91-270D","270D+"
+        # or older labels — normalise them
+        bucket_map = {
+            "0-30D": "0-30D", "0-30": "0-30D",
+            "31-90D": "31-90D", "31-90": "31-90D",
+            "91-270D": "91-270D", "91-270": "91-270D",
+            "270D+": "270D+", "270+": "270D+",
+            "SPS": "91-270D",        # SPS = single point servicing = 91D+ vintage
+            "0-90 DAYS": "31-90D",   # 0-90 new joiner → 31-90D scheme
+            "90+ DAYS": "270D+",
+        }
+        vintage_up = vintage.upper().strip()
+        if vintage_up in bucket_map:
+            vintage = bucket_map[vintage_up]
+        elif any(vintage_up.startswith(k) for k in bucket_map):
+            for k, v in bucket_map.items():
+                if vintage_up.startswith(k):
+                    vintage = v
+                    break
+
+        # ── Remarks column (Listing/Catalog/- for KCD) ──────────
+        # Delhi structure uses "Team" column with Listing/Catalog
+        team_from_file = str(row[remarks_col]).strip() if remarks_col else ""
+        rem_up = team_from_file.upper()
 
         # ── Derive Team from Vertical + Vintage Bucket + Remarks + Location ──
         if "CSD" in vertical:
@@ -743,11 +784,11 @@ def load_structure_dump(uploaded_file):
             elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS", "CSD ROI"]):
                 team = "0-90 Days (CSD new)"
             else:
-                team = "SPS (CSD 91D+)"          # fallback for CSD
+                team = "SPS (CSD 91D+)"
         elif "KCD" in vertical:
-            if rem_up == "LISTING":
+            if rem_up == "LISTING" or "LISTING" in vbucket_up:
                 team = "Listing (KCD)"
-            elif rem_up == "CATALOG":
+            elif rem_up == "CATALOG" or "CATALOG" in vbucket_up:
                 team = "Catalog (KCD)"
             elif "ROI" in vbucket_up or "ROI" in loc_up:
                 team = "ROI KCD"
@@ -760,13 +801,28 @@ def load_structure_dump(uploaded_file):
         else:
             team = "Regular KCD"
 
-        # ── Client Count: Calculated (CSD) or Actual (KCD) ──
+        # ── Client Count ──────────────────────────────────────
+        def _safe_float(val, default=100):
+            try:
+                v = float(val)
+                return v if not (v != v) else default  # NaN check
+            except (TypeError, ValueError):
+                return default
+
         if "CSD" in vertical:
-            raw_cc = row[client_c] if client_c else None
-            cc = max(float(raw_cc) if raw_cc and str(raw_cc) not in ("nan","") else 100, 50)
+            cc = max(_safe_float(row[client_c] if client_c else None), 50)
+        elif "KCD" in vertical:
+            # Prefer Total Client, or sum Listing + Catalog if available
+            if client_a and str(row[client_a]).strip() not in ("nan",""):
+                cc = _safe_float(row[client_a])
+            elif list_c_col and cat_c_col:
+                lc = _safe_float(row[list_c_col], 0)
+                cc_val = _safe_float(row[cat_c_col], 0)
+                cc = lc + cc_val if (lc + cc_val) > 0 else 100
+            else:
+                cc = 100
         else:
-            raw_cc = row[client_a] if client_a else None
-            cc = float(raw_cc) if raw_cc and str(raw_cc) not in ("nan","") else 100
+            cc = 100
 
         # ── Joining Date ──
         jd = None
@@ -791,7 +847,6 @@ def load_structure_dump(uploaded_file):
             "Remarks":       remarks,
         }
     return result
-
 
 def is_insta(prod_str):
     """IM Insta products count as 0.5 productivity."""
