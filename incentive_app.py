@@ -532,10 +532,13 @@ def enrich_receipt(df):
     else:
         df["_has_upsell_on_receipt"] = df["_is_upsell"]
 
-    # Step 4: Productivity
+    # Step 4: Productivity — cast to bool first (Arrow-backed pandas fix)
+    is_upsell        = df["_is_upsell"].astype(bool)
+    is_pure_renewal  = df["_is_pure_renewal"].astype(bool)
+    has_upsell       = df["_has_upsell_on_receipt"].astype(bool)
+
     df["Productivity"] = (
-        df["_is_upsell"] |
-        (df["_is_pure_renewal"] & ~df["_has_upsell_on_receipt"])
+        is_upsell | (is_pure_renewal & ~has_upsell)
     ).astype(int)
 
     # Step 5: Service tier
