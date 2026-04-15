@@ -855,6 +855,7 @@ def load_structure_dump(uploaded_file):
         # ── Remarks column (Listing/Catalog/- for KCD) ──────────
         # Delhi structure uses "Team" column with Listing/Catalog
         team_from_file = str(row[remarks_col]).strip() if remarks_col else ""
+        remarks = team_from_file  # alias used when building result dict
         rem_up = team_from_file.upper()
 
         # ── Derive Team from Vertical + Vintage Bucket + Remarks + Location ──
