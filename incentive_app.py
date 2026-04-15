@@ -68,6 +68,13 @@ TIER_REWARD = {1: 500, 2: 1000, 3: 1500}
 INSTA_PRODUCTS = {"IM InstaDiamond","IM InstaGold","IM InstaPlatinum",
                   "IM insta Diamond","IM Insta Renewal"}
 INSTA_KEYWORDS    = ["INSTA"]          # IM Insta = 0.5 productivity (KCD/CSD SPS)
+
+# MDC-1 products for per-employee MDC-1 CMR% calculation (CSD SPS)
+MDC1_PRODUCTS = {
+    "Mini Dynamic Catalog.", "Mini Dynamic Catalog", "MDC Annual",
+    "Mini Dynamic Catalog Pro", "MDC 1 Year", "MDC-1", "MDC1",
+    "MDC Annual Renewal", "MDC 2 Year", "MDC 3 Year",
+}
 HALF_YEAR_MODES   = ["HALF-YEARLY", "HALF YEARLY", "HY", "6M", "6 MONTHS"]
 POP_CMR_FLOOR     = 55.0              # CSD: min CMR% to earn PoP
 CALC_DATE         = __import__("datetime").date(2026, 4, 30)  # reference date for days-since-joining
@@ -674,12 +681,19 @@ def enrich_receipt(df):
     else:
         df["_is_pure_renewal"] = False
 
-    # Step 3: set of receipt IDs that have any upsell
-    if rcpt_id:
-        upsell_ids = set(df.loc[df["_is_upsell"], rcpt_id].tolist())
+    # Step 3: set of receipt IDs that have a REAL upsell (WT AMT > 0)
+    # A zero-WT-AMT upsell row is a tagging row only; the renewal on same receipt
+    # still counts as its own productive transaction (confirmed from sir's calc).
+    wt_col = find_col(df, ["WT AMT", "WT_AMT", "WTAMT"])
+    if rcpt_id and wt_col:
+        real_upsell_mask = df["_is_upsell"].astype(bool) & (df[wt_col].fillna(0) > 0)
+        real_upsell_ids  = set(df.loc[real_upsell_mask, rcpt_id].tolist())
+        df["_has_upsell_on_receipt"] = df[rcpt_id].isin(real_upsell_ids)
+    elif rcpt_id:
+        upsell_ids = set(df.loc[df["_is_upsell"].astype(bool), rcpt_id].tolist())
         df["_has_upsell_on_receipt"] = df[rcpt_id].isin(upsell_ids)
     else:
-        df["_has_upsell_on_receipt"] = df["_is_upsell"]
+        df["_has_upsell_on_receipt"] = df["_is_upsell"].astype(bool)
 
     # Step 4: Productivity — cast to bool first (Arrow-backed pandas fix)
     is_upsell        = df["_is_upsell"].astype(bool)
@@ -719,6 +733,44 @@ def enrich_receipt(df):
     df.drop(columns=["_is_upsell","_is_pure_renewal","_has_upsell_on_receipt"],
             inplace=True, errors="ignore")
     return df
+
+
+def calc_mdc1_cmr_per_employee(renewal_df):
+    """
+    Calculate MDC-1 CMR% per employee from renewal file.
+    MDC-1 products = Mini Dynamic Catalog / MDC Annual etc.
+    Returns dict: { emp_id_str: float(mdc1_cmr_pct 0-100) }
+    """
+    if renewal_df is None:
+        return {}
+
+    emp_col     = find_col(renewal_df, ["EMP ID","Emp ID","EmpID","Employee ID"])
+    status_col  = find_col(renewal_df, ["Status","STATUS"])
+    product_col = find_col(renewal_df, ["WS/MDC Main","DCR Services","Product","Prod","Service"])
+
+    if not emp_col or not product_col:
+        return {}
+
+    df = renewal_df.copy()
+    df[emp_col] = df[emp_col].astype(str)
+
+    is_mdc1 = df[product_col].apply(
+        lambda p: any(k.upper() in str(p).upper() for k in MDC1_PRODUCTS)
+    )
+    df_mdc1 = df[is_mdc1].copy()
+
+    if status_col:
+        df_mdc1["_recv"] = df_mdc1[status_col].astype(str).str.upper().str.contains("RECEIVED", na=False)
+    else:
+        df_mdc1["_recv"] = False
+
+    result = {}
+    for emp_id, grp in df_mdc1.groupby(emp_col):
+        sent = len(grp)
+        recd = int(grp["_recv"].sum())
+        pct  = round(recd / sent * 100, 2) if sent > 0 else 0.0
+        result[str(emp_id)] = {"mdc1_sent": sent, "mdc1_recd": recd, "mdc1_cmr_pct": pct}
+    return result
 
 def load_structure_dump(uploaded_file):
     """
@@ -860,20 +912,30 @@ def load_structure_dump(uploaded_file):
             if raw_str not in ("", "nan", "NaT", "None"):
                 jd = _to_date(jd_raw)
 
+        # Collection Target = PCR/PCDV target × client count (if available in structure)
+        coll_target = 0.0
+        pcr_target_col = find_col(df, ["PCR Target","PCDV Target","PCR_Target","Collection Target"])
+        if pcr_target_col:
+            try:
+                coll_target = float(row[pcr_target_col]) * cc
+            except Exception:
+                coll_target = 0.0
+
         result[eid] = {
-            "Employee Name": str(row[name_col]).strip() if name_col else "",
-            "Vertical":      str(row[vertical_col]).strip() if vertical_col else "",
-            "Location":      location,
-            "Joining Date":  jd,
-            "Vintage":       vintage,
-            "Team":          team,
-            "Client Count":  cc,
-            "L2 Name":       str(row[l2_col]).strip() if l2_col else "",
-            "L3 Name":       str(row[l3_col]).strip() if l3_col else "",
-            "L4 Name":       str(row[l4_col]).strip() if l4_col else "",
-            "L5 Name":       str(row[l5_col]).strip() if l5_col else "",
-            "Vintage Bucket":vbucket,
-            "Remarks":       team_from_file,
+            "Employee Name":     str(row[name_col]).strip() if name_col else "",
+            "Vertical":          str(row[vertical_col]).strip() if vertical_col else "",
+            "Location":          location,
+            "Joining Date":      jd,
+            "Vintage":           vintage,
+            "Team":              team,
+            "Client Count":      cc,
+            "Collection Target": coll_target,
+            "L2 Name":           str(row[l2_col]).strip() if l2_col else "",
+            "L3 Name":           str(row[l3_col]).strip() if l3_col else "",
+            "L4 Name":           str(row[l4_col]).strip() if l4_col else "",
+            "L5 Name":           str(row[l5_col]).strip() if l5_col else "",
+            "Vintage Bucket":    vbucket,
+            "Remarks":           remarks,
         }
     return result
 
@@ -1113,8 +1175,14 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     return round(base_total, 0), round(pop, 0), notes
 
 
-def calc_csd_sps(pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
+def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
                 mdc1_cmr, ext_tat, d60, S, metric_label="PCDV"):
+    """
+    CSD SPS (91-270D and 270D+).
+    prod_score  = receipt-based productivity count (Upsell OR Pure Renewal rows)
+    txn_count   = total cleared receipt rows (used as fallback)
+    mdc1_cmr    = per-employee MDC-1 CMR% (0-100)
+    """
     """
     CSD SPS 91-270D / 270D+.
     - No PoP scheme for this vintage.
@@ -1124,10 +1192,9 @@ def calc_csd_sps(pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
     slabs = S["csd_sps_270p"] if vintage == "270D+" else S["csd_sps_91_270"]
     _, per_txn = pcdv_slab(pcdv, slabs, cmr_slab)
 
-    # Use weighted productivity (Insta = 0.5) for transaction count
-    prod_score, insta_cnt, reg_cnt = calc_productivity(rnl_prods, rnl_modes, "csd_sps")
-    # Use actual received renewal count as txn_count for incentive calc
-    txn_count = len(rnl_prods)
+    # Use receipt-based productivity count (passed from get_transactions)
+    # This matches sir's calculation: count productive receipt rows (Upsell OR Pure Renewal)
+    eff_txn_count = max(int(prod_score), 0) if prod_score > 0 else txn_count
 
     if mdc1_cmr > S["mdc1_above"]:
         mdc1_mult = S["mdc1_mult_hi"]
@@ -1140,10 +1207,9 @@ def calc_csd_sps(pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
                                   and ext_tat < S["boost_tat"]
                                   and d60 < S["boost_d60"]) else 1.0
 
-    total = per_txn * txn_count * mdc1_mult * booster
+    total = per_txn * eff_txn_count * mdc1_mult * booster
     notes = (f"CSD SPS {vintage} | {metric_label}:{round(pcdv)} | CMR slab:{cmr_slab} | "
-             f"₹{per_txn}/txn×{txn_count} (score:{prod_score:.1f} incl {insta_cnt}×Insta) | "
-             f"MDC1:{mdc1_mult} boost:{booster} | No PoP")
+             f"₹{per_txn}/txn×{eff_txn_count} | MDC1:{mdc1_mult:.1f}({mdc1_cmr:.0f}%) boost:{booster} | No PoP")
     return round(total, 0), notes
 
 
@@ -1264,8 +1330,12 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
     rec       = receipt_df[receipt_df["Sales Exec ID"] == eid]
-    total_dv  = rec["WT AMT"].fillna(0).sum()
+    total_dv  = rec["WT AMT"].fillna(0).sum()               # collection (WT AMT)
     txn_count = len(rec)
+
+    # Deal Value (WT) = deal value column (different from collection)
+    dv_col    = find_col(receipt_df, ["Deal Val (WT)", "Deal Value (WT)", "DealVal_WT"])
+    gross_deal_val = rec[dv_col].fillna(0).sum() if dv_col else 0.0
     _prod_col = find_col(receipt_df, ["Prod", "Product", "PRODUCT"])
     prods     = rec[_prod_col].fillna("").tolist() if _prod_col else []
     # Productive rows only — with their service tier
@@ -1278,6 +1348,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
     ref       = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     total_ref = ref["WT Amount"].fillna(0).sum()
+    # Deal Loss = refund on deal value side (same refund file, just label differs)
+    deal_loss = total_ref   # in most cases deal loss = refund amount
     rnl_prods = []
     rnl_modes = []
     rnl_count = 0
@@ -1303,9 +1375,14 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
         if _eid_all:
             all_rnl_count = len(renewal_df[renewal_df[_eid_all] == eid])
 
-    return (total_dv - total_ref, txn_count, prods,
+    gross_collection = total_dv           # WT AMT before refund
+    net_collection   = total_dv - total_ref
+    net_deal_val     = gross_deal_val - deal_loss
+
+    return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
-            svc_tiers, insta_count_receipt, prod_score_receipt)
+            svc_tiers, insta_count_receipt, prod_score_receipt,
+            gross_collection, gross_deal_val, deal_loss, net_deal_val)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -1324,7 +1401,7 @@ def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
 
 def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
-               svc_tiers=None, prod_score_receipt=None):
+               svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None):
     """
     Main routing. All fixes applied:
     - Days Since Joining calculated
@@ -1381,9 +1458,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 metric_label=metric_label)
         else:
             # SPS — no PoP; Insta = 0.5; productivity from renewal file
+            # MDC-1 CMR: use per-employee value if available, else sidebar default
+            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else sb["mdc1_cmr"]
             base_inc, notes = calc_csd_sps(
-                pcdv, rnl_prods, rnl_modes, cmr_slab, vintage,
-                sb["mdc1_cmr"], sb["ext_tat"], sb["d60"], S,
+                pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
+                emp_mdc1_cmr, sb["ext_tat"], sb["d60"], S,
                 metric_label=metric_label)
             spot_inc = calc_spot_csd(sb["nr_upsell"], S)
 
@@ -1433,10 +1512,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Renewals Sent":       rnl_sent,
         "Renewals Received":   cmr_data.get("renewal_received", 0),
         "CMR Slab":            cmr_note,
-        "Productivity Score":  round(prod_score_new if "CSD" in vertical
+        "Productivity Score":  round(prod_score_receipt or (
+                                     prod_score_new if "CSD" in vertical
                                      and vintage in ("0-30D","31-90D")
-                                     else prod_score_sps, 1),
+                                     else prod_score_sps), 1),
         "Insta Txns (0.5×)":   insta_cnt_sps,
+        "MDC-1 CMR%":          round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else "",
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
         "Spot Incentive (₹)":  int(spot_inc),
@@ -1679,7 +1760,8 @@ else:
 receipt_df = enrich_receipt(receipt_df)
 
 # ── CMR% from month-filtered renewal data ────────────────────
-cmr_map = calc_cmr_per_employee(renewal_df)
+cmr_map     = calc_cmr_per_employee(renewal_df)
+mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df)
 
 # Build emp hierarchy fallback from receipt
 emp_df = build_emp_list(receipt_df)
@@ -1723,7 +1805,8 @@ if calc_btn:
 
         (net_dv, txn_count, prods, rnl_prods, rnl_modes,
          rnl_count, total_ref, all_rnl_count,
-         svc_tiers, insta_cnt_receipt, prod_score_receipt) =             get_transactions(receipt_df, refund_df, renewal_df, emp_id)
+         svc_tiers, insta_cnt_receipt, prod_score_receipt,
+         gross_collection, gross_deal_val, deal_loss, net_deal_val) =             get_transactions(receipt_df, refund_df, renewal_df, emp_id)
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
@@ -1743,17 +1826,26 @@ if calc_btn:
             "L5 Name":      s["L5 Name"],
         }
 
+        emp_mdc1 = mdc1_cmr_map.get(emp_id, {})
         inc = route_calc(emp_row, cfg_row, emp_cmr,
                          net_dv, txn_count, prods,
                          rnl_prods, rnl_modes, rnl_count,
                          emp_sb, S, joining_date=s["Joining Date"],
                          svc_tiers=svc_tiers,
-                         prod_score_receipt=prod_score_receipt)
+                         prod_score_receipt=prod_score_receipt,
+                         mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None))
 
         results.append({
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
             "Calc Month":         sel_month if sel_month else "All",
+            "Collection (₹)":     int(gross_collection),
+            "Refund (₹)":         int(total_ref),
+            "Net Collection (₹)": int(net_dv),
+            "Collection Target (₹)": int(s.get("Collection Target", 0)),
+            "Deal Value (₹)":     int(gross_deal_val),
+            "Deal Loss (₹)":      int(deal_loss),
+            "Net Deal Value (₹)": int(net_deal_val),
             "Vertical":           s["Vertical"],
             "Vintage":            s["Vintage"],
             "Team":               s["Team"],
@@ -1763,7 +1855,6 @@ if calc_btn:
             "L3":                 s["L3 Name"],
             "CMR Slab1 Target":   emp_targets["slab1"],
             "CMR Slab2 Target":   emp_targets["slab2"],
-            "Refund (₹)":         int(total_ref),
             **inc,
         })
         prog.progress((i + 1) / len(emp_ids), f"Processing {i+1}/{len(emp_ids)}…")
@@ -1806,11 +1897,15 @@ if calc_btn:
     display_cols = [c for c in [
         "Employee ID", "Employee Name", "Vertical", "Vintage", "Team",
         "Vintage Bucket", "Location", "L2", "Days Since Joining",
+        "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
+        "Collection Target (₹)",
+        "Deal Value (₹)", "Deal Loss (₹)", "Net Deal Value (₹)",
+        "PCR",
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
-        "SS+ CMR% (auto)", "Renewals Sent", "Renewals Received", "CMR Slab",
+        "SS+ CMR% (auto)", "MDC-1 CMR%",
+        "Renewals Sent", "Renewals Received", "CMR Slab",
         "Productivity Score", "Insta Txns (0.5×)",
-        "Receipt Txns", "Renewal Txns", "Net Deal Value (₹)", "Refund (₹)",
-        "PCDV" if "PCDV" in filtered.columns else "PCR",
+        "Receipt Txns", "Renewal Txns",
         "Base Incentive (₹)", "PoP Incentive (₹)", "Spot Incentive (₹)",
         "Total Incentive (₹)", "Scheme",
     ] if c in filtered.columns]
@@ -1819,7 +1914,22 @@ if calc_btn:
 
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="xlsxwriter") as w:
-        res.to_excel(w, sheet_name="Incentives", index=False)
+        # Reorder columns for cleaner output
+        export_cols = [c for c in [
+            "Employee ID","Employee Name","Calc Month","Vertical","Vintage",
+            "Team","Vintage Bucket","Location","L2","L3",
+            "Days Since Joining",
+            "Collection (₹)","Refund (₹)","Net Collection (₹)",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
+            "PCR","CMR Slab1 Target","CMR Slab2 Target",
+            "CMR% (auto)","SS+ CMR% (auto)","MDC-1 CMR%",
+            "Renewals Sent","Renewals Received","CMR Slab",
+            "Productivity Score","Insta Txns (0.5×)",
+            "Receipt Txns","Renewal Txns",
+            "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
+            "Total Incentive (₹)","Scheme",
+        ] if c in res.columns]
+        res[export_cols].to_excel(w, sheet_name="Incentives", index=False)
         res.groupby(["Vertical", "Vintage", "Team"]).agg(
             Employees=("Employee ID", "count"),
             Avg_CMR=("CMR% (auto)", "mean"),
