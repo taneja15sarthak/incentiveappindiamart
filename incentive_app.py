@@ -552,8 +552,9 @@ def build_march_slab_config():
         "KCD_Catalog_Slabs": kcd_catalog, "KCD_Spot": kcd_spot,
     }
 
+@st.cache_data(show_spinner=False)
 def make_slab_config_excel():
-    """Generate the downloadable Slab_Config.xlsx template."""
+    """Generate the downloadable Slab_Config.xlsx template. Cached — only built once."""
     defaults = build_default_slab_config()
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
@@ -570,6 +571,24 @@ def make_slab_config_excel():
             # Note row above headers
             ws.write(0, 0, f"NOTE — Sheet: {sheet_name} | Edit values in rows below. Do NOT rename columns.", note_fmt)
             ws.set_row(0, 18)
+    return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False)
+def make_march_slab_config_excel():
+    """Generate the downloadable March 2026 Slab_Config.xlsx. Cached — only built once."""
+    defaults = build_march_slab_config()
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        hdr_fmt  = w.book.add_format({"bold": True, "bg_color": "#1F4E79", "font_color": "#FFFFFF", "border": 1})
+        note_fmt = w.book.add_format({"italic": True, "font_color": "#595959"})
+        for sheet_name, df in defaults.items():
+            df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
+            ws = w.sheets[sheet_name]
+            ws.set_column(0, len(df.columns) - 1, 22)
+            for col_num, col_name in enumerate(df.columns):
+                ws.write(1, col_num, col_name, hdr_fmt)
+            ws.write(0, 0, f"MARCH 2026 (PCR) — {sheet_name} | Edit values below, do NOT rename columns.", note_fmt)
     return buf.getvalue()
 
 
@@ -815,7 +834,7 @@ def load_structure_dump(uploaded_file):
     if uploaded_file is None:
         return {}
 
-    df = load_excel(uploaded_file)
+    df = _read_file(uploaded_file)
     df.columns = df.columns.str.strip()
 
     # Normalise column names to lowercase for flexible matching
@@ -1051,7 +1070,7 @@ def load_cmr_targets(uploaded_file):
     if uploaded_file is None:
         return {}
     try:
-        df = load_excel(uploaded_file)
+        df = _read_file(uploaded_file)
         df.columns = df.columns.str.strip()
 
         emp_col   = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
@@ -1379,25 +1398,31 @@ def calc_spot_csd(nr_upsell, S):
 # DATA HELPERS
 # ═══════════════════════════════════════════════════════════════
 
-def load_excel(f):
-    """Load xlsx or xlsb files. Accepts both formats for all uploads.
-    Note: cache deliberately removed — cached stale data caused renewal_df to be empty.
-    """
-    name = f.name if hasattr(f, "name") else str(f)
-    ext  = name.lower().rsplit(".", 1)[-1] if "." in name else "xlsx"
+@st.cache_data(show_spinner=False)
+def load_excel(file_bytes: bytes, file_name: str) -> pd.DataFrame:
+    """Load xlsx or xlsb files from raw bytes. Cached to avoid re-reading on every re-run."""
+    ext = file_name.lower().rsplit(".", 1)[-1] if "." in file_name else "xlsx"
+    buf = io.BytesIO(file_bytes)
     try:
         if ext == "xlsb":
-            return pd.read_excel(f, engine="pyxlsb")
+            return pd.read_excel(buf, engine="pyxlsb")
         else:
-            return pd.read_excel(f, engine="openpyxl")
+            return pd.read_excel(buf, engine="openpyxl")
     except Exception as e:
         err = str(e)
         if "pyxlsb" in err or "xlsb" in err.lower():
             st.error("📦 Reading .xlsb files requires pyxlsb. "
                      "Run in your terminal: `pip install pyxlsb`")
         else:
-            st.error(f"Could not read file '{name}': {err}")
+            st.error(f"Could not read file '{file_name}': {err}")
         return pd.DataFrame()
+
+
+def _read_file(f):
+    """Helper: read an st.UploadedFile into the cached load_excel."""
+    if f is None:
+        return pd.DataFrame()
+    return load_excel(f.getvalue(), f.name)
 
 
 def clean_receipt(df):
@@ -1791,25 +1816,9 @@ with col_a:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 with col_b:
-    def _make_march_excel():
-        import io
-        defaults = build_march_slab_config()
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-            hdr_fmt  = w.book.add_format({"bold": True, "bg_color": "#1F4E79", "font_color": "#FFFFFF", "border": 1})
-            note_fmt = w.book.add_format({"italic": True, "font_color": "#595959"})
-            for sheet_name, df in defaults.items():
-                df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
-                ws = w.sheets[sheet_name]
-                ws.set_column(0, len(df.columns) - 1, 22)
-                for col_num, col_name in enumerate(df.columns):
-                    ws.write(1, col_num, col_name, hdr_fmt)
-                ws.write(0, 0, f"MARCH 2026 (PCR) — {sheet_name} | Edit values below, do NOT rename columns.", note_fmt)
-        return buf.getvalue()
-
     st.download_button(
         "⬇️ Download March 2026 Slab Config (PCR)",
-        data=_make_march_excel(),
+        data=make_march_slab_config_excel(),
         file_name="Slab_Config_March2026_PCR.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
@@ -1843,47 +1852,40 @@ with st.expander("What columns does the app read from this file?", expanded=True
 | **L2–L6 Name** | Manager hierarchy in report |
     """)
 
-if structure_file:
-    struct_map = load_structure_dump(structure_file)
-    if struct_map is not None and len(struct_map) > 0:
-        struct_preview = pd.DataFrame([
-            {"Employee ID": k, "Name": v["Employee Name"],
-             "Vertical": v["Vertical"], "Vintage": v["Vintage"],
-             "Team": v["Team"], "Client Count": v["Client Count"],
-             "Location": v["Location"],
-             "Joining Date": str(v["Joining Date"])[:10] if v["Joining Date"] else ""}
-            for k, v in struct_map.items()
-        ])
-        st.success(f"✅ Structure file loaded — {len(struct_map)} employees auto-configured")
-        with st.expander("Preview auto-derived settings per employee"):
-            st.dataframe(struct_preview, use_container_width=True, hide_index=True)
-    else:
-        st.error("Could not read the structure file. Check column names.")
-else:
-    st.info("Upload the Employee Structure Dump in the sidebar to continue.", icon="⬆️")
-
-st.subheader("Step 2 — Calculate Incentives")
-
-# ── Step 2: Calculate ─────────────────────────────────────────
-st.subheader("Step 2 — Calculate Incentives")
 
 if not (receipt_file and refund_file and renewal_file and structure_file):
     st.info("4 files required: Receipt + Refund + Renewal + Employee Structure Dump. "
             "CMR Targets and Slab Config are optional.", icon="📂")
     st.stop()
 
-# ── Load all files ───────────────────────────────────────────
-receipt_df_raw  = clean_receipt(load_excel(receipt_file))
-refund_df_raw   = load_excel(refund_file)
-renewal_df_raw  = load_excel(renewal_file)
+# ── Load all files (cached — only re-reads when file actually changes) ────
+receipt_df_raw  = clean_receipt(_read_file(receipt_file))
+refund_df_raw   = _read_file(refund_file)
+renewal_df_raw  = _read_file(renewal_file)
 struct_map      = load_structure_dump(structure_file)
 cmr_targets     = load_cmr_targets(cmr_target_file)
 
 if not struct_map or len(struct_map) == 0:
-    st.error("Could not load Employee Structure file. Check column names.")
+    st.error("Could not read the structure file. Check column names.")
     st.stop()
 if not cmr_targets:
     st.warning("⚠️ No CMR Targets file — fallback: Slab 1=70%, Slab 2=80%", icon="⚠️")
+
+# ── Step 1 preview — reuse already-loaded struct_map (no second file parse) ──
+struct_preview = pd.DataFrame([
+    {"Employee ID": k, "Name": v["Employee Name"],
+     "Vertical": v["Vertical"], "Vintage": v["Vintage"],
+     "Team": v["Team"], "Client Count": v["Client Count"],
+     "Location": v["Location"],
+     "Joining Date": str(v["Joining Date"])[:10] if v["Joining Date"] else ""}
+    for k, v in struct_map.items()
+])
+st.success(f"✅ Structure file loaded — {len(struct_map)} employees auto-configured")
+with st.expander("Preview auto-derived settings per employee"):
+    st.dataframe(struct_preview, use_container_width=True, hide_index=True)
+
+# ── Step 2: Calculate ─────────────────────────────────────────
+st.subheader("Step 2 — Calculate Incentives")
 
 # ── Normalise EMP ID in renewal (keep as string for consistent comparison) ──
 _eid = find_col(renewal_df_raw, ["EMP ID","Emp ID","EmpID","Employee ID"])
