@@ -747,11 +747,14 @@ def enrich_receipt(df):
     return df
 
 
-def calc_mdc1_cmr_per_employee(renewal_df):
+def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None):
     """
     Calculate MDC-1 CMR% per employee from renewal file.
-    MDC-1 products = Mini Dynamic Catalog / MDC Annual etc.
-    Returns dict: { emp_id_str: float(mdc1_cmr_pct 0-100) }
+    MDC-1 products = Mini Dynamic Catalog / MDC Annual etc. (Annual mode only, not Multi Year)
+    
+    mdc_client_counts: optional dict {emp_id_str: int} from structure file's MDC column.
+                       If provided, used as the sent denominator (more accurate than row count).
+    Returns dict: { emp_id_str: {"mdc1_sent", "mdc1_recd", "mdc1_cmr_pct"} }
     """
     if renewal_df is None:
         return {}
@@ -759,6 +762,7 @@ def calc_mdc1_cmr_per_employee(renewal_df):
     emp_col     = find_col(renewal_df, ["EMP ID","Emp ID","EmpID","Employee ID"])
     status_col  = find_col(renewal_df, ["Status","STATUS"])
     product_col = find_col(renewal_df, ["WS/MDC Main","DCR Services","Product","Prod","Service"])
+    mode_col    = find_col(renewal_df, ["Mode","MODE","Deal Mode","Renewal Mode"])
 
     if not emp_col or not product_col:
         return {}
@@ -766,22 +770,40 @@ def calc_mdc1_cmr_per_employee(renewal_df):
     df = renewal_df.copy()
     df[emp_col] = df[emp_col].astype(str)
 
-    is_mdc1 = df[product_col].apply(
+    # Only Annual MDC products count for MDC-1 CMR (not Multi Year)
+    is_mdc1_prod = df[product_col].apply(
         lambda p: any(k.upper() in str(p).upper() for k in MDC1_PRODUCTS)
     )
-    df_mdc1 = df[is_mdc1].copy()
+    if mode_col:
+        is_annual = df[mode_col].astype(str).str.upper().isin(
+            ["ANNUAL", "ANNUAL ", " ANNUAL"])
+        df_mdc1 = df[is_mdc1_prod & is_annual].copy()
+    else:
+        df_mdc1 = df[is_mdc1_prod].copy()
 
     if status_col:
-        df_mdc1["_recv"] = df_mdc1[status_col].astype(str).str.upper().str.contains("RECEIVED", na=False)
+        df_mdc1["_recv"] = df_mdc1[status_col].astype(str).str.upper().str.contains(
+            "RECEIVED", na=False)
     else:
         df_mdc1["_recv"] = False
 
     result = {}
     for emp_id, grp in df_mdc1.groupby(emp_col):
-        sent = len(grp)
-        recd = int(grp["_recv"].sum())
-        pct  = round(recd / sent * 100, 2) if sent > 0 else 0.0
-        result[str(emp_id)] = {"mdc1_sent": sent, "mdc1_recd": recd, "mdc1_cmr_pct": pct}
+        eid_str = str(emp_id)
+        recd    = int(grp["_recv"].sum())
+        # Denominator: use structure file MDC client count if available, else row count
+        if mdc_client_counts and eid_str in mdc_client_counts:
+            sent = mdc_client_counts[eid_str]
+        else:
+            sent = len(grp)
+        pct = round(recd / sent * 100, 2) if sent > 0 else 0.0
+        result[eid_str] = {"mdc1_sent": sent, "mdc1_recd": recd, "mdc1_cmr_pct": pct}
+    
+    # Also handle employees with MDC clients in structure but 0 received in renewal
+    if mdc_client_counts:
+        for eid_str, cnt in mdc_client_counts.items():
+            if eid_str not in result and cnt > 0:
+                result[eid_str] = {"mdc1_sent": cnt, "mdc1_recd": 0, "mdc1_cmr_pct": 0.0}
     return result
 
 def load_structure_dump(uploaded_file):
@@ -806,9 +828,15 @@ def load_structure_dump(uploaded_file):
     location_col= find_col(df, ["Location", "LOCATION", "emp_loc"])
     joining_col = find_col(df, ["Joining Date", "DOJ", "Date of Joining",
                                 "emp_joining_date"])
-    final_grp   = find_col(df, ["Final Group", "FinalGroup", "bucket"])
-    vintage_bkt = find_col(df, ["Vintage Bucket", "VintageBucket", "bucket",
-                                "Team", "emp_level"])
+    # "New Location/ROI Location" / "Textile Group & CSD KCD & NSD to CSD" carry the vintage
+    # string (270D+, 91-270D, 31-90D, 0-30D) in the employee_structure.xlsx format
+    final_grp   = find_col(df, ["Final Group", "FinalGroup", "bucket",
+                                "Textile Group & CSD KCD & NSD to CSD",
+                                "New Location/ROI Location"])
+    # "L2 Promoted 0-90D" carries the sub-bucket label (SPS, 90+ Days, CSD ROI, 0-90 Days …)
+    # — this is the key column for SPS booster detection
+    vintage_bkt = find_col(df, ["Vintage Bucket", "VintageBucket",
+                                "L2 Promoted 0-90D", "bucket", "emp_level"])
     remarks_col = find_col(df, ["Remarks", "Team"])
     client_a    = find_col(df, ["Client-A", "Client A", "ClientA",
                                 "Actual Client", "Total Client"])
@@ -851,9 +879,15 @@ def load_structure_dump(uploaded_file):
             "31-90D": "31-90D", "31-90": "31-90D",
             "91-270D": "91-270D", "91-270": "91-270D",
             "270D+": "270D+", "270+": "270D+",
-            "SPS": "91-270D",        # SPS = single point servicing = 91D+ vintage
-            "0-90 DAYS": "31-90D",   # 0-90 new joiner → 31-90D scheme
-            "90+ DAYS": "270D+",
+            # Values from employee_structure.xlsx "L2 Promoted 0-90D" column:
+            "SPS": "91-270D",          # SPS → 91D+ vintage (booster applies)
+            "90+ DAYS": "270D+",       # 90+ Days → 270D+ vintage (no booster)
+            "90+DAYS": "270D+",
+            "0-90 DAYS": "31-90D",     # 0-90 Days → new joiner scheme
+            "0-90DAYS": "31-90D",
+            "CSD ROI": "91-270D",      # CSD ROI → 91D+ scheme (no booster)
+            # Kept from Delhi xlsb format:
+            "SPS	": "91-270D", "0-90 DAYS	": "31-90D",
         }
         vintage_up = vintage.upper().strip()
         if vintage_up in bucket_map:
@@ -872,9 +906,11 @@ def load_structure_dump(uploaded_file):
 
         # ── Derive Team from Vertical + Vintage Bucket + Remarks + Location ──
         if "CSD" in vertical:
-            if any(x in vbucket_up for x in ["SPS", "90+ DAYS", "90+DAYS"]):
+            if any(x in vbucket_up for x in ["SPS", "90+ DAYS", "90+DAYS", "CSD ROI"]):
                 team = "SPS (CSD 91D+)"
-            elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS", "CSD ROI"]):
+            elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS"]):
+                team = "0-90 Days (CSD new)"
+            elif vintage in ("0-30D", "31-90D"):
                 team = "0-90 Days (CSD new)"
             else:
                 team = "SPS (CSD 91D+)"
@@ -934,6 +970,15 @@ def load_structure_dump(uploaded_file):
             except Exception:
                 coll_target = 0.0
 
+        # MDC client count (for MDC-1 CMR denominator in CSD SPS)
+        mdc_col = find_col(df, ["MDC.1", "MDC", "mdc_client", "MDC Client"])
+        mdc_client_cnt = 0
+        if mdc_col:
+            try:
+                mdc_client_cnt = int(float(row[mdc_col])) if not (str(row[mdc_col]) in ("nan","")) else 0
+            except (TypeError, ValueError):
+                mdc_client_cnt = 0
+
         result[eid] = {
             "Employee Name":     str(row[name_col]).strip() if name_col else "",
             "Vertical":          str(row[vertical_col]).strip() if vertical_col else "",
@@ -949,6 +994,7 @@ def load_structure_dump(uploaded_file):
             "L5 Name":           str(row[l5_col]).strip() if l5_col else "",
             "Vintage Bucket":    vbucket,
             "Remarks":           remarks,
+            "MDC Client Count":  mdc_client_cnt,
         }
     return result
 
@@ -1522,14 +1568,25 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # SPS — no PoP; Insta = 0.5; productivity from receipt
             # MDC-1 CMR: per-employee from renewal file (MDC 2/3 Year excluded)
             emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else sb["mdc1_cmr"]
-            # is_sps: True when Vintage Bucket label is "SPS" → auto 1.2× booster
-            is_sps_employee = str(vintage_bucket).upper().strip() == "SPS"
+            # is_sps: True for ALL "SPS (CSD 91D+)" team employees
+            # SPS booster applies to the whole SPS team unconditionally per scheme.
+            # When structure file has "L2 Promoted 0-90D" col (values: SPS/90+ Days/CSD ROI),
+            # vintage_bucket will be "SPS" for booster employees and "" for others.
+            # When that column is absent, we fall back to team membership.
+            is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
+            is_sps_by_team   = "SPS" in str(team).upper()
+            is_sps_employee  = is_sps_by_bucket or is_sps_by_team
             base_inc, notes = calc_csd_sps(
                 pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
                 emp_mdc1_cmr, sb["ext_tat"], sb["d60"], S,
                 metric_label=metric_label, is_sps=is_sps_employee)
             # Spot: per-employee NR upsell count from receipt (not global sidebar)
-            spot_inc = calc_spot_csd(nr_upsell_count, S)
+            # CSD Spot Rate applies only for April (Apr 1-16); other months = no spot
+            _month = str(sb.get("sel_month", "")).upper()
+            if "APR" in _month:
+                spot_inc = calc_spot_csd(nr_upsell_count, S)
+            else:
+                spot_inc = 0
 
     # ── KCD ──────────────────────────────────────────────────
     elif "KCD" in vertical:
@@ -1603,7 +1660,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — April 2026")
+st.title("💰 IndiaMart Incentive Calculator — v20")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -1832,7 +1889,13 @@ receipt_df = enrich_receipt(receipt_df)
 
 # ── CMR% from month-filtered renewal data ────────────────────
 cmr_map     = calc_cmr_per_employee(renewal_df)
-mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df)
+# Build per-employee MDC client count from structure file
+mdc_client_counts_map = {
+    eid: s.get("MDC Client Count", 0)
+    for eid, s in struct_map.items()
+    if s.get("MDC Client Count", 0) > 0
+}
+mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None)
 
 # Build emp hierarchy fallback from receipt
 emp_df = build_emp_list(receipt_df)
@@ -1872,7 +1935,8 @@ if calc_btn:
                   "csd_slab1_target": emp_targets["slab1"],
                   "csd_slab2_target": emp_targets["slab2"],
                   "kcd_slab1_target": emp_targets["slab1"],
-                  "kcd_slab2_target": emp_targets["slab2"]}
+                  "kcd_slab2_target": emp_targets["slab2"],
+                  "sel_month": sel_month if sel_month else ""}
 
         (net_dv, txn_count, prods, rnl_prods, rnl_modes,
          rnl_count, total_ref, all_rnl_count,
@@ -1933,6 +1997,10 @@ if calc_btn:
             "CMR Slab1 Target":   emp_targets["slab1"],
             "CMR Slab2 Target":   emp_targets["slab2"],
             **inc,
+            "SPS Group":  "SPS" if ("SPS" in str(s.get("Vintage Bucket","")).upper() or
+                                     "SPS" in str(s.get("Team","")).upper()) else "No",
+            "MDC1 Sent":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0),
+            "MDC1 Recd":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0),
         })
         prog.progress((i + 1) / len(emp_ids), f"Processing {i+1}/{len(emp_ids)}…")
 
@@ -1973,14 +2041,14 @@ if calc_btn:
 
     display_cols = [c for c in [
         "Employee ID", "Employee Name", "Vertical", "Vintage", "Team",
-        "Vintage Bucket", "Location", "L2", "Days Since Joining",
+        "SPS Group", "Vintage Bucket", "Location", "L2", "Days Since Joining",
         "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
         "Collection Target (₹)",
         "Deal Value (₹)", "Deal Loss (₹)", "Net Deal Value (₹)",
         "PCR",
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
-        "SS+ CMR% (auto)", "MDC-1 CMR%",
-        "Renewals Sent", "Renewals Received", "CMR Slab",
+        "SS+ CMR% (auto)", "Renewals Sent", "Renewals Received", "CMR Slab",
+        "MDC-1 CMR%", "MDC1 Sent", "MDC1 Recd",
         "Productivity Score", "Insta Txns (0.5×)",
         "Receipt Txns", "Renewal Txns",
         "Base Incentive (₹)", "PoP Incentive (₹)", "Spot Incentive (₹)",
@@ -1994,13 +2062,14 @@ if calc_btn:
         # Reorder columns for cleaner output
         export_cols = [c for c in [
             "Employee ID","Employee Name","Calc Month","Vertical","Vintage",
-            "Team","Vintage Bucket","Location","L2","L3",
+            "Team","Vintage Bucket","SPS Group","Location","L2","L3",
             "Days Since Joining",
             "Collection (₹)","Refund (₹)","Net Collection (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
             "PCR","CMR Slab1 Target","CMR Slab2 Target",
-            "CMR% (auto)","SS+ CMR% (auto)","MDC-1 CMR%",
+            "CMR% (auto)","SS+ CMR% (auto)",
             "Renewals Sent","Renewals Received","CMR Slab",
+            "MDC-1 CMR%","MDC1 Sent","MDC1 Recd",
             "Productivity Score","Insta Txns (0.5×)",
             "Receipt Txns","Renewal Txns",
             "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
