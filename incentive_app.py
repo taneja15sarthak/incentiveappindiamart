@@ -1302,16 +1302,22 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
 
 
 def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
-                    ss_cmr_pct, ss_sent, collection_target, S):
+                    ss_cmr_pct, ss_sent, collection_target, S,
+                    base_clients=1, list_clients=1):
     """
     KCD Listing incentive.
-    - collection_target = PCR_Target × ClientA from structure dump.
+    - collection_target from structure dump (PCR_Target × ClientA) when available.
+    - Fallback: derive target from slab config rates × client counts.
     - txn_count = productive receipt rows (prod_score_receipt).
     - Incremental = (Net_DV - collection_target) × 1.4%.
     - SS penalty only when ss_sent >= 3 AND ss_cmr < 72%.
     """
+    # If collection_target not in structure, derive from slab rates × client split
     if collection_target <= 0:
-        return 0, "CollectionTarget=0 (check structure dump PCR Target column)"
+        rates  = S["kcd_listing_rates"].get(vintage, (7000, 22000))
+        collection_target = base_clients * rates[0] + list_clients * rates[1]
+    if collection_target <= 0:
+        return 0, "KCD Listing — target=0"
     achv    = (net_dv / collection_target) * 100
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S["kcd_listing_slabs"] if achv >= t), 0)
@@ -1326,16 +1332,21 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
 
 
 def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
-                    btl_sales, ss_cmr_pct, ss_sent, collection_target, S):
+                    btl_sales, ss_cmr_pct, ss_sent, collection_target, S,
+                    base_clients=1, list_clients=1):
     """
     KCD Catalog incentive.
-    - collection_target = PCR_Target × ClientA from structure dump.
+    - collection_target from structure dump (PCR_Target × ClientA) when available.
+    - Fallback: derive target from slab config rates × client counts.
     - txn_count = productive receipt rows (prod_score_receipt).
     - Incremental = (Net_DV - collection_target) × 1.4%.
     - SS penalty only when ss_sent >= 3 AND ss_cmr < 72%.
     """
     if collection_target <= 0:
-        return 0, "CollectionTarget=0 (check structure dump PCR Target column)"
+        rates  = S["kcd_listing_rates"].get(vintage, (7000, 22000))
+        collection_target = base_clients * rates[0] + list_clients * rates[1]
+    if collection_target <= 0:
+        return 0, "KCD Catalog — target=0"
     achv    = (net_dv / collection_target) * 100
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S["kcd_catalog_slabs"] if achv >= t), 0)
@@ -1368,9 +1379,10 @@ def calc_spot_csd(nr_upsell, S):
 # DATA HELPERS
 # ═══════════════════════════════════════════════════════════════
 
-@st.cache_data
 def load_excel(f):
-    """Load xlsx or xlsb files. Accepts both formats for all uploads."""
+    """Load xlsx or xlsb files. Accepts both formats for all uploads.
+    Note: cache deliberately removed — cached stale data caused renewal_df to be empty.
+    """
     name = f.name if hasattr(f, "name") else str(f)
     ext  = name.lower().rsplit(".", 1)[-1] if "." in name else "xlsx"
     try:
@@ -1524,11 +1536,19 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     team       = str(cfg_row.get("Team",      ""))
     client_cnt = max(float(cfg_row.get("Client Count", 100) or 100),
                      50 if "CSD" in vertical else 1)
-    # PCR and PCDV both use WT AMT (net_dv) — metric name differs by scheme month
+    # CSD uses PCR/PCDV = collection / client_cnt (WT AMT based)
+    # KCD uses PCDV     = deal_value / client_cnt (Deal Val (WT) based)
+    # Both are called "PCDV" internally; the metric_label changes based on sidebar + vertical
     use_pcr    = sb.get("use_pcr", False)
-    metric_val = net_dv / client_cnt if client_cnt > 0 else 0
-    pcdv       = metric_val   # variable name kept as pcdv internally for compatibility
-    metric_label = "PCR" if use_pcr else "PCDV"
+    if "KCD" in vertical:
+        # KCD always uses Deal Value regardless of PCR/PCDV toggle
+        kcd_dv = net_deal_val if net_deal_val > 0 else net_dv
+        metric_val = kcd_dv / client_cnt if client_cnt > 0 else 0
+        metric_label = "PCDV"
+    else:
+        metric_val = net_dv / client_cnt if client_cnt > 0 else 0
+        metric_label = "PCR" if use_pcr else "PCDV"
+    pcdv = metric_val
 
     cmr_pct    = cmr_data.get("cmr_pct",    0.0)
     ss_cmr_pct = cmr_data.get("ss_cmr_pct", 0.0)
@@ -1567,7 +1587,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         else:
             # SPS — no PoP; Insta = 0.5; productivity from receipt
             # MDC-1 CMR: per-employee from renewal file (MDC 2/3 Year excluded)
-            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else sb["mdc1_cmr"]
+            # Use per-employee MDC1 CMR% from renewal file if available
+            # Fallback to 0 (not sidebar default) so wrong band is obvious in output
+            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
             # is_sps: True for ALL "SPS (CSD 91D+)" team employees
             # SPS booster applies to the whole SPS team unconditionally per scheme.
             # When structure file has "L2 Promoted 0-90D" col (values: SPS/90+ Days/CSD ROI),
@@ -1604,16 +1626,26 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         kcd_net_dv = net_deal_val if net_deal_val > 0 else net_dv
 
         if "LISTING" in team_up:
+            star_c_list = sum(1 for p in rnl_prods
+                              if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
+            list_c_l  = max(star_c_list, 1)
+            base_c_l  = max(client_cnt - list_c_l, 1)
             base_inc, notes = calc_kcd_listing(
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
-                ss_cmr_pct, ss_sent_count, collection_target, S)
+                ss_cmr_pct, ss_sent_count, collection_target, S,
+                base_clients=base_c_l, list_clients=list_c_l)
             spot_inc = calc_spot_kcd(
                 pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
                 sb["spot_met"], S)
         elif "CATALOG" in team_up:
+            star_c_cat = sum(1 for p in rnl_prods
+                             if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
+            list_c_c  = max(star_c_cat, 1)
+            base_c_c  = max(client_cnt - list_c_c, 1)
             base_inc, notes = calc_kcd_catalog(
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
-                sb["btl_sales"], ss_cmr_pct, ss_sent_count, collection_target, S)
+                sb["btl_sales"], ss_cmr_pct, ss_sent_count, collection_target, S,
+                base_clients=base_c_c, list_clients=list_c_c)
             spot_inc = calc_spot_kcd(
                 pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
                 sb["spot_met"], S)
@@ -1660,7 +1692,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v20")
+st.title("💰 IndiaMart Incentive Calculator — v21")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
