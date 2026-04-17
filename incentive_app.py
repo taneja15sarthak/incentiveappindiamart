@@ -1426,11 +1426,33 @@ def _read_file(f):
 
 
 def clean_receipt(df):
+    """
+    Filter receipt file to valid cleared rows only.
+    Robust: if Status filter would remove everything, keeps all rows and warns.
+    """
     df = df.copy()
+    # ── B/C filter: remove Bounced / Cancelled rows ──────────────────────────
     if "B/C" in df.columns:
         df = df[df["B/C"].isna() | (df["B/C"].astype(str).str.strip() == "")]
-    if "Status" in df.columns:
-        df = df[df["Status"].astype(str).str.upper().str.strip() == "CLEARED"]
+
+    # ── Status filter: keep only CLEARED rows ────────────────────────────────
+    status_col = find_col(df, ["Status", "STATUS", "PAYMENT STATUS", "Payment Status"])
+    if status_col:
+        cleared = df[df[status_col].astype(str).str.upper().str.strip() == "CLEARED"]
+        if len(cleared) > 0:
+            df = cleared
+        else:
+            # Status column exists but has no "CLEARED" rows — show warning and keep all
+            unique_vals = df[status_col].astype(str).str.upper().str.strip().unique()[:8]
+            st.warning(
+                f"⚠️ Receipt file: column '{status_col}' has no 'Cleared' rows. "
+                f"Found: {list(unique_vals)}. Using all rows (no status filter). "
+                "Check that you uploaded the correct receipt file.",
+                icon="⚠️"
+            )
+            # keep df as-is (no status filter applied)
+
+    # ── NACH balance payment filter ───────────────────────────────────────────
     prod_col = find_col(df, ["Prod", "Product", "PRODUCT"])
     if "MODE" in df.columns and prod_col:
         nach = (df["MODE"].astype(str).str.upper().str.contains("NACH", na=False)) & \
@@ -1911,10 +1933,25 @@ else:
 if sel_month:
     receipt_df, refund_df, renewal_df = filter_by_month(
         receipt_df_raw, refund_df_raw, renewal_df_raw, sel_month)
-    st.info(f"📅 **{sel_month}** — "
-            f"Receipt: {len(receipt_df)} rows | "
-            f"Refund: {len(refund_df)} rows | "
-            f"Renewal: {len(renewal_df) if renewal_df is not None else 0} rows")
+    if len(receipt_df) == 0 and len(receipt_df_raw) > 0:
+        st.error(
+            f"📅 **{sel_month}** — Receipt: **0 rows** after month filter "
+            f"(raw has {len(receipt_df_raw)} rows). "
+            "The receipt file may not contain data for this month. "
+            "Check that you uploaded the correct receipt file for this period.",
+            icon="🚨"
+        )
+    elif len(receipt_df) == 0 and len(receipt_df_raw) == 0:
+        st.error(
+            "Receipt file returned 0 rows after Status=Cleared filter. "
+            "Check the Status column values in your receipt file.",
+            icon="🚨"
+        )
+    else:
+        st.info(f"📅 **{sel_month}** — "
+                f"Receipt: {len(receipt_df)} rows | "
+                f"Refund: {len(refund_df)} rows | "
+                f"Renewal: {len(renewal_df) if renewal_df is not None else 0} rows")
 else:
     receipt_df, refund_df, renewal_df = receipt_df_raw, refund_df_raw, renewal_df_raw
 
@@ -1937,10 +1974,13 @@ emp_df = build_emp_list(receipt_df)
 with st.expander("Loaded file summary"):
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Employees (structure)", len(struct_map))
-    c2.metric("Receipt rows",          len(receipt_df))
-    c3.metric("Refund rows",           len(refund_df))
-    c4.metric("Renewal rows",          len(renewal_df))
-    c5.metric("CMR% auto-calc for",    len(cmr_map))
+    c2.metric("Receipt rows (filtered)", len(receipt_df),
+              help="Rows after Status=Cleared filter + month filter. If 0: check receipt file Status column.")
+    c3.metric("Receipt rows (raw)",    len(receipt_df_raw),
+              help="Rows after clean_receipt only (before month filter). If 0: receipt file may have wrong Status values.")
+    c4.metric("Refund rows",           len(refund_df))
+    c5.metric("Renewal rows",          len(renewal_df) if renewal_df is not None else 0)
+    st.metric("CMR% auto-calc for",    len(cmr_map))
     if cmr_targets:
         st.success(f"✅ CMR Targets loaded for {len(cmr_targets)} employees")
     else:
