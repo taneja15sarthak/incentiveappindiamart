@@ -1616,6 +1616,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     prod_score_sps, insta_cnt_sps, _ = calc_productivity(rnl_prods, rnl_modes, "csd_sps")
 
     base_inc = pop_inc = spot_inc = 0
+    kcd_base_only   = 0   # KCD: base incentive before incremental
+    kcd_incremental = 0   # KCD: incremental DV amount
     notes = cmr_note = ""
 
     # ── CSD ──────────────────────────────────────────────────
@@ -1672,6 +1674,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # KCD: use Net Deal Value for incremental (not Net Collection)
         kcd_net_dv = net_deal_val if net_deal_val > 0 else net_dv
 
+        # Track base vs incremental separately for KCD output columns
+        kcd_base_only  = 0
+        kcd_incremental = 0
         if "LISTING" in team_up:
             star_c_list = sum(1 for p in rnl_prods
                               if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
@@ -1681,6 +1686,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=base_c_l, list_clients=list_c_l)
+            # Decompose: listing/catalog funcs already merge base+incr; re-derive incr
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
+            kcd_base_only   = base_inc - kcd_incremental
             spot_inc = calc_spot_kcd(
                 pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
                 sb["spot_met"], S)
@@ -1693,53 +1701,95 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 sb["btl_sales"], ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=base_c_c, list_clients=list_c_c)
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
+            kcd_base_only   = base_inc - kcd_incremental
             spot_inc = calc_spot_kcd(
                 pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
                 sb["spot_met"], S)
         elif "ROI" in team_up:
-            base_inc, notes = calc_kcd_regular(
+            kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            # KCD incremental on top of base (net_dv - collection_target) × 1.4%
-            base_inc += round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
+            base_inc = kcd_base_only + kcd_incremental
             spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb["spot_met"], S)
         else:
-            base_inc, notes = calc_kcd_regular(
+            kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            # KCD incremental on top of base (net_dv - collection_target) × 1.4%
-            base_inc += round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
+            base_inc = kcd_base_only + kcd_incremental
             if vintage in ("0-30D", "31-90D"):
                 spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb["spot_met"], S)
+
+    # ── Decompose values matching sir's FSF column layout ────────────────────
+    _prod_score = round(prod_score_receipt or (
+                        prod_score_new if "CSD" in vertical and vintage in ("0-30D","31-90D")
+                        else prod_score_sps), 1)
+
+    # CSD SPS breakdown: base already contains booster; expose pre-booster for transparency
+    # Net Incentive = mult × prod × mdc1_mult   (before booster)
+    # Gross Inc     = net_inc × sps_booster      (= base_inc for CSD SPS)
+    _is_csd_sps = "CSD" in vertical and "SPS" in team
+    if _is_csd_sps and "boost" in notes:
+        # Extract booster from scheme string
+        import re as _re
+        _bm = _re.search(r'boost:([0-9.]+)', notes)
+        _boost_val = float(_bm.group(1)) if _bm else 1.0
+        _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
+        _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 1.0
+        # per_txn × prod = base / (mdc1_mult × boost)
+        _denom = (_mdc1_mult_val * _boost_val) if (_mdc1_mult_val * _boost_val) != 0 else 1
+        _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
+    else:
+        _boost_val = 1.0
+        _net_inc_before_boost = base_inc
+
+    # KCD breakdown
+    _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
+    _kcd_incr   = int(kcd_incremental) if "KCD" in vertical else 0
+    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 72) else 1.0) if "KCD" in vertical else 1.0
 
     return {
         "Days Since Joining":  days_since_joining,
         "CMR% (auto)":         round(cmr_pct, 1),
         "SS+ CMR% (auto)":     round(ss_cmr_pct, 1),
+        "CMR Slab1 Target":    sb.get("csd_slab1_target", sb.get("kcd_slab1_target", "")),
+        "CMR Slab2 Target":    sb.get("csd_slab2_target", sb.get("kcd_slab2_target", "")),
         "Renewals Sent":       rnl_sent,
         "Renewals Received":   cmr_data.get("renewal_received", 0),
         "CMR Slab":            cmr_note,
-        "Productivity Score":  round(prod_score_receipt or (
-                                     prod_score_new if "CSD" in vertical
-                                     and vintage in ("0-30D","31-90D")
-                                     else prod_score_sps), 1),
-        "Insta Txns (0.5×)":   insta_cnt_sps,
+        "SS+ Sent":            cmr_data.get("ss_sent", 0),
+        "SS+ Received":        cmr_data.get("ss_received", 0),
         "MDC-1 CMR%":          round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else "",
+        metric_label:          round(pcdv, 0),
+        "Productivity Score":  _prod_score,
+        "Insta Txns (0.5×)":   insta_cnt_sps,
+        "Receipt Txns":        txn_count,
+        "Renewal Txns":        rnl_count,
+        # ── CSD SPS columns (match sir's csd_calc.xlsx) ──────────
+        "Inc. Per Txn (₹)":    int(round(base_inc / _boost_val / (_prod_score or 1), 0)) if _is_csd_sps and _prod_score > 0 else "",
+        "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd_sps else "",
+        "SPS Booster":         _boost_val if _is_csd_sps else "",
+        "Gross Inc w/ Boost (₹)": int(base_inc) if _is_csd_sps else "",
+        # ── KCD columns (match sir's kcd_calc.xlsx) ──────────────
+        "KCD Base Incentive (₹)":    _kcd_base,
+        "KCD Incremental (₹)":       _kcd_incr,
+        "KCD SS+Ren Mult":           _kcd_ss_mult if "KCD" in vertical else "",
+        "KCD Gross Incentive (₹)":   int(base_inc) if "KCD" in vertical else "",
+        # ── Common output columns ─────────────────────────────────
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
         "Spot Incentive (₹)":  int(spot_inc),
         "Total Incentive (₹)": int(base_inc + pop_inc + spot_inc),
         "Net Deal Value (₹)":  int(net_dv),
-        metric_label:          round(pcdv, 0),   # "PCDV" or "PCR" based on sidebar
-        "Receipt Txns":        txn_count,
-        "Renewal Txns":        rnl_count,
         "Scheme":              notes,
     }
 # ═══════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v21")
+st.title("💰 IndiaMart Incentive Calculator — v22")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2075,6 +2125,7 @@ if calc_btn:
                                      "SPS" in str(s.get("Team","")).upper()) else "No",
             "MDC1 Sent":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0),
             "MDC1 Recd":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0),
+            "Collection Target (₹)": int(s.get("Collection Target", 0)),
         })
         prog.progress((i + 1) / len(emp_ids), f"Processing {i+1}/{len(emp_ids)}…")
 
@@ -2119,12 +2170,14 @@ if calc_btn:
         "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
         "Collection Target (₹)",
         "Deal Value (₹)", "Deal Loss (₹)", "Net Deal Value (₹)",
-        "PCR",
+        "PCR", "PCDV",
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
-        "SS+ CMR% (auto)", "Renewals Sent", "Renewals Received", "CMR Slab",
+        "SS+ CMR% (auto)", "SS+ Sent", "SS+ Received",
+        "Renewals Sent", "Renewals Received", "CMR Slab",
         "MDC-1 CMR%", "MDC1 Sent", "MDC1 Recd",
-        "Productivity Score", "Insta Txns (0.5×)",
-        "Receipt Txns", "Renewal Txns",
+        "Productivity Score", "Insta Txns (0.5×)", "Receipt Txns", "Renewal Txns",
+        "Inc. Per Txn (₹)", "Net Incentive (₹)", "SPS Booster", "Gross Inc w/ Boost (₹)",
+        "KCD Base Incentive (₹)", "KCD Incremental (₹)", "KCD SS+Ren Mult", "KCD Gross Incentive (₹)",
         "Base Incentive (₹)", "PoP Incentive (₹)", "Spot Incentive (₹)",
         "Total Incentive (₹)", "Scheme",
     ] if c in filtered.columns]
@@ -2140,12 +2193,18 @@ if calc_btn:
             "Days Since Joining",
             "Collection (₹)","Refund (₹)","Net Collection (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
-            "PCR","CMR Slab1 Target","CMR Slab2 Target",
-            "CMR% (auto)","SS+ CMR% (auto)",
+            "PCR","PCDV",
+            "CMR Slab1 Target","CMR Slab2 Target",
+            "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
             "Renewals Sent","Renewals Received","CMR Slab",
             "MDC-1 CMR%","MDC1 Sent","MDC1 Recd",
             "Productivity Score","Insta Txns (0.5×)",
             "Receipt Txns","Renewal Txns",
+            # ── CSD SPS breakdown ──
+            "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
+            # ── KCD breakdown ──
+            "KCD Base Incentive (₹)","KCD Incremental (₹)","KCD SS+Ren Mult","KCD Gross Incentive (₹)",
+            # ── Final payout ──
             "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
