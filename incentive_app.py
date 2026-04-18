@@ -1928,7 +1928,6 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "PoP Incentive (₹)":   int(pop_inc),
         "Spot Incentive (₹)":  int(spot_inc),
         "Total Incentive (₹)": int(base_inc + pop_inc + spot_inc),
-        "Net Deal Value (₹)":  int(net_dv),
         "Scheme":              notes,
     }
 # ═══════════════════════════════════════════════════════════════
@@ -2254,36 +2253,38 @@ if calc_btn:
                    "SS+ CMR% (auto)": 0, "Renewals Sent": 0,
                    "Renewals Received": 0, "CMR Slab": "Error",
                    "Productivity Score": 0, "Receipt Txns": 0,
-                   "Renewal Txns": 0, "Net Deal Value (₹)": 0,
+                   "Renewal Txns": 0, 
                    "PCR": 0, "PCDV": 0, "Days Since Joining": ""}
 
         results.append({
+            # ── Fields from inc (calculation results) ─────────────────
+            **inc,
+            # ── Static fields — always override anything inc may have set ──
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
             "Designation":        s.get("Designation", ""),
             "Calc Month":         sel_month if sel_month else "All",
+            "Vertical":           s.get("Vertical", ""),
+            "Vintage":            s.get("Vintage", ""),
+            "Team":               s.get("Team", ""),
+            "Vintage Bucket":     s.get("Vintage Bucket", ""),
+            "Location":           s.get("Location", ""),
+            "L2":                 s.get("L2 Name", ""),
+            "L3":                 s.get("L3 Name", ""),
+            # ── Financial data from receipt/refund (always correct) ───
             "Collection (₹)":     int(gross_collection),
             "Refund (₹)":         int(total_ref),
             "Net Collection (₹)": int(net_dv),
-            "Collection Target (₹)": int(s.get("Collection Target", 0)),
             "Deal Value (₹)":     int(gross_deal_val),
             "Deal Loss (₹)":      int(deal_loss),
             "Net Deal Value (₹)": int(net_deal_val),
-            "Vertical":           s["Vertical"],
-            "Vintage":            s["Vintage"],
-            "Team":               s["Team"],
-            "Vintage Bucket":     s["Vintage Bucket"],
-            "Location":           s["Location"],
-            "L2":                 s["L2 Name"],
-            "L3":                 s["L3 Name"],
+            "Collection Target (₹)": int(s.get("Collection Target", 0)),
             "CMR Slab1 Target":   emp_targets["slab1"],
             "CMR Slab2 Target":   emp_targets["slab2"],
-            **inc,
             "SPS Group":  "SPS" if ("SPS" in str(s.get("Vintage Bucket","")).upper() or
                                      "SPS" in str(s.get("Team","")).upper()) else "No",
             "MDC1 Sent":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0),
             "MDC1 Recd":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0),
-            "Collection Target (₹)": int(s.get("Collection Target", 0)),
         })
         prog.progress((i + 1) / len(emp_ids), f"Processing {i+1}/{len(emp_ids)}…")
 
