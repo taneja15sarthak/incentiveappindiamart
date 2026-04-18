@@ -1728,7 +1728,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # ── CSD ──────────────────────────────────────────────────
     if "CSD" in vertical:
         cmr_slab, cmr_note = get_cmr_slab(
-            cmr_pct, rnl_sent, sb["csd_slab1_target"], sb["csd_slab2_target"])
+            cmr_pct, rnl_sent, sb.get("csd_slab1_target", 50), sb.get("csd_slab2_target", 60))
 
         if vintage in ("0-30D", "31-90D"):
             # PoP scheme only for new joiners
@@ -1768,7 +1768,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             else:
                 base_inc, notes = calc_csd_sps(
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
-                    emp_mdc1_cmr, sb["ext_tat"], sb["d60"], S,
+                    emp_mdc1_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
                     metric_label=metric_label, is_sps=is_sps_employee)
             # Spot: per-employee NR upsell count from receipt (not global sidebar)
             # CSD Spot Rate applies only for April (Apr 1-16); other months = no spot
@@ -1781,7 +1781,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # ── KCD ──────────────────────────────────────────────────
     elif "KCD" in vertical:
         kcd_col, cmr_note = get_kcd_cmr_col(
-            cmr_pct, rnl_sent, sb["kcd_slab1_target"], sb["kcd_slab2_target"])
+            cmr_pct, rnl_sent, sb.get("kcd_slab1_target", 72), sb.get("kcd_slab2_target", 80))
         team_up = team.upper()
 
         # KCD uses productive receipt count (not all receipt rows, not renewal count)
@@ -1810,7 +1810,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only   = base_inc - kcd_incremental
             spot_inc = calc_spot_kcd(
                 pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
-                sb["spot_met"], S)
+                sb.get("spot_met", False), S)
         elif "CATALOG" in team_up:
             star_c_cat = sum(1 for p in rnl_prods
                              if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
@@ -1818,20 +1818,20 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             base_c_c  = max(client_cnt - list_c_c, 1)
             base_inc, notes = calc_kcd_catalog(
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
-                sb["btl_sales"], ss_cmr_pct, ss_sent_count, collection_target, S,
+                sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=base_c_c, list_clients=list_c_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
             kcd_base_only   = base_inc - kcd_incremental
             spot_inc = calc_spot_kcd(
                 pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
-                sb["spot_met"], S)
+                sb.get("spot_met", False), S)
         elif "ROI" in team_up:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb["spot_met"], S)
+            spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
@@ -1839,7 +1839,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
             base_inc = kcd_base_only + kcd_incremental
             if vintage in ("0-30D", "31-90D"):
-                spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb["spot_met"], S)
+                spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
 
     # ── Decompose values matching sir's FSF column layout ────────────────────
     _prod_score = round(prod_score_receipt or (
@@ -2217,35 +2217,45 @@ if calc_btn:
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
-            "Vertical":     s["Vertical"],
-            "Location":     s["Location"],
-            "Vintage":      s["Vintage"],
-            "Team":         s["Team"],
-            "Client Count": s["Client Count"],
-            "Joining Date": s["Joining Date"],
+            "Vertical":     s.get("Vertical", ""),
+            "Location":     s.get("Location", ""),
+            "Vintage":      s.get("Vintage", ""),
+            "Team":         s.get("Team", ""),
+            "Client Count": s.get("Client Count", 1),
+            "Joining Date": s.get("Joining Date", None),
         }
         emp_row = {
-            "Vertical":     s["Vertical"],
-            "Location":     s["Location"],
-            "L2 Name":      s["L2 Name"],
-            "L3 Name":      s["L3 Name"],
-            "L4 Name":      s["L4 Name"],
-            "L5 Name":      s["L5 Name"],
+            "Vertical":  s.get("Vertical", ""),
+            "Location":  s.get("Location", ""),
+            "L2 Name":   s.get("L2 Name", ""),
+            "L3 Name":   s.get("L3 Name", ""),
+            "L4 Name":   s.get("L4 Name", ""),
+            "L5 Name":   s.get("L5 Name", ""),
         }
 
         emp_mdc1 = mdc1_cmr_map.get(emp_id, {})
-        inc = route_calc(emp_row, cfg_row, emp_cmr,
-                         net_dv, txn_count, prods,
-                         rnl_prods, rnl_modes, rnl_count,
-                         emp_sb, S, joining_date=s["Joining Date"],
-                         svc_tiers=svc_tiers,
-                         prod_score_receipt=prod_score_receipt,
-                         mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
-                         nr_upsell_count=nr_upsell_count,
-                         net_deal_val=net_deal_val,
-                         collection_target=s.get("Collection Target", 0),
-                         vintage_bucket=s.get("Vintage Bucket", ""),
-                         designation=s.get("Designation", ""))
+        try:
+            inc = route_calc(emp_row, cfg_row, emp_cmr,
+                             net_dv, txn_count, prods,
+                             rnl_prods, rnl_modes, rnl_count,
+                             emp_sb, S, joining_date=s.get("Joining Date"),
+                             svc_tiers=svc_tiers,
+                             prod_score_receipt=prod_score_receipt,
+                             mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
+                             nr_upsell_count=nr_upsell_count,
+                             net_deal_val=net_deal_val,
+                             collection_target=s.get("Collection Target", 0),
+                             vintage_bucket=s.get("Vintage Bucket", ""),
+                             designation=s.get("Designation", ""))
+        except Exception as _e:
+            inc = {"Base Incentive (₹)": 0, "PoP Incentive (₹)": 0,
+                   "Spot Incentive (₹)": 0, "Total Incentive (₹)": 0,
+                   "Scheme": f"ERROR: {_e}", "CMR% (auto)": 0,
+                   "SS+ CMR% (auto)": 0, "Renewals Sent": 0,
+                   "Renewals Received": 0, "CMR Slab": "Error",
+                   "Productivity Score": 0, "Receipt Txns": 0,
+                   "Renewal Txns": 0, "Net Deal Value (₹)": 0,
+                   "PCR": 0, "PCDV": 0, "Days Since Joining": ""}
 
         results.append({
             "Employee ID":        emp_id,
