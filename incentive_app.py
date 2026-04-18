@@ -1669,7 +1669,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
                svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
-               vintage_bucket=""):
+               vintage_bucket="", designation=""):
     """
     Main routing — all fixes applied:
     - SPS booster: auto 1.2× when vintage_bucket='SPS'; Pune TAT/60D override for others
@@ -2247,14 +2247,26 @@ if calc_btn:
                              vintage_bucket=s.get("Vintage Bucket", ""),
                              designation=s.get("Designation", ""))
         except Exception as _e:
-            inc = {"Base Incentive (₹)": 0, "PoP Incentive (₹)": 0,
-                   "Spot Incentive (₹)": 0, "Total Incentive (₹)": 0,
-                   "Scheme": f"ERROR: {_e}", "CMR% (auto)": 0,
-                   "SS+ CMR% (auto)": 0, "Renewals Sent": 0,
-                   "Renewals Received": 0, "CMR Slab": "Error",
-                   "Productivity Score": 0, "Receipt Txns": 0,
-                   "Renewal Txns": 0, 
-                   "PCR": 0, "PCDV": 0, "Days Since Joining": ""}
+            inc = {
+                "Days Since Joining": "", "CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
+                "CMR Slab1 Target": "", "CMR Slab2 Target": "",
+                "Renewals Sent": 0, "Renewals Received": 0, "CMR Slab": "Error",
+                "SS+ Sent": 0, "SS+ Received": 0,
+                "MDC-1 CMR%": "", "PCR": 0, "PCDV": 0, "Slab Metric Used": "",
+                "Productivity Score": 0, "Insta Txns (0.5×)": 0,
+                "Receipt Txns": 0, "Renewal Txns": 0,
+                "MDC1 CMR+1%": "", "CMR+1 Multiplier": "", "Inc. Payout Mult": "",
+                "Inc. Per Txn (₹)": "", "Net Incentive (₹)": "",
+                "SPS Booster": "", "Gross Inc w/ Boost (₹)": "",
+                "KCD Base Incentive (₹)": 0, "KCD Incremental (₹)": 0,
+                "KCD SS+ CMR%": "", "KCD SS+ Sent": "", "KCD SS+ Recd": "",
+                "KCD SS+Ren Mult": "", "KCD SS+ Penalty Applied": "",
+                "KCD Gross Incentive (₹)": 0,
+                "Base Incentive (₹)": 0, "PoP Incentive (₹)": 0,
+                "Spot Incentive (₹)": 0, "Total Incentive (₹)": 0,
+                "Scheme": f"ERROR: {_e}",
+            }
+
 
         results.append({
             # ── Fields from inc (calculation results) ─────────────────
