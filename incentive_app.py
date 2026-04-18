@@ -9,7 +9,7 @@ Changes in this version (v19):
   - Fix 3: CSD Spot — per-employee NR upsell count from receipt (replaces global sidebar)
   - Fix 4: KCD transaction count — uses prod_score_receipt (productive rows only)
             not txn_count (all receipt rows) → base incentive now matches sir's calc
-  - Fix 5: KCD SS+ penalty — only applied when ss_sent ≥ 3 AND ss_cmr < 72%
+  - Fix 5: KCD SS+ penalty — only applied when ss_sent ≥ 3 AND ss_cmr < 70%
             (≤2 SS+ sent = no penalty, not enough data)
   - Fix 6: KCD Incremental — (Net_Deal_Val − Collection_Target) × 1.4%
             Collection_Target = PCR_Target × ClientA from structure dump
@@ -158,6 +158,14 @@ def build_default_slab_config():
         {"PCDV_Threshold": 2600, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
     ])
 
+    # ── CSD Relationship Manager slabs (Mar'26: PCR 3800/4300/4800) ──
+    # Slab1 = CMR 55%, Slab2 = CMR 60%
+    csd_rm = pd.DataFrame([
+        {"PCDV_Threshold": 4800, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1750},
+        {"PCDV_Threshold": 4300, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCDV_Threshold": 3800, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+    ])
+
     # ── CSD SPS Multipliers ──
     csd_sps_mult = pd.DataFrame([
         {"Parameter": "MDC1_Above_%",      "Value": 35,  "Multiplier_%": 120},
@@ -261,6 +269,7 @@ def build_default_slab_config():
         "CSD_New_Params":       csd_new_incr,
         "CSD_SPS_91_270D":      csd_sps_91,
         "CSD_SPS_270D_Plus":    csd_sps_270,
+        "CSD_RM":               csd_rm,
         "CSD_SPS_Multipliers":  csd_sps_mult,
         "CSD_Spot":             csd_spot,
         "Power_of_Productivity":pop,
@@ -324,6 +333,11 @@ def parse_slabs(cfg):
     csd_sps_270p = [
         (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
         for _, r in cfg["CSD_SPS_270D_Plus"].iterrows()
+    ]
+    # CSD Relationship Manager slabs (different from Exec slabs)
+    csd_rm_slabs = [
+        (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+        for _, r in cfg.get("CSD_RM", cfg["CSD_SPS_91_270D"]).iterrows()
     ]
 
     # ── CSD SPS Multipliers ──────────────────────────────────
@@ -401,6 +415,7 @@ def parse_slabs(cfg):
         # CSD SPS
         "csd_sps_91_270":      csd_sps_91_270,
         "csd_sps_270p":        csd_sps_270p,
+        "csd_rm_slabs":        csd_rm_slabs,
         "mdc1_above":          mdc1_above,
         "mdc1_between":        mdc1_between,
         "mdc1_mult_hi":        mdc1_mult_hi,
@@ -462,6 +477,12 @@ def build_march_slab_config():
         {"PCDV_Threshold": 6000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
         {"PCDV_Threshold": 5500, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
         {"PCDV_Threshold": 5000, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+    ])
+    # CSD Relationship Manager (March'26 PCR slabs)
+    csd_rm = pd.DataFrame([
+        {"PCDV_Threshold": 4800, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1750},
+        {"PCDV_Threshold": 4300, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCDV_Threshold": 3800, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
     ])
     csd_sps_mult = pd.DataFrame([
         {"Parameter": "MDC1_Above_%",      "Value": 35, "Multiplier_%": 120},
@@ -543,6 +564,7 @@ def build_march_slab_config():
     return {
         "CSD_New_Slabs": csd_new, "CSD_New_Params": csd_new_params,
         "CSD_SPS_91_270D": csd_sps_91, "CSD_SPS_270D_Plus": csd_sps_270,
+        "CSD_RM": csd_rm,
         "CSD_SPS_Multipliers": csd_sps_mult, "CSD_Spot": csd_spot,
         "Power_of_Productivity": pop,
         "KCD_Regular_270D": kcd_270, "KCD_Regular_91_270D": kcd_91_270,
@@ -869,6 +891,8 @@ def load_structure_dump(uploaded_file):
     l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
     l4_col      = find_col(df, ["L4 Name", "L4Name", "L4", "level4_name"])
     l5_col      = find_col(df, ["L5 Name", "L5Name", "L5", "level5_name"])
+    desig_col   = find_col(df, ["Designation", "designation", "Role",
+                                "Employee Role", "emp_designation"])
 
     # Determine vertical from emp_vertical_name or emp_fun_area_name
     # (Delhi structure uses emp_fun_area_name = "Client Servicing" + emp_vertical_name = "KCD/CSD")
@@ -998,8 +1022,12 @@ def load_structure_dump(uploaded_file):
             except (TypeError, ValueError):
                 mdc_client_cnt = 0
 
+        # Designation (used to route Rel Mgr vs Exec CSD scheme)
+        desig_val = str(row[desig_col]).strip() if desig_col and pd.notna(row[desig_col]) else ""
+
         result[eid] = {
             "Employee Name":     str(row[name_col]).strip() if name_col else "",
+            "Designation":       desig_val,
             "Vertical":          str(row[vertical_col]).strip() if vertical_col else "",
             "Location":          location,
             "Joining Date":      jd,
@@ -1289,6 +1317,80 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
     return round(total, 0), notes
 
 
+def get_cmr_plus1_2d_mult(cmr_pct, mdc1_pct, cmr_slab1, cmr_slab2):
+    """
+    2D CMR+1 multiplier table for Relationship Manager CSD employees.
+    Looks up the incentive payout % from (Overall CMR%, MDC1 CMR%) grid.
+    Returns a float multiplier (e.g. 1.10 for 110%).
+
+    Grid (from March scheme PPT slide 8):
+         MDC1 < 35%   35%  40%  45%+
+    CMR >= slab1   50%  50% 100% 110%
+    CMR >= slab2   75%  75% 110% 120%
+    CMR >= 65%    100% 100% 120% 130%
+
+    Slab1/Slab2 targets come from per-employee CMR targets file.
+    65% is a hard-coded third tier above slab2 for March.
+    """
+    # MDC1 band
+    if   mdc1_pct >= 45:  mdc1_band = 3
+    elif mdc1_pct >= 40:  mdc1_band = 2
+    elif mdc1_pct >= 35:  mdc1_band = 1
+    else:                  mdc1_band = 0   # < 35%
+
+    # CMR tier (slab1 < slab2 < 65%)
+    if   cmr_pct >= 65:   cmr_tier = 2
+    elif cmr_pct >= cmr_slab2: cmr_tier = 1
+    elif cmr_pct >= cmr_slab1: cmr_tier = 0
+    else:                       return 0.0   # below slab1 → no incentive
+
+    # 2D lookup (rows = cmr_tier, cols = mdc1_band)
+    table = [
+        # tier 0 (CMR≥slab1):   <35%  35%  40%  45%+
+        [0.50, 0.50, 1.00, 1.10],
+        # tier 1 (CMR≥slab2):   <35%  35%  40%  45%+
+        [0.75, 0.75, 1.10, 1.20],
+        # tier 2 (CMR≥65%):     <35%  35%  40%  45%+
+        [1.00, 1.00, 1.20, 1.30],
+    ]
+    return table[cmr_tier][mdc1_band]
+
+
+def calc_csd_rel_mgr(pcdv, prod_score, txn_count, cmr_pct, mdc1_cmr,
+                     cmr_slab1_target, cmr_slab2_target,
+                     ext_tat, d60, S, metric_label="PCDV", is_sps=False, vintage="91-270D"):
+    """
+    CSD Relationship Manager scheme.
+    Uses a 2D multiplier table (Overall CMR% × MDC1 CMR%) instead of the simple
+    3-band MDC1 multiplier used for Exec employees.
+    Formula: NetInc = PerTxn × Prod × 2D_mult × SPS_booster
+    """
+    # Use RM slab table if available, else fall back to SPS slab
+    rm_slabs = S.get("csd_rm_slabs", S.get("csd_sps_91_270"))
+    _, per_txn = pcdv_slab(pcdv, rm_slabs, 1)  # RM scheme has CMR 55%/60% column
+
+    eff_prod = max(int(prod_score), 0) if prod_score > 0 else txn_count
+
+    # 2D CMR+1 multiplier
+    cmr_plus1_mult = get_cmr_plus1_2d_mult(cmr_pct, mdc1_cmr,
+                                            cmr_slab1_target, cmr_slab2_target)
+
+    # SPS booster (same logic as Exec)
+    if is_sps:
+        booster = S["boost_mult"]
+    elif (ext_tat is not None and d60 is not None
+          and ext_tat < S["boost_tat"] and d60 < S["boost_d60"]):
+        booster = S["boost_mult"]
+    else:
+        booster = 1.0
+
+    total = per_txn * eff_prod * cmr_plus1_mult * booster
+    notes = (f"CSD RM {vintage} | {metric_label}:{round(pcdv)} | "
+             f"₹{per_txn}/txn×{eff_prod} | CMR+1:{cmr_plus1_mult:.2f}({cmr_pct:.0f}%CMR,{mdc1_cmr:.0f}%MDC1) "
+             f"boost:{booster}")
+    return round(total, 0), notes
+
+
 def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
                     ss_cmr_pct, ss_sent, S, collection_target=0, metric_label="PCDV"):
     """
@@ -1308,9 +1410,9 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
             vintage, S["kcd_0_90_slabs"])
         _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
 
-    # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 72%
+    # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 70%
     # ss_sent <= 2 → no penalty (not enough data to penalise)
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    if ss_sent >= 3 and ss_cmr_pct < 70:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -1329,7 +1431,7 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     - Fallback: derive target from slab config rates × client counts.
     - txn_count = productive receipt rows (prod_score_receipt).
     - Incremental = (Net_DV - collection_target) × 1.4%.
-    - SS penalty only when ss_sent >= 3 AND ss_cmr < 72%.
+    - SS penalty only when ss_sent >= 3 AND ss_cmr < 70%.
     """
     # If collection_target not in structure, derive from slab rates × client split
     if collection_target <= 0:
@@ -1341,7 +1443,7 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S["kcd_listing_slabs"] if achv >= t), 0)
     incr    = max(0, net_dv - collection_target) * 0.014
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    if ss_sent >= 3 and ss_cmr_pct < 70:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -1359,7 +1461,7 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
     - Fallback: derive target from slab config rates × client counts.
     - txn_count = productive receipt rows (prod_score_receipt).
     - Incremental = (Net_DV - collection_target) × 1.4%.
-    - SS penalty only when ss_sent >= 3 AND ss_cmr < 72%.
+    - SS penalty only when ss_sent >= 3 AND ss_cmr < 70%.
     """
     if collection_target <= 0:
         rates  = S["kcd_listing_rates"].get(vintage, (7000, 22000))
@@ -1371,7 +1473,7 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
                     for t, r1, r2 in S["kcd_catalog_slabs"] if achv >= t), 0)
     incr     = max(0, net_dv - collection_target) * 0.014
     btl_mult = 1.2 if btl_sales >= 2 else 1.0
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    if ss_sent >= 3 and ss_cmr_pct < 70:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -1494,8 +1596,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
     ref       = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     total_ref = ref["WT Amount"].fillna(0).sum()
-    # Deal Loss = refund on deal value side (same refund file, just label differs)
-    deal_loss = total_ref   # in most cases deal loss = refund amount
+    # Deal Loss is always 0 — it is a separate manual entry and not derived from the refund file.
+    # Net Deal Value = Deal Value - 0 = Deal Value (before refund).
+    deal_loss = 0
     rnl_prods = []
     rnl_modes = []
     rnl_count = 0
@@ -1573,7 +1676,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     - MDC-1 CMR: per-employee from renewal file (MDC 2/3 Year excluded from product set)
     - CSD Spot: per-employee NR upsell count from receipt data
     - KCD txn count: prod_score_receipt (productive receipt rows, not all rows)
-    - KCD SS penalty: only when ss_sent >= 3 AND ss_cmr < 72%
+    - KCD SS penalty: only when ss_sent >= 3 AND ss_cmr < 70%
     - KCD incremental: (Net_Deal_Val - Collection_Target) × 1.4%
     - PoP only for CSD 0-30D/31-90D; gated by CMR floor (55% Apr / 50% Mar)
     """
@@ -1583,19 +1686,21 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     team       = str(cfg_row.get("Team",      ""))
     client_cnt = max(float(cfg_row.get("Client Count", 100) or 100),
                      50 if "CSD" in vertical else 1)
-    # CSD uses PCR/PCDV = collection / client_cnt (WT AMT based)
-    # KCD uses PCDV     = deal_value / client_cnt (Deal Val (WT) based)
-    # Both are called "PCDV" internally; the metric_label changes based on sidebar + vertical
-    use_pcr    = sb.get("use_pcr", False)
-    if "KCD" in vertical:
-        # KCD always uses Deal Value regardless of PCR/PCDV toggle
-        kcd_dv = net_deal_val if net_deal_val > 0 else net_dv
-        metric_val = kcd_dv / client_cnt if client_cnt > 0 else 0
-        metric_label = "PCDV"
-    else:
-        metric_val = net_dv / client_cnt if client_cnt > 0 else 0
-        metric_label = "PCR" if use_pcr else "PCDV"
-    pcdv = metric_val
+    # Always compute BOTH PCR and PCDV for every employee (CSD and KCD).
+    # PCR  = Net Collection / Client count  (collection-based)
+    # PCDV = Net Deal Value  / Client count  (deal-value-based)
+    # The sidebar toggle selects which one drives the slab lookup.
+    # For March the slabs are calibrated to PCR; for April to PCDV.
+    use_pcr = sb.get("use_pcr", False)
+
+    dv_for_pcdv = net_deal_val if net_deal_val > 0 else net_dv   # prefer deal value
+    pcr_val  = (net_dv       / client_cnt) if client_cnt > 0 else 0   # always collection
+    pcdv_val = (dv_for_pcdv  / client_cnt) if client_cnt > 0 else 0   # always deal value
+
+    # slab_metric = the metric used for incentive slab lookup (sidebar-controlled)
+    slab_metric  = pcr_val if use_pcr else pcdv_val
+    metric_label = "PCR"  if use_pcr else "PCDV"
+    pcdv = slab_metric   # internal name kept for compatibility with calc functions
 
     cmr_pct    = cmr_data.get("cmr_pct",    0.0)
     ss_cmr_pct = cmr_data.get("ss_cmr_pct", 0.0)
@@ -1647,10 +1752,24 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
             is_sps_by_team   = "SPS" in str(team).upper()
             is_sps_employee  = is_sps_by_bucket or is_sps_by_team
-            base_inc, notes = calc_csd_sps(
-                pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
-                emp_mdc1_cmr, sb["ext_tat"], sb["d60"], S,
-                metric_label=metric_label, is_sps=is_sps_employee)
+
+            # Relationship Managers use the 2D CMR+1 table (PPT slides 8-11)
+            # Execs/Sr.Execs/AMs/Mgrs use the simple 3-band MDC1 multiplier (slides 2-7)
+            _is_rel_mgr = any(k in str(designation).upper()
+                              for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"])
+            if _is_rel_mgr:
+                base_inc, notes = calc_csd_rel_mgr(
+                    pcdv, prod_score_receipt or 0, txn_count,
+                    cmr_pct, emp_mdc1_cmr,
+                    float(sb.get("csd_slab1_target", 55)),
+                    float(sb.get("csd_slab2_target", 60)),
+                    sb.get("ext_tat"), sb.get("d60"),
+                    S, metric_label=metric_label, is_sps=is_sps_employee, vintage=vintage)
+            else:
+                base_inc, notes = calc_csd_sps(
+                    pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
+                    emp_mdc1_cmr, sb["ext_tat"], sb["d60"], S,
+                    metric_label=metric_label, is_sps=is_sps_employee)
             # Spot: per-employee NR upsell count from receipt (not global sidebar)
             # CSD Spot Rate applies only for April (Apr 1-16); other months = no spot
             _month = str(sb.get("sel_month", "")).upper()
@@ -1727,28 +1846,45 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                         prod_score_new if "CSD" in vertical and vintage in ("0-30D","31-90D")
                         else prod_score_sps), 1)
 
-    # CSD SPS breakdown: base already contains booster; expose pre-booster for transparency
-    # Net Incentive = mult × prod × mdc1_mult   (before booster)
-    # Gross Inc     = net_inc × sps_booster      (= base_inc for CSD SPS)
+    # CSD breakdown: expose intermediate values to match sir's FSF column layout
     _is_csd_sps = "CSD" in vertical and "SPS" in team
-    if _is_csd_sps and "boost" in notes:
-        # Extract booster from scheme string
-        import re as _re
-        _bm = _re.search(r'boost:([0-9.]+)', notes)
-        _boost_val = float(_bm.group(1)) if _bm else 1.0
-        _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
-        _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 1.0
-        # per_txn × prod = base / (mdc1_mult × boost)
-        _denom = (_mdc1_mult_val * _boost_val) if (_mdc1_mult_val * _boost_val) != 0 else 1
-        _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
+    _is_csd_rm  = "CSD" in vertical and any(k in str(designation).upper()
+                                            for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"])
+    _is_csd     = "CSD" in vertical
+
+    import re as _re
+
+    # Extract booster from scheme notes string
+    _bm = _re.search(r'boost:([0-9.]+)', notes)
+    _boost_val = float(_bm.group(1)) if _bm else 1.0
+
+    # Extract MDC1 multiplier from scheme notes
+    _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
+    _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 1.0
+
+    # For Rel Mgr, extract 2D CMR+1 multiplier
+    _cmrp1_m = _re.search(r'CMR[+]1:([0-9.]+)', notes)
+    _cmrp1_mult_val = float(_cmrp1_m.group(1)) if _cmrp1_m else _mdc1_mult_val
+
+    # Net Incentive = base before booster
+    _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
+
+    # Per-txn rate: net_inc_before_boost / (prod × mdc1_mult)
+    _effective_mult = _cmrp1_mult_val if _is_csd_rm else _mdc1_mult_val
+    if _is_csd and _prod_score > 0 and _effective_mult > 0:
+        _per_txn_rate = round(_net_inc_before_boost / (_prod_score * _effective_mult), 0)
     else:
-        _boost_val = 1.0
-        _net_inc_before_boost = base_inc
+        _per_txn_rate = 0
+
+    # Incentive Payout Multiplier = combined multiplier for the incentive row
+    # For Exec: this is the 3-band MDC1 mult (1.2/1.0/0.5)
+    # For Rel Mgr: this is the 2D table result
+    _inc_payout_mult = _cmrp1_mult_val if _is_csd_rm else _mdc1_mult_val
 
     # KCD breakdown
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
     _kcd_incr   = int(kcd_incremental) if "KCD" in vertical else 0
-    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 72) else 1.0) if "KCD" in vertical else 1.0
+    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 70) else 1.0) if "KCD" in vertical else 1.0
 
     return {
         "Days Since Joining":  days_since_joining,
@@ -1762,20 +1898,30 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "SS+ Sent":            cmr_data.get("ss_sent", 0),
         "SS+ Received":        cmr_data.get("ss_received", 0),
         "MDC-1 CMR%":          round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else "",
-        metric_label:          round(pcdv, 0),
+        "PCR":                 round(pcr_val, 0),
+        "PCDV":                round(pcdv_val, 0),
+        "Slab Metric Used":    metric_label,   # which one drove the slab lookup
         "Productivity Score":  _prod_score,
         "Insta Txns (0.5×)":   insta_cnt_sps,
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
         # ── CSD SPS columns (match sir's csd_calc.xlsx) ──────────
-        "Inc. Per Txn (₹)":    int(round(base_inc / _boost_val / (_prod_score or 1), 0)) if _is_csd_sps and _prod_score > 0 else "",
-        "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd_sps else "",
-        "SPS Booster":         _boost_val if _is_csd_sps else "",
-        "Gross Inc w/ Boost (₹)": int(base_inc) if _is_csd_sps else "",
+        # ── CSD detailed breakdown (matches sir's csd_calc columns) ───
+        "MDC1 CMR+1%":         round(mdc1_cmr_pct, 1) if (_is_csd and mdc1_cmr_pct is not None) else "",
+        "CMR+1 Multiplier":    _inc_payout_mult if _is_csd else "",
+        "Inc. Payout Mult":    _inc_payout_mult if _is_csd else "",
+        "Inc. Per Txn (₹)":    int(_per_txn_rate) if _is_csd and _prod_score > 0 else "",
+        "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd else "",
+        "SPS Booster":         _boost_val if _is_csd else "",
+        "Gross Inc w/ Boost (₹)": int(base_inc) if _is_csd else "",
         # ── KCD columns (match sir's kcd_calc.xlsx) ──────────────
         "KCD Base Incentive (₹)":    _kcd_base,
         "KCD Incremental (₹)":       _kcd_incr,
+        "KCD SS+ CMR%":              round(ss_cmr_pct, 1) if "KCD" in vertical else "",
+        "KCD SS+ Sent":              cmr_data.get("ss_sent", 0) if "KCD" in vertical else "",
+        "KCD SS+ Recd":              cmr_data.get("ss_received", 0) if "KCD" in vertical else "",
         "KCD SS+Ren Mult":           _kcd_ss_mult if "KCD" in vertical else "",
+        "KCD SS+ Penalty Applied":   "Yes (50%)" if (_kcd_ss_mult == 0.5) else ("No" if "KCD" in vertical else ""),
         "KCD Gross Incentive (₹)":   int(base_inc) if "KCD" in vertical else "",
         # ── Common output columns ─────────────────────────────────
         "Base Incentive (₹)":  int(base_inc),
@@ -1789,7 +1935,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v22")
+st.title("💰 IndiaMart Incentive Calculator — v25")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2098,11 +2244,13 @@ if calc_btn:
                          nr_upsell_count=nr_upsell_count,
                          net_deal_val=net_deal_val,
                          collection_target=s.get("Collection Target", 0),
-                         vintage_bucket=s.get("Vintage Bucket", ""))
+                         vintage_bucket=s.get("Vintage Bucket", ""),
+                         designation=s.get("Designation", ""))
 
         results.append({
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
+            "Designation":        s.get("Designation", ""),
             "Calc Month":         sel_month if sel_month else "All",
             "Collection (₹)":     int(gross_collection),
             "Refund (₹)":         int(total_ref),
@@ -2170,11 +2318,11 @@ if calc_btn:
         "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
         "Collection Target (₹)",
         "Deal Value (₹)", "Deal Loss (₹)", "Net Deal Value (₹)",
-        "PCR", "PCDV",
+        "PCR", "PCDV", "Slab Metric Used",
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
         "SS+ CMR% (auto)", "SS+ Sent", "SS+ Received",
         "Renewals Sent", "Renewals Received", "CMR Slab",
-        "MDC-1 CMR%", "MDC1 Sent", "MDC1 Recd",
+        "MDC-1 CMR%", "MDC1 CMR+1%", "CMR+1 Multiplier", "Inc. Payout Mult", "MDC1 Sent", "MDC1 Recd",
         "Productivity Score", "Insta Txns (0.5×)", "Receipt Txns", "Renewal Txns",
         "Inc. Per Txn (₹)", "Net Incentive (₹)", "SPS Booster", "Gross Inc w/ Boost (₹)",
         "KCD Base Incentive (₹)", "KCD Incremental (₹)", "KCD SS+Ren Mult", "KCD Gross Incentive (₹)",
@@ -2186,42 +2334,186 @@ if calc_btn:
 
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="xlsxwriter") as w:
-        # Reorder columns for cleaner output
-        export_cols = [c for c in [
+        wb  = w.book
+        hdr = wb.add_format({"bold": True, "bg_color": "#1F4E79",
+                              "font_color": "#FFFFFF", "border": 1, "font_size": 10})
+        grn = wb.add_format({"bold": True, "bg_color": "#375623",
+                              "font_color": "#FFFFFF", "border": 1, "font_size": 10})
+        org = wb.add_format({"bold": True, "bg_color": "#843C0C",
+                              "font_color": "#FFFFFF", "border": 1, "font_size": 10})
+        num_fmt = wb.add_format({"num_format": "#,##0", "font_size": 9})
+        pct_fmt = wb.add_format({"num_format": "0.0%", "font_size": 9})
+
+        def write_sheet(df, sheet_name, col_fmt=None, header_fmt=None):
+            """Write df to sheet with blue header row."""
+            df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
+            ws = w.sheets[sheet_name]
+            hf = header_fmt or hdr
+            for ci, col in enumerate(df.columns):
+                ws.write(1, ci, col, hf)
+                ws.set_column(ci, ci, max(14, len(str(col)) + 2))
+            ws.write(0, 0, f"{sheet_name} — auto-generated by IndiaMart Incentive Calculator")
+            ws.freeze_panes(2, 0)
+
+        # ── Sheet 1: FSF (Final Settlement File) — all employees ─────────────
+        fsf_cols = [c for c in [
             "Employee ID","Employee Name","Calc Month","Vertical","Vintage",
-            "Team","Vintage Bucket","SPS Group","Location","L2","L3",
+            "Team","Designation","Vintage Bucket","SPS Group","Location","L2","L3",
             "Days Since Joining",
             "Collection (₹)","Refund (₹)","Net Collection (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
-            "PCR","PCDV",
+            "PCR","PCDV","Slab Metric Used",
             "CMR Slab1 Target","CMR Slab2 Target",
             "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
             "Renewals Sent","Renewals Received","CMR Slab",
-            "MDC-1 CMR%","MDC1 Sent","MDC1 Recd",
-            "Productivity Score","Insta Txns (0.5×)",
-            "Receipt Txns","Renewal Txns",
-            # ── CSD SPS breakdown ──
+            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult","MDC1 Sent","MDC1 Recd",
+            "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
-            # ── KCD breakdown ──
-            "KCD Base Incentive (₹)","KCD Incremental (₹)","KCD SS+Ren Mult","KCD Gross Incentive (₹)",
-            # ── Final payout ──
+            "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
+            "KCD Base Incentive (₹)","KCD Incremental (₹)","KCD Gross Incentive (₹)",
             "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
-        res[export_cols].to_excel(w, sheet_name="Incentives", index=False)
-        res.groupby(["Vertical", "Vintage", "Team"]).agg(
-            Employees=("Employee ID", "count"),
-            Avg_CMR=("CMR% (auto)", "mean"),
-            Total_Incentive=("Total Incentive (₹)", "sum"),
-            Avg_Incentive=("Total Incentive (₹)", "mean"),
-        ).reset_index().to_excel(w, sheet_name="Summary", index=False)
-        res[["Employee ID", "Employee Name", "Vertical", "Vintage",
-             "CMR% (auto)", "SS+ CMR% (auto)", "Renewals Sent",
-             "Renewals Received", "CMR Slab"]].to_excel(
-            w, sheet_name="CMR Details", index=False)
-        z = res[res["Total Incentive (₹)"] == 0]
-        if len(z):
-            z.to_excel(w, sheet_name="Zero Incentive", index=False)
+        write_sheet(res[fsf_cols], "FSF", header_fmt=hdr)
+
+        # ── Sheet 2: Exec-CSD — CSD employees only ────────────────────────────
+        csd_res = res[res["Vertical"] == "CSD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
+        csd_cols = [c for c in [
+            "Employee ID","Employee Name","Designation","Location","SPS Group","Vintage Bucket",
+            "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR","PCDV","Slab Metric Used",
+            "CMR Slab1 Target","CMR Slab2 Target","CMR% (auto)",
+            "Renewals Sent","Renewals Received",
+            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult","MDC1 Sent","MDC1 Recd",
+            "Productivity Score","Insta Txns (0.5×)","Receipt Txns",
+            "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
+            "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
+            "Total Incentive (₹)","Scheme",
+        ] if c in res.columns]
+        if not csd_res.empty:
+            write_sheet(csd_res[csd_cols], "Exec-CSD", header_fmt=grn)
+
+        # ── Sheet 3: KCD-Exec — KCD employees only ────────────────────────────
+        kcd_res = res[res["Vertical"] == "KCD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
+        kcd_cols = [c for c in [
+            "Employee ID","Employee Name","Location","Team","Vintage",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCR","PCDV","Slab Metric Used",
+            "Collection Target (₹)",
+            "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
+            "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
+            "Renewals Sent","Renewals Received",
+            "Productivity Score","Insta Txns (0.5×)","Receipt Txns",
+            "KCD Base Incentive (₹)","KCD Incremental (₹)","KCD Gross Incentive (₹)",
+            "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+        ] if c in res.columns]
+        if not kcd_res.empty:
+            write_sheet(kcd_res[kcd_cols], "KCD-Exec", header_fmt=org)
+
+        # ── Sheet 4: CMR Validation — renewal CMR details ────────────────────
+        cmr_cols = [c for c in [
+            "Employee ID","Employee Name","Vertical","Vintage","Team","Location",
+            "CMR Slab1 Target","CMR Slab2 Target",
+            "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
+            "SS+ Sent","SS+ Received","SS+ CMR% (auto)",
+            "MDC-1 CMR%","MDC1 Sent","MDC1 Recd",
+        ] if c in res.columns]
+        write_sheet(res[cmr_cols], "CMR Validation")
+
+        # ── Sheet 5: Summary by team ──────────────────────────────────────────
+        summary_df = res.groupby(["Vertical","Vintage","Team"]).agg(
+            Employees       = ("Employee ID", "count"),
+            Avg_PCR         = ("PCR",  "mean"),
+            Avg_PCDV        = ("PCDV", "mean"),
+            Avg_CMR_pct     = ("CMR% (auto)", "mean"),
+            Total_Collection= ("Net Collection (₹)", "sum"),
+            Total_NDV       = ("Net Deal Value (₹)", "sum"),
+            Total_Base_Inc  = ("Base Incentive (₹)", "sum"),
+            Total_PoP       = ("PoP Incentive (₹)", "sum"),
+            Total_Spot      = ("Spot Incentive (₹)", "sum"),
+            Total_Incentive = ("Total Incentive (₹)", "sum"),
+            Avg_Incentive   = ("Total Incentive (₹)", "mean"),
+        ).reset_index()
+        write_sheet(summary_df, "Summary")
+
+        # ── Sheet 6: Zero Incentive employees ────────────────────────────────
+        zero_df = res[res["Total Incentive (₹)"] == 0].copy()
+        if not zero_df.empty:
+            zero_cols = [c for c in [
+                "Employee ID","Employee Name","Vertical","Vintage","Team","Location",
+                "PCR","PCDV","CMR% (auto)","CMR Slab",
+                "Productivity Score","Receipt Txns","Scheme",
+            ] if c in zero_df.columns]
+            write_sheet(zero_df[zero_cols], "Zero Incentive")
+
+        # ── Sheet 7: Paid vs Balance tracking ────────────────────────────────
+        paid_df = res[["Employee ID","Employee Name","Vertical","Team",
+                        "Total Incentive (₹)"]].copy()
+        paid_df["Paid Incentive (₹)"]    = 0
+        paid_df["Balance Incentive (₹)"] = paid_df["Total Incentive (₹)"]
+        paid_df["Remarks"] = ""
+        write_sheet(paid_df, "Paid & Balance")
+
+        export_cols = fsf_cols   # keep for compatibility
+
+        # ── Source data sheets — raw input files used for calculation ──────────
+        grey = wb.add_format({"bold": True, "bg_color": "#595959",
+                               "font_color": "#FFFFFF", "border": 1, "font_size": 10})
+
+        # Receipt Data (month-filtered, enriched columns stripped)
+        try:
+            rec_exp = receipt_df.copy()
+            rec_exp = rec_exp.drop(columns=[c for c in
+                ["Productivity","Service_Tier","_is_upsell",
+                 "_is_pure_renewal","_has_upsell_on_receipt"]
+                if c in rec_exp.columns])
+            if len(rec_exp) > 100_000:
+                rec_exp = rec_exp.head(100_000)
+            write_sheet(rec_exp, "Receipt Data", header_fmt=grey)
+        except Exception:
+            pass
+
+        # Refund Data
+        try:
+            ref_exp = refund_df.copy()
+            if len(ref_exp) > 100_000:
+                ref_exp = ref_exp.head(100_000)
+            write_sheet(ref_exp, "Refund Data", header_fmt=grey)
+        except Exception:
+            pass
+
+        # Renewal Data (month-filtered)
+        try:
+            if renewal_df is not None and len(renewal_df) > 0:
+                rnl_exp = renewal_df.copy()
+                if len(rnl_exp) > 100_000:
+                    rnl_exp = rnl_exp.head(100_000)
+                write_sheet(rnl_exp, "Renewal Data", header_fmt=grey)
+        except Exception:
+            pass
+
+        # Structure Dump (flattened from struct_map dict)
+        try:
+            struct_rows = [
+                {"Employee ID": eid,
+                 "Employee Name":    v.get("Employee Name",""),
+                 "Vertical":         v.get("Vertical",""),
+                 "Location":         v.get("Location",""),
+                 "Joining Date":     str(v.get("Joining Date",""))[:10],
+                 "Vintage":          v.get("Vintage",""),
+                 "Team":             v.get("Team",""),
+                 "Vintage Bucket":   v.get("Vintage Bucket",""),
+                 "Client Count":     v.get("Client Count",0),
+                 "Collection Target":v.get("Collection Target",0),
+                 "MDC Client Count": v.get("MDC Client Count",0),
+                 "L2 Name":          v.get("L2 Name",""),
+                 "L3 Name":          v.get("L3 Name",""),
+                 "L4 Name":          v.get("L4 Name",""),
+                 "Remarks":          v.get("Remarks",""),
+                }
+                for eid, v in struct_map.items()
+            ]
+            write_sheet(pd.DataFrame(struct_rows), "Structure Dump", header_fmt=grey)
+        except Exception:
+            pass
 
     st.download_button("⬇️ Download Full Report (Excel)", out.getvalue(),
                        f"Incentives_{datetime.today().strftime('%d%m%Y')}.xlsx",
