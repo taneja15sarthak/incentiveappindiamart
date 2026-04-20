@@ -1011,12 +1011,18 @@ def load_structure_dump(uploaded_file):
 
         # Collection Target = PCR/PCDV target × client count (if available in structure)
         coll_target = 0.0
+        pcr_target_raw = 0.0
         pcr_target_col = find_col(df, ["PCR Target","PCDV Target","PCR_Target","Collection Target"])
         if pcr_target_col:
             try:
-                coll_target = float(row[pcr_target_col]) * cc
+                pcr_target_raw = float(row[pcr_target_col])
+                coll_target = pcr_target_raw * cc
             except Exception:
                 coll_target = 0.0
+
+        # Read Listing/Catalog client splits for KCD Collection Target derivation
+        lc_val  = _safe_float(row[list_c_col], 0) if list_c_col and str(row[list_c_col]).strip() not in ("nan","") else 0
+        cat_val = _safe_float(row[cat_c_col], 0)  if cat_c_col  and str(row[cat_c_col]).strip()  not in ("nan","") else 0
 
         # MDC client count (for MDC-1 CMR denominator in CSD SPS)
         mdc_col = find_col(df, ["MDC.1", "MDC", "mdc_client", "MDC Client"])
@@ -1039,6 +1045,9 @@ def load_structure_dump(uploaded_file):
             "Vintage":           vintage,
             "Team":              team,
             "Client Count":      cc,
+            "Listing Clients":   lc_val,
+            "Catalog Clients":   cat_val,
+            "PCR Target":        pcr_target_raw,
             "Collection Target": coll_target,
             "L2 Name":           str(row[l2_col]).strip() if l2_col else "",
             "L3 Name":           str(row[l3_col]).strip() if l3_col else "",
@@ -1805,6 +1814,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     team       = str(cfg_row.get("Team",      ""))
     client_cnt = max(float(cfg_row.get("Client Count", 100) or 100),
                      50 if "CSD" in vertical else 1)
+    listing_c    = float(cfg_row.get("Listing Clients", 0) or 0)
+    catalog_c    = float(cfg_row.get("Catalog Clients",  0) or 0)
+    pcr_target_v = float(cfg_row.get("PCR Target",       0) or 0)
+    # Highest Collection = PCR_Target × Client-A (from structure)
+    highest_coll = pcr_target_v * client_cnt if pcr_target_v > 0 else 0
     # Always compute BOTH PCR and PCDV for every employee (CSD and KCD).
     # PCR  = Net Collection / Client count  (collection-based)
     # PCDV = Net Deal Value  / Client count  (deal-value-based)
@@ -1820,6 +1834,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     slab_metric  = pcr_val if use_pcr else pcdv_val
     metric_label = "PCR"  if use_pcr else "PCDV"
     pcdv = slab_metric   # internal name kept for compatibility with calc functions
+    # PCR% = PCR / PCR_Target (achievement % of per-client collection target)
+    pcr_pct = (pcr_val / pcr_target_v) if pcr_target_v > 0 else 0
 
     # spot_client: client count for PCDV Bullet Spot calculation.
     # Must be raw (non-floored) actual client count so weekly DV / spot_client = true weekly PCDV.
@@ -1929,15 +1945,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         kcd_base_only  = 0
         kcd_incremental = 0
         if "LISTING" in team_up:
-            star_c_list = sum(1 for p in rnl_prods
-                              if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
-            list_c_l  = max(star_c_list, 1)
-            base_c_l  = max(client_cnt - list_c_l, 1)
+            # Use structure file Listing Clients; fall back to (total-1) if absent
+            _list_c = listing_c if listing_c > 0 else max(1, client_cnt - 1)
+            _base_c = max(client_cnt - _list_c, 1)
             base_inc, notes = calc_kcd_listing(
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, collection_target, S,
-                base_clients=base_c_l, list_clients=list_c_l)
-            # Decompose: listing/catalog funcs already merge base+incr; re-derive incr
+                base_clients=_base_c, list_clients=_list_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
             kcd_base_only   = base_inc - kcd_incremental
             _month_k = str(sb.get("sel_month", "")).upper()
@@ -1949,14 +1963,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
                     sb.get("spot_met", False), S)
         elif "CATALOG" in team_up:
-            star_c_cat = sum(1 for p in rnl_prods
-                             if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
-            list_c_c  = max(star_c_cat, 1)
-            base_c_c  = max(client_cnt - list_c_c, 1)
+            # Use structure file Catalog Clients; fall back to (total-1) if absent
+            _cat_c  = catalog_c if catalog_c > 0 else max(1, client_cnt - 1)
+            _base_c = max(client_cnt - _cat_c, 1)
             base_inc, notes = calc_kcd_catalog(
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
-                base_clients=base_c_c, list_clients=list_c_c)
+                base_clients=_base_c, list_clients=_cat_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
             kcd_base_only   = base_inc - kcd_incremental
             _month_k2 = str(sb.get("sel_month", "")).upper()
@@ -2032,10 +2045,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # For Rel Mgr: this is the 2D table result
     _inc_payout_mult = _cmrp1_mult_val if _is_csd_rm else _mdc1_mult_val
 
-    # KCD breakdown
+    # KCD breakdown — extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
     _kcd_incr   = int(kcd_incremental) if "KCD" in vertical else 0
     _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 70) else 1.0) if "KCD" in vertical else 1.0
+    # Total productive txns used (same variable used in KCD calc)
+    _kcd_prod   = (prod_score_receipt or txn_count) if "KCD" in vertical else 0
+    # Per-txn rate: extract from scheme notes "₹{rate}/txn×"
+    _kcd_per_txn_m = _re.search(r"₹([0-9]+)/txn", notes) if "KCD" in vertical else None
+    _kcd_per_txn   = int(_kcd_per_txn_m.group(1)) if _kcd_per_txn_m else 0
 
     return {
         "Days Since Joining":  days_since_joining,
@@ -2065,15 +2083,36 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd else "",
         "SPS Booster":         _boost_val if _is_csd else "",
         "Gross Inc w/ Boost (₹)": int(base_inc) if _is_csd else "",
-        # ── KCD columns (match sir's kcd_calc.xlsx) ──────────────
-        "KCD Base Incentive (₹)":    _kcd_base,
-        "KCD Incremental (₹)":       _kcd_incr,
-        "KCD SS+ CMR%":              round(ss_cmr_pct, 1) if "KCD" in vertical else "",
-        "KCD SS+ Sent":              cmr_data.get("ss_sent", 0) if "KCD" in vertical else "",
-        "KCD SS+ Recd":              cmr_data.get("ss_received", 0) if "KCD" in vertical else "",
-        "KCD SS+Ren Mult":           _kcd_ss_mult if "KCD" in vertical else "",
-        "KCD SS+ Penalty Applied":   "Yes (50%)" if (_kcd_ss_mult == 0.5) else ("No" if "KCD" in vertical else ""),
-        "KCD Gross Incentive (₹)":   int(base_inc) if "KCD" in vertical else "",
+        # ── KCD columns matching sir's kcd_calc.xlsx layout ────────
+        "KCD Collection Target (₹)": int(collection_target) if "KCD" in vertical else "",
+        "KCD Highest Collection (₹)": int(highest_coll)      if "KCD" in vertical else "",
+        "KCD PCR Target":            round(pcr_target_v, 0)  if "KCD" in vertical else "",
+        "KCD PCR%":                  round(pcr_pct * 100, 2) if "KCD" in vertical else "",
+        # WK productive transaction counts
+        "KCD WK-1 DV (₹)":  int(weekly_dv.get(1, 0)) if ("KCD" in vertical and weekly_dv) else "",
+        "KCD WK-2 DV (₹)":  int(weekly_dv.get(2, 0)) if ("KCD" in vertical and weekly_dv) else "",
+        "KCD WK-3 DV (₹)":  int(weekly_dv.get(3, 0)) if ("KCD" in vertical and weekly_dv) else "",
+        "KCD WK-4 DV (₹)":  int(weekly_dv.get(4, 0)) if ("KCD" in vertical and weekly_dv) else "",
+        "KCD WK Total Txns": round(_kcd_prod, 1)       if "KCD" in vertical else "",
+        "KCD BTL":           int(sb.get("btl_sales", 0)) if "KCD" in vertical else "",
+        "KCD CMR Sent":      rnl_sent if "KCD" in vertical else "",
+        "KCD CMR Recd":      cmr_data.get("renewal_received", 0) if "KCD" in vertical else "",
+        "KCD CMR Ren%":      round(cmr_pct, 1) if "KCD" in vertical else "",
+        "KCD SS+ CMR%":      round(ss_cmr_pct, 1) if "KCD" in vertical else "",
+        "KCD SS+ Sent":      cmr_data.get("ss_sent", 0) if "KCD" in vertical else "",
+        "KCD SS+ Recd":      cmr_data.get("ss_received", 0) if "KCD" in vertical else "",
+        "KCD SS+Ren Mult":   _kcd_ss_mult if "KCD" in vertical else "",
+        "KCD SS+ Penalty Applied": "Yes (50%)" if (_kcd_ss_mult == 0.5) else ("No" if "KCD" in vertical else ""),
+        "KCD Incentive Multiplier": int(_kcd_per_txn)  if "KCD" in vertical else "",
+        "KCD Base Incentive (₹)":   _kcd_base,
+        "KCD Incremental (₹)":      _kcd_incr,
+        "KCD Total Incentive (₹)":  int(_kcd_base) if "KCD" in vertical else "",
+        "KCD Gross Incentive (₹)":  int(base_inc)  if "KCD" in vertical else "",
+        "KCD Paid Incentive (₹)":   0              if "KCD" in vertical else "",
+        "KCD Balance Incentive (₹)":int(base_inc)  if "KCD" in vertical else "",
+        "KCD Group":                "" if "KCD" in vertical else "",
+        "KCD Delhi Loc Incentive":  "" if "KCD" in vertical else "",
+        "KCD Rem":                  "" if "KCD" in vertical else "",
         # ── Common output columns ─────────────────────────────────
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
@@ -2085,7 +2124,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v25")
+st.title("💰 IndiaMart Incentive Calculator — v26")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2367,12 +2406,15 @@ if calc_btn:
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
-            "Vertical":     s.get("Vertical", ""),
-            "Location":     s.get("Location", ""),
-            "Vintage":      s.get("Vintage", ""),
-            "Team":         s.get("Team", ""),
-            "Client Count": s.get("Client Count", 1),
-            "Joining Date": s.get("Joining Date", None),
+            "Vertical":        s.get("Vertical", ""),
+            "Location":        s.get("Location", ""),
+            "Vintage":         s.get("Vintage", ""),
+            "Team":            s.get("Team", ""),
+            "Client Count":    s.get("Client Count", 1),
+            "Joining Date":    s.get("Joining Date", None),
+            "Listing Clients": s.get("Listing Clients", 0),
+            "Catalog Clients": s.get("Catalog Clients", 0),
+            "PCR Target":      s.get("PCR Target", 0),
         }
         emp_row = {
             "Vertical":  s.get("Vertical", ""),
@@ -2443,6 +2485,7 @@ if calc_btn:
             "Deal Loss (₹)":      int(deal_loss),
             "Net Deal Value (₹)": int(net_deal_val),
             "Collection Target (₹)": int(s.get("Collection Target", 0)),
+            "PCR Target (₹)":        int(s.get("PCR Target", 0)),
             "CMR Slab1 Target":   emp_targets["slab1"],
             "CMR Slab2 Target":   emp_targets["slab2"],
             "SPS Group":  "SPS" if ("SPS" in str(s.get("Vintage Bucket","")).upper() or
@@ -2544,8 +2587,15 @@ if calc_btn:
             "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult","MDC1 Sent","MDC1 Recd",
             "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
+            "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
+            "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+            "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
-            "KCD Base Incentive (₹)","KCD Incremental (₹)","KCD Gross Incentive (₹)",
+            "KCD Incentive Multiplier",
+            "KCD Base Incentive (₹)","KCD Incremental (₹)",
+            "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
+            "KCD Paid Incentive (₹)","KCD Balance Incentive (₹)",
+            "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
             "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
@@ -2574,10 +2624,17 @@ if calc_btn:
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCR","PCDV","Slab Metric Used",
             "Collection Target (₹)",
             "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
+            "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
+            "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+            "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
             "Renewals Sent","Renewals Received",
-            "Productivity Score","Insta Txns (0.5×)","Receipt Txns",
-            "KCD Base Incentive (₹)","KCD Incremental (₹)","KCD Gross Incentive (₹)",
+            "Productivity Score","Receipt Txns",
+            "KCD Incentive Multiplier",
+            "KCD Base Incentive (₹)","KCD Incremental (₹)",
+            "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
+            "KCD Paid Incentive (₹)","KCD Balance Incentive (₹)",
+            "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
             "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not kcd_res.empty:
