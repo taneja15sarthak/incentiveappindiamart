@@ -1741,6 +1741,27 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     else:
         nr_upsell_count = 0
 
+    # ── Weekly Deal Value breakdown for March Bullet Spot incentive ──────────
+    # Buckets receipt rows into 4 weeks by Entry Date day-of-month:
+    # WK1=1-7, WK2=8-14, WK3=15-21, WK4=22+
+    # Uses Deal Val (WT) column if available, otherwise WT AMT.
+    weekly_dv = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    _date_col  = find_col(receipt_df, ["Entry Date", "Clear Date", "Receipt Date"])
+    _wdv_col   = dv_col if dv_col else find_col(receipt_df, ["WT AMT", "WT_AMT", "WTAMT"])
+    if _date_col and _wdv_col and _date_col in rec.columns and _wdv_col in rec.columns:
+        _rec_wk = rec[[_date_col, _wdv_col]].copy()
+        _rec_wk[_date_col] = pd.to_datetime(_rec_wk[_date_col], errors="coerce")
+        _rec_wk = _rec_wk.dropna(subset=[_date_col])
+        _rec_wk["_day"] = _rec_wk[_date_col].dt.day
+        def _wk(day):
+            if day <= 7:  return 1
+            if day <= 14: return 2
+            if day <= 21: return 3
+            return 4
+        _rec_wk["_wk"] = _rec_wk["_day"].apply(_wk)
+        for wk, grp in _rec_wk.groupby("_wk"):
+            weekly_dv[wk] = float(grp[_wdv_col].fillna(0).sum())
+
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
