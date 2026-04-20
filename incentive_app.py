@@ -1491,6 +1491,94 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
            f"KCD Catalog {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | BTL:{btl_mult} | SS+:{ss_mult}"
 
 
+def _spot_bullet(wk_pcdv, table, per_extra=None):
+    """Generic bullet spot: table=[(thresh,reward)...] descending, per_extra=(top,unit,size)."""
+    base = next((r for t, r in table if wk_pcdv >= t), 0)
+    if base and per_extra:
+        top, unit, size = per_extra
+        if wk_pcdv > top:
+            base += int((wk_pcdv - top) / size) * unit
+    return base
+
+
+def calc_spot_march_csd(weekly_dv, client_c, vintage):
+    """
+    CSD PCDV Bullet Spot for March (WK1–WK4).
+    Weekly PCDV = that week's Deal Value / Client-C.
+    WK3/WK4 only apply to 90+ vintage (SPS/270D+/91-270D).
+    """
+    if not client_c or client_c <= 0:
+        return 0
+    is_90plus = vintage in ("91-270D", "270D+", "SPS")
+    tables = {
+        1: ([(2000,4100),(1500,3100),(1000,2100)], None),
+        2: ([(2500,4100),(2000,3100),(1200,2100)], None),
+        3: ([(2500,4100),(2000,3100),(1500,2100)], (2500,750,1000)),
+        4: ([(5500,4100),(4500,3100),(3200,2100)], (5500,750,1000)),
+    }
+    total = 0
+    for wk, dv in weekly_dv.items():
+        if wk in (3, 4) and not is_90plus:
+            continue
+        wk_pcdv = dv / client_c
+        tbl, extra = tables[wk]
+        total += _spot_bullet(wk_pcdv, tbl, extra)
+    return int(total)
+
+
+def calc_spot_march_kcd(weekly_dv, client_a, team, location, vintage):
+    """
+    KCD PCDV Bullet Spot for March (WK1–WK4).
+    Weekly PCDV = that week's Deal Value / Client-A.
+    Routes to the right table by team and location.
+    Delhi Listing/Catalog tables apply only WK3-4.
+    """
+    if not client_a or client_a <= 0:
+        return 0
+    team_up = str(team).upper()
+    loc_up  = str(location).upper()
+    is_delhi = "DELHI" in loc_up or "NCR" in loc_up or "PEERAGARHI" in loc_up or "SHAHDARA" in loc_up
+    is_roi   = "ROI" in team_up or any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE","NAGPUR"])
+    is_listing = "LISTING" in team_up
+    is_catalog = "CATALOG" in team_up
+
+    # Table definitions: {wk: ([(thresh,reward),...], per_extra or None)}
+    if is_listing and is_delhi:
+        tables = {
+            1: None, 2: None,
+            3: ([(21000,7100),(17000,5100),(14000,3100)], (21000,1000,1000)),
+            4: ([(29000,7100),(25000,5100),(21000,3100)], (29000,1000,5000)),
+        }
+    elif is_catalog and is_delhi:
+        tables = {
+            1: None, 2: None,
+            3: ([(4500,7100),(4000,5100),(3500,3100)], (4500,1000,1000)),
+            4: ([(8000,7100),(6500,5100),(5000,3100)], (8000,1000,2000)),
+        }
+    elif is_roi:
+        tables = {
+            1: ([(9000,7100),(7000,5100),(5000,3100)], None),
+            2: ([(13000,7100),(10000,5100),(6000,3100)], None),
+            3: ([(13000,7100),(10000,5100),(7000,3100)], (13000,1000,1000)),
+            4: ([(21000,7100),(17000,5100),(13000,3100)], (21000,1000,5000)),
+        }
+    else:  # Regular KCD / HVRI / 0-90D
+        tables = {
+            1: ([(11000,7100),(9000,5100),(7000,3100)], None),
+            2: ([(15000,7100),(12000,5100),(8000,3100)], None),
+            3: ([(15000,7100),(12000,5100),(9000,3100)], (15000,1000,1000)),
+            4: ([(25000,7100),(21000,5100),(17000,3100)], (25000,1000,5000)),
+        }
+    total = 0
+    for wk, dv in weekly_dv.items():
+        if not tables.get(wk):
+            continue
+        wk_pcdv = dv / client_a
+        tbl, extra = tables[wk]
+        total += _spot_bullet(wk_pcdv, tbl, extra)
+    return int(total)
+
+
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
     cfg = S["kcd_spot"].get(spot_key, {})
     if not cfg or pcdv < cfg["thresh"]:
@@ -1657,7 +1745,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
             gross_collection, gross_deal_val, deal_loss, net_deal_val,
-            nr_upsell_count)
+            nr_upsell_count, weekly_dv)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -1678,7 +1766,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
                svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
-               vintage_bucket="", designation=""):
+               vintage_bucket="", designation="", weekly_dv=None):
     """
     Main routing — all fixes applied:
     - SPS booster: auto 1.2× when vintage_bucket='SPS'; Pune TAT/60D override for others
@@ -1779,10 +1867,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
                     emp_mdc1_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
                     metric_label=metric_label, is_sps=is_sps_employee)
-            # Spot: per-employee NR upsell count from receipt (not global sidebar)
-            # CSD Spot Rate applies only for April (Apr 1-16); other months = no spot
+            # Spot: March = PCDV Bullet Spot (weekly); April = NR upsell count
             _month = str(sb.get("sel_month", "")).upper()
-            if "APR" in _month:
+            if "MAR" in _month:
+                _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
+                spot_inc = calc_spot_march_csd(_wdv, client_cnt, vintage)
+            elif "APR" in _month:
                 spot_inc = calc_spot_csd(nr_upsell_count, S)
             else:
                 spot_inc = 0
@@ -1817,9 +1907,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # Decompose: listing/catalog funcs already merge base+incr; re-derive incr
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
             kcd_base_only   = base_inc - kcd_incremental
-            spot_inc = calc_spot_kcd(
-                pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
-                sb.get("spot_met", False), S)
+            _month_k = str(sb.get("sel_month", "")).upper()
+            if "MAR" in _month_k:
+                _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
+                spot_inc = calc_spot_march_kcd(_wdv, client_cnt, team, location, vintage)
+            else:
+                spot_inc = calc_spot_kcd(
+                    pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
+                    sb.get("spot_met", False), S)
         elif "CATALOG" in team_up:
             star_c_cat = sum(1 for p in rnl_prods
                              if any(k in str(p).upper() for k in ["STAR","LEADER","PREF"]))
@@ -1831,23 +1926,37 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 base_clients=base_c_c, list_clients=list_c_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
             kcd_base_only   = base_inc - kcd_incremental
-            spot_inc = calc_spot_kcd(
-                pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
-                sb.get("spot_met", False), S)
+            _month_k2 = str(sb.get("sel_month", "")).upper()
+            if "MAR" in _month_k2:
+                _wdv2 = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
+                spot_inc = calc_spot_march_kcd(_wdv2, client_cnt, team, location, vintage)
+            else:
+                spot_inc = calc_spot_kcd(
+                    pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
+                    sb.get("spot_met", False), S)
         elif "ROI" in team_up:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
+            _month_roi = str(sb.get("sel_month", "")).upper()
+            if "MAR" in _month_roi:
+                _wdv_roi = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
+                spot_inc = calc_spot_march_kcd(_wdv_roi, client_cnt, team, location, vintage)
+            else:
+                spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
             base_inc = kcd_base_only + kcd_incremental
-            if vintage in ("0-30D", "31-90D"):
+            _month_reg = str(sb.get("sel_month", "")).upper()
+            if "MAR" in _month_reg:
+                _wdv_reg = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
+                spot_inc = calc_spot_march_kcd(_wdv_reg, client_cnt, team, location, vintage)
+            elif vintage in ("0-30D", "31-90D"):
                 spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
 
     # ── Decompose values matching sir's FSF column layout ────────────────────
@@ -2220,7 +2329,7 @@ if calc_btn:
          rnl_count, total_ref, all_rnl_count,
          svc_tiers, insta_cnt_receipt, prod_score_receipt,
          gross_collection, gross_deal_val, deal_loss, net_deal_val,
-         nr_upsell_count) = \
+         nr_upsell_count, weekly_dv) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id)
 
         # Build cfg_row and emp_row from structure map
@@ -2254,7 +2363,8 @@ if calc_btn:
                              net_deal_val=net_deal_val,
                              collection_target=s.get("Collection Target", 0),
                              vintage_bucket=s.get("Vintage Bucket", ""),
-                             designation=s.get("Designation", ""))
+                             designation=s.get("Designation", ""),
+                             weekly_dv=weekly_dv)
         except Exception as _e:
             inc = {
                 "Days Since Joining": "", "CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
