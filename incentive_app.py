@@ -834,7 +834,12 @@ def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None):
         recd    = int(grp["_recv"].sum())
         # Denominator: use structure file MDC client count if available, else row count
         if mdc_client_counts and eid_str in mdc_client_counts:
-            sent = mdc_client_counts[eid_str]
+            struct_mdc = mdc_client_counts[eid_str]
+            renewal_mdc = len(grp)
+            # Use the smaller of the two: structure file may have total client count
+            # (not just MDC clients) which would inflate the denominator and deflate CMR%.
+            # The renewal file row count is the most reliable lower bound.
+            sent = min(struct_mdc, renewal_mdc) if renewal_mdc > 0 else struct_mdc
         else:
             sent = len(grp)
         pct = round(recd / sent * 100, 2) if sent > 0 else 0.0
@@ -1290,7 +1295,11 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
     - CMR slab 0 → per_txn = 0 → incentive = 0.
     """
     slabs = S["csd_sps_270p"] if vintage == "270D+" else S["csd_sps_91_270"]
-    _, per_txn = pcdv_slab(pcdv, slabs, cmr_slab)
+    # cmr_slab=0 means employee is below Slab1 CMR target → no per-txn incentive
+    if cmr_slab == 0:
+        per_txn = 0
+    else:
+        _, per_txn = pcdv_slab(pcdv, slabs, cmr_slab)
 
     eff_txn_count = max(int(prod_score), 0) if prod_score > 0 else txn_count
 
