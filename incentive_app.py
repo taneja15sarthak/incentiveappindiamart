@@ -1538,7 +1538,8 @@ def calc_spot_march_kcd(weekly_dv, client_a, team, location, vintage):
     team_up = str(team).upper()
     loc_up  = str(location).upper()
     is_delhi = "DELHI" in loc_up or "NCR" in loc_up or "PEERAGARHI" in loc_up or "SHAHDARA" in loc_up
-    is_roi   = "ROI" in team_up or any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE","NAGPUR"])
+    # Nagpur Pharma uses Regular KCD spot table (not ROI), so exclude NAGPUR from ROI check
+    is_roi   = "ROI" in team_up or any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"])
     is_listing = "LISTING" in team_up
     is_catalog = "CATALOG" in team_up
 
@@ -1725,6 +1726,27 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     net_collection   = total_dv - total_ref
     net_deal_val     = gross_deal_val - deal_loss
 
+    # Weekly Deal Value sums for March PCDV Bullet Spot
+    # WK1=1-10 Mar, WK2=11-17 Mar, WK3=18-24 Mar, WK4=25-31 Mar
+    weekly_dv = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    _rcol_w  = find_col(receipt_df, ["Receipt Date", "ReceiptDate"])
+    _dv_col_w = dv_col  # reuse the already-found Deal Val (WT) column name
+    if _rcol_w and _dv_col_w and len(rec) > 0:
+        try:
+            _rd = pd.to_numeric(rec[_rcol_w], errors='coerce').fillna(0).astype(int)
+            _dv = rec[_dv_col_w].fillna(0)
+            _base = pd.Timestamp('1899-12-30')
+            for _x, _v in zip(_rd.values, _dv.values):
+                if _x > 0:
+                    _dt = _base + pd.Timedelta(days=int(_x))
+                    if _dt.year == 2026 and _dt.month == 3:
+                        _wk = (1 if _dt.day <= 10 else
+                               2 if _dt.day <= 17 else
+                               3 if _dt.day <= 24 else 4)
+                        weekly_dv[_wk] += float(_v)
+        except Exception:
+            pass
+
     # Per-employee NR Upsell count for CSD Spot incentive
     # Counts productive upsell rows (Upsell/Unique not blank AND WT AMT > 0)
     if "Productivity" in rec.columns and "_is_upsell" not in rec.columns:
@@ -1740,27 +1762,6 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
             nr_upsell_count = 0
     else:
         nr_upsell_count = 0
-
-    # ── Weekly Deal Value breakdown for March Bullet Spot incentive ──────────
-    # Buckets receipt rows into 4 weeks by Entry Date day-of-month:
-    # WK1=1-7, WK2=8-14, WK3=15-21, WK4=22+
-    # Uses Deal Val (WT) column if available, otherwise WT AMT.
-    weekly_dv = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
-    _date_col  = find_col(receipt_df, ["Entry Date", "Clear Date", "Receipt Date"])
-    _wdv_col   = dv_col if dv_col else find_col(receipt_df, ["WT AMT", "WT_AMT", "WTAMT"])
-    if _date_col and _wdv_col and _date_col in rec.columns and _wdv_col in rec.columns:
-        _rec_wk = rec[[_date_col, _wdv_col]].copy()
-        _rec_wk[_date_col] = pd.to_datetime(_rec_wk[_date_col], errors="coerce")
-        _rec_wk = _rec_wk.dropna(subset=[_date_col])
-        _rec_wk["_day"] = _rec_wk[_date_col].dt.day
-        def _wk(day):
-            if day <= 7:  return 1
-            if day <= 14: return 2
-            if day <= 21: return 3
-            return 4
-        _rec_wk["_wk"] = _rec_wk["_day"].apply(_wk)
-        for wk, grp in _rec_wk.groupby("_wk"):
-            weekly_dv[wk] = float(grp[_wdv_col].fillna(0).sum())
 
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
@@ -1819,6 +1820,17 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     slab_metric  = pcr_val if use_pcr else pcdv_val
     metric_label = "PCR"  if use_pcr else "PCDV"
     pcdv = slab_metric   # internal name kept for compatibility with calc functions
+
+    # spot_client: client count for PCDV Bullet Spot calculation.
+    # Must be raw (non-floored) actual client count so weekly DV / spot_client = true weekly PCDV.
+    # Derived from total Deal Value / monthly PCDV when structure file value is missing/default.
+    _raw_c = float(cfg_row.get("Client Count", 0) or 0)
+    if _raw_c > 1:
+        spot_client = _raw_c
+    elif pcdv_val > 0 and dv_for_pcdv > 0:
+        spot_client = dv_for_pcdv / pcdv_val   # back-derive from DV and PCDV
+    else:
+        spot_client = max(client_cnt, 1)
 
     cmr_pct    = cmr_data.get("cmr_pct",    0.0)
     ss_cmr_pct = cmr_data.get("ss_cmr_pct", 0.0)
@@ -1892,7 +1904,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _month = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month:
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_csd(_wdv, client_cnt, vintage)
+                spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
             elif "APR" in _month:
                 spot_inc = calc_spot_csd(nr_upsell_count, S)
             else:
@@ -1931,7 +1943,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _month_k = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_k:
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv, client_cnt, team, location, vintage)
+                spot_inc = calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
             else:
                 spot_inc = calc_spot_kcd(
                     pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
@@ -1950,7 +1962,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _month_k2 = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_k2:
                 _wdv2 = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv2, client_cnt, team, location, vintage)
+                spot_inc = calc_spot_march_kcd(_wdv2, spot_client, team, location, vintage)
             else:
                 spot_inc = calc_spot_kcd(
                     pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
@@ -1964,7 +1976,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _month_roi = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_roi:
                 _wdv_roi = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv_roi, client_cnt, team, location, vintage)
+                spot_inc = calc_spot_march_kcd(_wdv_roi, spot_client, team, location, vintage)
             else:
                 spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
@@ -1976,7 +1988,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _month_reg = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_reg:
                 _wdv_reg = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv_reg, client_cnt, team, location, vintage)
+                spot_inc = calc_spot_march_kcd(_wdv_reg, spot_client, team, location, vintage)
             elif vintage in ("0-30D", "31-90D"):
                 spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
 
