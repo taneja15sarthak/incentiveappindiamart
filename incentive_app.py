@@ -1709,17 +1709,22 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     txn_count = len(rec)
 
     # Deal Value (WT) = deal value column (different from collection)
-    dv_col    = find_col(receipt_df, ["Deal Val (WT)", "Deal Value (WT)", "DealVal_WT"])
+    dv_col    = find_col(receipt_df, ["Deal Val (WT)", "Deal Val (WOT)", "Deal Value (WT)", "DealVal_WT"])
     gross_deal_val = rec[dv_col].fillna(0).sum() if dv_col else 0.0
     _prod_col = find_col(receipt_df, ["Prod", "Product", "PRODUCT"])
     prods     = rec[_prod_col].fillna("").tolist() if _prod_col else []
-    # Productive rows only — with their service tier
-    prod_rows  = rec[rec["Productivity"] == 1] if "Productivity" in rec.columns else rec
-    svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
-    insta_rows = rec[rec["Service_Tier"] == 0.5] if "Service_Tier" in rec.columns else rec.iloc[0:0]
-    insta_count_receipt = len(insta_rows)
-    prod_score_receipt  = (len(prod_rows) + insta_count_receipt * 0.5 - insta_count_receipt
-                          ) if "Productivity" in rec.columns else txn_count
+    # Productive rows — use file's Productivity column if present (1.0=full, 0.5=insta)
+    # New receipt format pre-computes this; old format uses enrich_receipt output
+    if "Productivity" in rec.columns:
+        prod_rows  = rec[rec["Productivity"] > 0]           # 1.0 and 0.5 both count
+        svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
+        insta_count_receipt = int((rec["Productivity"].fillna(0) == 0.5).sum())
+        prod_score_receipt  = float(rec["Productivity"].fillna(0).sum())  # 1.0×full + 0.5×insta
+    else:
+        prod_rows           = rec
+        svc_tiers           = []
+        insta_count_receipt = 0
+        prod_score_receipt  = txn_count
     ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
     ref       = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     total_ref = ref["WT Amount"].fillna(0).sum()
@@ -1756,22 +1761,33 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     net_deal_val     = gross_deal_val - deal_loss
 
     # Weekly Deal Value sums for March PCDV Bullet Spot
-    # WK1=1-10 Mar, WK2=11-17 Mar, WK3=18-24 Mar, WK4=25-31 Mar
+    # New format has a pre-computed "Week" col ("WK-1".."WK-4")
+    # Old format derives week from Receipt Date (Excel serial)
     weekly_dv = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
-    _rcol_w  = find_col(receipt_df, ["Receipt Date", "ReceiptDate"])
-    _dv_col_w = dv_col  # reuse the already-found Deal Val (WT) column name
-    if _rcol_w and _dv_col_w and len(rec) > 0:
+    _wk_col   = find_col(receipt_df, ["Week", "WEEK"])
+    _rcol_w   = find_col(receipt_df, ["Receipt Date", "ReceiptDate"])
+    _dv_col_w = dv_col  # already-found Deal Val (WT) / WOT column
+    _wk_map   = {"WK-1":1,"WK-2":2,"WK-3":3,"WK-4":4,"WK1":1,"WK2":2,"WK3":3,"WK4":4}
+
+    if _wk_col and _dv_col_w and len(rec) > 0:
+        # Prefer pre-computed Week column (new receipt file format)
+        for _wlabel, _v in zip(rec[_wk_col].fillna("").values,
+                                rec[_dv_col_w].fillna(0).values):
+            _wn = _wk_map.get(str(_wlabel).strip().upper())
+            if _wn:
+                weekly_dv[_wn] += float(_v)
+    elif _rcol_w and _dv_col_w and len(rec) > 0:
+        # Fallback: derive week from Receipt Date (Excel serial number)
         try:
-            _rd = pd.to_numeric(rec[_rcol_w], errors='coerce').fillna(0).astype(int)
-            _dv = rec[_dv_col_w].fillna(0)
+            _rd   = pd.to_numeric(rec[_rcol_w], errors='coerce').fillna(0).astype(int)
+            _dv   = rec[_dv_col_w].fillna(0)
             _base = pd.Timestamp('1899-12-30')
             for _x, _v in zip(_rd.values, _dv.values):
                 if _x > 0:
                     _dt = _base + pd.Timedelta(days=int(_x))
                     if _dt.year == 2026 and _dt.month == 3:
-                        _wk = (1 if _dt.day <= 10 else
-                               2 if _dt.day <= 17 else
-                               3 if _dt.day <= 24 else 4)
+                        _wk = (1 if _dt.day <= 10 else 2 if _dt.day <= 17
+                               else 3 if _dt.day <= 24 else 4)
                         weekly_dv[_wk] += float(_v)
         except Exception:
             pass
