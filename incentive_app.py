@@ -1813,7 +1813,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     vintage    = str(cfg_row.get("Vintage",   "91-270D"))
     team       = str(cfg_row.get("Team",      ""))
     client_cnt = max(float(cfg_row.get("Client Count", 100) or 100),
-                     50 if "CSD" in vertical else 1)
+                     50)   # both CSD and KCD use 50 as minimum client count
     listing_c    = float(cfg_row.get("Listing Clients", 0) or 0)
     catalog_c    = float(cfg_row.get("Catalog Clients",  0) or 0)
     pcr_target_v = float(cfg_row.get("PCR Target",       0) or 0)
@@ -2110,6 +2110,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "KCD Gross Incentive (₹)":  int(base_inc)  if "KCD" in vertical else "",
         "KCD Paid Incentive (₹)":   0              if "KCD" in vertical else "",
         "KCD Balance Incentive (₹)":int(base_inc)  if "KCD" in vertical else "",
+        # Aliases matching sir's exact column names in kcd_calc.xlsx
+        "Incentive Multiplier":     int(_kcd_per_txn) if "KCD" in vertical else "",
+        "Incentive":                _kcd_base          if "KCD" in vertical else "",
+        "SS+Ren Multiplier":        _kcd_ss_mult       if "KCD" in vertical else "",
+        "Total Incentive (KCD)":    int(_kcd_base)     if "KCD" in vertical else "",
+        "Gross Incentive (KCD)":    int(base_inc)      if "KCD" in vertical else "",
         "KCD Group":                "" if "KCD" in vertical else "",
         "KCD Delhi Loc Incentive":  "" if "KCD" in vertical else "",
         "KCD Rem":                  "" if "KCD" in vertical else "",
@@ -2124,7 +2130,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v26")
+st.title("💰 IndiaMart Incentive Calculator — v27")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2596,6 +2602,8 @@ if calc_btn:
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
             "KCD Paid Incentive (₹)","KCD Balance Incentive (₹)",
             "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
+            "Incentive Multiplier","Incentive","SS+Ren Multiplier",
+            "Total Incentive (KCD)","Gross Incentive (KCD)",
             "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
@@ -2635,6 +2643,8 @@ if calc_btn:
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
             "KCD Paid Incentive (₹)","KCD Balance Incentive (₹)",
             "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
+            "Incentive Multiplier","Incentive","SS+Ren Multiplier",
+            "Total Incentive (KCD)","Gross Incentive (KCD)",
             "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not kcd_res.empty:
