@@ -654,35 +654,55 @@ def get_available_months(receipt_df, renewal_df):
 def filter_by_month(receipt_df, refund_df, renewal_df, selected_month):
     """
     Filter all three dataframes to the selected month.
-    selected_month format: 'Feb-26'
+    Handles both proper datetime columns AND Excel serial number columns (float/int).
+    selected_month format: 'Mar-26'
     """
     target = pd.to_datetime(selected_month, format="%b-%y")
     target_month = target.month
     target_year  = target.year
-    target_str   = target.strftime("%b'%y")   # e.g. "Feb'26" for renewal
 
-    # ── Receipt: filter by Entry Date ────────────────────────
+    def _to_datetime_robust(series):
+        """
+        Convert a series to datetime, handling:
+          1. Already proper datetime/timestamp
+          2. Excel serial numbers (float like 46082.0) → 1899-12-30 + N days
+          3. String dates
+        Returns a datetime Series.
+        """
+        # Try standard parse first
+        parsed = pd.to_datetime(series, errors="coerce")
+        # Check if result looks like epoch (1970) — sign of float serial misparse
+        epoch_count = (parsed.dt.year == 1970).sum() if parsed.notna().any() else 0
+        valid_count = parsed.notna().sum()
+        if epoch_count > valid_count * 0.5:
+            # More than half parsed as 1970 → these are Excel serials
+            nums = pd.to_numeric(series, errors="coerce")
+            excel_base = pd.Timestamp("1899-12-30")
+            parsed = nums.apply(
+                lambda x: excel_base + pd.Timedelta(days=int(x))
+                if pd.notna(x) and x > 0 else pd.NaT
+            )
+        return parsed
+
+    # ── Receipt: filter by Entry Date (fallback: Receipt Date) ───────────────
     r = receipt_df.copy()
     date_col = find_col(r, ["Entry Date", "Clear Date", "Receipt Date"])
     if date_col:
-        r[date_col] = pd.to_datetime(r[date_col], errors="coerce")
-        r = r[r[date_col].dt.month == target_month]
-        r = r[r[date_col].dt.year  == target_year]
+        r_dates = _to_datetime_robust(r[date_col])
+        r = r[(r_dates.dt.month == target_month) & (r_dates.dt.year == target_year)]
 
-    # ── Refund: filter by Clear Date ─────────────────────────
+    # ── Refund: filter by Clear Date ─────────────────────────────────────────
     ref = refund_df.copy()
     ref_date = find_col(ref, ["Clear Date", "Month"])
     if ref_date:
-        ref[ref_date] = pd.to_datetime(ref[ref_date], errors="coerce")
-        mask = (ref[ref_date].dt.month == target_month) &                (ref[ref_date].dt.year  == target_year)
-        ref = ref[mask]
+        ref_dates = _to_datetime_robust(ref[ref_date])
+        ref = ref[(ref_dates.dt.month == target_month) & (ref_dates.dt.year == target_year)]
 
-    # ── Renewal: filter by Month column ──────────────────────
+    # ── Renewal: filter by Month column ──────────────────────────────────────
     rnl = renewal_df.copy() if renewal_df is not None else None
     if rnl is not None:
         rnl_m = find_col(rnl, ["Month", "MONTH"])
         if rnl_m:
-            # Renewal Month format is "Feb'26" / "Mar'26" etc.
             def _match(val):
                 try:
                     s = str(val).strip()
