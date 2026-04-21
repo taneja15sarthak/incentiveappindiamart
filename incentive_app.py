@@ -1029,14 +1029,24 @@ def load_structure_dump(uploaded_file):
             if raw_str not in ("", "nan", "NaT", "None"):
                 jd = _to_date(jd_raw)
 
-        # Collection Target = PCR/PCDV target × client count (if available in structure)
+        # Collection Target: if column is "PCR Target" (per-client) → multiply by client count
+        # If column is "Collection Target" (absolute value) → use directly, derive PCR Target
         coll_target = 0.0
         pcr_target_raw = 0.0
-        pcr_target_col = find_col(df, ["PCR Target","PCDV Target","PCR_Target","Collection Target"])
-        if pcr_target_col:
+        pcr_col = find_col(df, ["PCR Target","PCDV Target","PCR_Target"])
+        ct_col  = find_col(df, ["Collection Target"])
+        if pcr_col:
             try:
-                pcr_target_raw = float(row[pcr_target_col])
+                pcr_target_raw = float(row[pcr_col])
                 coll_target = pcr_target_raw * cc
+            except Exception:
+                coll_target = 0.0
+        elif ct_col:
+            try:
+                _ct = float(row[ct_col])
+                if _ct > 0:
+                    coll_target = _ct          # already absolute value
+                    pcr_target_raw = _ct / cc if cc > 0 else 0   # derive per-client rate
             except Exception:
                 coll_target = 0.0
 
@@ -1162,6 +1172,42 @@ def load_cmr_targets(uploaded_file):
         return result
     except Exception as e:
         st.error(f"Error loading CMR Targets file: {e}")
+        return {}
+
+
+def load_kcd_targets(uploaded_file):
+    """Load per-employee KCD Collection Targets from a kcd_calc-style file.
+    Reads: Employee ID, Client-A, Listing Client, Catalog Client,
+           PCR Target, Collection Target.
+    Returns dict: {emp_id: {client_a, listing, catalog, pcr_target, coll_target}}
+    """
+    if uploaded_file is None:
+        return {}
+    try:
+        df = _read_file(uploaded_file)
+        df.columns = [str(c).strip().replace('\n', ' ') for c in df.columns]
+        emp_col = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
+        if not emp_col:
+            return {}
+        ca_col  = find_col(df, ["Client-A", "Client A", "ClientA"])
+        lc_col  = find_col(df, ["Listing Client", "Listing Clients"])
+        cc_col  = find_col(df, ["Catalog Client", "Catalog Clients"])
+        pcr_col = find_col(df, ["PCR Target", "PCDV Target", "PCR_Target"])
+        ct_col  = find_col(df, ["Collection Target"])
+        result = {}
+        for _, row in df.iterrows():
+            eid = str(row[emp_col]).strip().split('.')[0]
+            if not eid or eid.lower() in ("nan", ""): continue
+            def _n(c):
+                if not c: return 0.0
+                try: return float(row[c])
+                except: return 0.0
+            result[eid] = {"client_a": _n(ca_col), "listing": _n(lc_col),
+                           "catalog": _n(cc_col), "pcr_target": _n(pcr_col),
+                           "coll_target": _n(ct_col)}
+        return result
+    except Exception as e:
+        st.warning(f"KCD Targets file error: {e}")
         return {}
 
 
@@ -1848,6 +1894,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     location   = str(cfg_row.get("Location", emp_row.get("Location", "")))
     vintage    = str(cfg_row.get("Vintage",   "91-270D"))
     team       = str(cfg_row.get("Team",      ""))
+    # Use collection_target from cfg_row if not passed directly
+    if not collection_target:
+        collection_target = float(cfg_row.get("Collection Target", 0) or 0)
+
     client_cnt = max(float(cfg_row.get("Client Count", 100) or 100),
                      50)   # both CSD and KCD use 50 as minimum client count
     listing_c    = float(cfg_row.get("Listing Clients", 0) or 0)
@@ -1870,6 +1920,30 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     slab_metric  = pcr_val if use_pcr else pcdv_val
     metric_label = "PCR"  if use_pcr else "PCDV"
     pcdv = slab_metric   # internal name kept for compatibility with calc functions
+    # PCR Target standard rates for KCD (when not available from structure/kcd_targets file)
+    if pcr_target_v == 0 and "KCD" in vertical:
+        _t_up = str(team).upper()
+        _is_hvri = any(h in location.upper() for h in ["HYDERABAD","VASHI","RAIPUR","INDORE"])
+        _is_hvri = _is_hvri or "HVRI" in _t_up
+        if vintage in ("0-30D", "31-90D"):
+            pcr_target_v = 21000.0
+        elif _is_hvri:
+            pcr_target_v = 30000.0
+        elif vintage == "91-270D":
+            pcr_target_v = 30000.0
+        elif vintage == "270D+":
+            pcr_target_v = 32000.0
+        # Listing/Catalog/ROI: no standard rate - leave as 0 unless kcd_targets provides it
+        # Recompute highest_coll with the standard PCR target
+        if pcr_target_v > 0:
+            highest_coll = pcr_target_v * client_cnt
+
+    # Derive Collection Target from standard PCR Target if still 0
+    if collection_target == 0 and pcr_target_v > 0 and "KCD" in vertical:
+        _t_up2 = str(team).upper()
+        if not any(k in _t_up2 for k in ("LISTING","CATALOG","ROI")):
+            collection_target = pcr_target_v * client_cnt
+
     # PCR% = PCR / PCR_Target (achievement % of per-client collection target)
     pcr_pct = (pcr_val / pcr_target_v) if pcr_target_v > 0 else 0
 
@@ -2166,7 +2240,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v27")
+st.title("💰 IndiaMart Incentive Calculator — v28")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2182,6 +2256,10 @@ with st.sidebar:
     st.header("🎯 CMR% Targets File")
     st.caption("Upload the monthly targets file (xlsx or xlsb).")
     cmr_target_file = st.file_uploader("6. CMR Targets file", type=["xlsx", "xlsb"])
+    kcd_target_file = st.file_uploader(
+        "7. KCD Targets file (optional) — upload kcd_calc-style file with "
+        "Collection Target, PCR Target, Client-A, Listing/Catalog counts",
+        type=["xlsx", "xlsb", "csv"])
     st.info("Individual Slab 1 & 2 targets are loaded per employee from this file.\n\n≤3 renewals sent → auto-forced Slab 1", icon="ℹ️")
 
     st.divider()
@@ -2313,6 +2391,7 @@ refund_df_raw   = _read_file(refund_file)
 renewal_df_raw  = _read_file(renewal_file)
 struct_map      = load_structure_dump(structure_file)
 cmr_targets     = load_cmr_targets(cmr_target_file)
+kcd_targets     = load_kcd_targets(kcd_target_file) if kcd_target_file else {}
 
 if not struct_map or len(struct_map) == 0:
     st.error("Could not read the structure file. Check column names.")
@@ -2432,6 +2511,20 @@ if calc_btn:
 
         # Per-employee CMR targets
         emp_targets = cmr_targets.get(emp_id, {"slab1": 70.0, "slab2": 80.0})
+        # Apply KCD targets override (from uploaded kcd_targets file)
+        if s.get("Vertical","") == "KCD" and kcd_targets.get(emp_id):
+            _kt = kcd_targets[emp_id]
+            if _kt.get("coll_target",0) > 0:
+                s = dict(s)
+                s["Collection Target"] = _kt["coll_target"]
+                s["PCR Target"]        = _kt["pcr_target"]
+                if _kt.get("client_a",0) > 0:
+                    s["Client Count"]  = _kt["client_a"]
+                if _kt.get("listing",0) > 0:
+                    s["Listing Clients"] = _kt["listing"]
+                if _kt.get("catalog",0) > 0:
+                    s["Catalog Clients"] = _kt["catalog"]
+
         emp_sb = {**sb,
                   "csd_slab1_target": emp_targets["slab1"],
                   "csd_slab2_target": emp_targets["slab2"],
@@ -2457,6 +2550,7 @@ if calc_btn:
             "Listing Clients": s.get("Listing Clients", 0),
             "Catalog Clients": s.get("Catalog Clients", 0),
             "PCR Target":      s.get("PCR Target", 0),
+            "Collection Target": s.get("Collection Target", 0),
         }
         emp_row = {
             "Vertical":  s.get("Vertical", ""),
