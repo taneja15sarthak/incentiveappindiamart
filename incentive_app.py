@@ -286,13 +286,20 @@ def build_default_slab_config():
     }
 
 
-def load_slab_config(uploaded_file):
+def load_slab_config(uploaded_file, sel_month=None):
     """
     Load slab config from uploaded Excel.
     Returns dict of DataFrames, one per sheet.
     Falls back to defaults for any missing sheet.
+    Month-aware: April uses April slabs, all others use default (March).
     """
-    defaults = build_default_slab_config()
+    _is_april = "APR" in str(sel_month or "").upper()
+    if _is_april:
+        march_base = build_march_slab_config()
+        april_ext  = build_april_slab_config()
+        defaults   = {**march_base, **april_ext}
+    else:
+        defaults   = build_default_slab_config()
     if uploaded_file is None:
         return defaults
 
@@ -313,27 +320,28 @@ def load_slab_config(uploaded_file):
 def parse_slabs(cfg):
     """Convert loaded config DataFrames into the tuples the calculation functions expect."""
 
-    # ── CSD New ──────────────────────────────────────────────
+    # ── CSD New (April or March slabs) ───────────────────────
+    _new_slab_key    = "CSD_New_Slabs_Apr"  if "CSD_New_Slabs_Apr"  in cfg else "CSD_New_Slabs"
+    _new_params_key  = "CSD_New_Params_Apr" if "CSD_New_Params_Apr" in cfg else "CSD_New_Params"
     csd_new_slabs = [
         (int(r["PCDV_Threshold"]), int(r["Payout"]))
-        for _, r in cfg["CSD_New_Slabs"].iterrows()
+        for _, r in cfg[_new_slab_key].iterrows()
     ]
-    params = cfg["CSD_New_Params"].set_index("Parameter")["Value"].to_dict()
+    params = cfg[_new_params_key].set_index("Parameter")["Value"].to_dict()
     csd_new_incr_thresh  = float(params.get("Incremental_Threshold", 2800))
     csd_new_incr_rate    = float(params.get("Incremental_Rate_%", 3.0)) / 100
     csd_slab2_mult       = float(params.get("Slab2_CMR_Multiplier_%", 120)) / 100
     min_txn_0_30         = int(params.get("Min_Txn_0_30D", 2))
     min_txn_31_90        = int(params.get("Min_Txn_31_90D", 3))
+    new_joiner_cap       = float(params.get("Max_Incentive", 20000))
 
-    # ── CSD SPS ──────────────────────────────────────────────
-    csd_sps_91_270 = [
-        (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
-        for _, r in cfg["CSD_SPS_91_270D"].iterrows()
-    ]
-    csd_sps_270p = [
-        (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
-        for _, r in cfg["CSD_SPS_270D_Plus"].iterrows()
-    ]
+    # ── CSD SPS (April or March slabs) ──────────────────────
+    def _csd_sps_slabs(apr_key, mar_key):
+        k = apr_key if apr_key in cfg else mar_key
+        return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+                for _, r in cfg[k].iterrows()]
+    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
+    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
     # CSD Relationship Manager slabs (different from Exec slabs)
     csd_rm_slabs = [
         (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
@@ -363,17 +371,21 @@ def parse_slabs(cfg):
         for kw in str(r["Product_Keywords"]).split(","):
             prod_to_pop[kw.strip().upper()] = int(r["Incentive_Per_Txn"])
 
-    # ── KCD Regular ──────────────────────────────────────────
+    # ── KCD Regular (April or March slabs) ──────────────────
     def to_kcd_slabs(sheet_key):
         return [
-            (int(r["PCDV_Threshold"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
+            (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+            if "Slab1_Per_Txn" in cfg[sheet_key].columns
+            else (int(r["PCDV_Threshold"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
             for _, r in cfg[sheet_key].iterrows()
         ]
-    kcd_270_slabs    = to_kcd_slabs("KCD_Regular_270D")
-    kcd_91_270_slabs = to_kcd_slabs("KCD_Regular_91_270D")
-    kcd_0_90_slabs   = to_kcd_slabs("KCD_Regular_0_90D")
-    kcd_hvri_slabs   = to_kcd_slabs("KCD_HVRI")
-    kcd_nagpur_slabs = to_kcd_slabs("KCD_Nagpur_Pharma")
+    def _kcd_key(apr_key, mar_key):
+        return apr_key if apr_key in cfg else mar_key
+    kcd_270_slabs    = to_kcd_slabs(_kcd_key("KCD_Regular_270_Apr",    "KCD_Regular_270D"))
+    kcd_91_270_slabs = to_kcd_slabs(_kcd_key("KCD_Regular_91_270_Apr", "KCD_Regular_91_270D"))
+    kcd_0_90_slabs   = to_kcd_slabs(_kcd_key("KCD_New_0_90_Apr",       "KCD_Regular_0_90D"))
+    kcd_hvri_slabs   = to_kcd_slabs(_kcd_key("KCD_HVRI_Apr",           "KCD_HVRI"))
+    kcd_nagpur_slabs = to_kcd_slabs(_kcd_key("KCD_Nagpur_Apr",         "KCD_Nagpur_Pharma"))
 
     # ── KCD Incremental Rates ────────────────────────────────
     kcd_incr = {}
@@ -445,6 +457,141 @@ def parse_slabs(cfg):
         "kcd_spot":            kcd_spot,
     }
 
+
+
+def build_april_slab_config():
+    """April 2026 incentive slab configuration derived from scheme documents."""
+    import pandas as _pd
+
+    # CSD 0-30D and 31-90D — April slabs
+    # PCDV: 1800→3100, 2100→5100, 2400→7000, 2800→10500
+    # Incremental: 3% on deal value above PCDV 2800 (threshold = 2800, not 5000)
+    # CMR slab targets: 55%/65% (individual, same as March)
+    # PoP: same tiers (500/1000/1500); min 2 for 0-30D, min 3 for 31-90D
+    # Cap: ₹20,000
+    csd_new_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 2800, "Payout": 10500},
+        {"PCDV_Threshold": 2400, "Payout": 7000},
+        {"PCDV_Threshold": 2100, "Payout": 5100},
+        {"PCDV_Threshold": 1800, "Payout": 3100},
+    ])
+    csd_new_params_apr = _pd.DataFrame([
+        {"Parameter": "Incremental_Threshold", "Value": 2800},  # PCDV threshold
+        {"Parameter": "Incremental_Rate_%",    "Value": 3.0},
+        {"Parameter": "Slab2_CMR_Multiplier_%","Value": 120},
+        {"Parameter": "Min_Txn_0_30D",         "Value": 2},
+        {"Parameter": "Min_Txn_31_90D",        "Value": 3},
+        {"Parameter": "Pop_CMR_Floor_%",        "Value": 55},
+        {"Parameter": "Max_Incentive",          "Value": 20000},
+    ])
+
+    # CSD Spot April — NR Upsell/AMR based (NOT PCDV bullet like March)
+    # FNT-1 (Apr 1-16): ≥3 upsells → ₹1500 base + ₹750/txn after 3
+    # FNT-2 (Apr 20-30): ≥3 upsells → ₹2500 base + ₹1000/txn after 3
+    # Both require PCDV & CMR targets met
+    csd_spot_apr = _pd.DataFrame([
+        {"Period": "FNT1", "Min_Prod": 3, "Base_Amount": 1500, "Per_Txn_After": 750},
+        {"Period": "FNT2", "Min_Prod": 3, "Base_Amount": 2500, "Per_Txn_After": 1000},
+    ])
+
+    # KCD Spot April — PCDV-based with FNT periods and SS/LS multiplier
+    # Structure: {team_vintage_key: {fnt1: (thresh, base, per_unit, unit_size), fnt2: ...}}
+    kcd_spot_apr = _pd.DataFrame([
+        # Regular/ROI 0-90D
+        {"Key": "ROI_0_90",    "FNT1_Thresh": 4000, "FNT1_Base": 2500, "FNT1_Unit": 1000, "FNT1_Size": 1000,
+                                "FNT2_Thresh": 4000, "FNT2_Base": 4000, "FNT2_Unit": 1000, "FNT2_Size": 1000},
+        # Regular/ROI 90+
+        {"Key": "ROI_90p",     "FNT1_Thresh": 6000, "FNT1_Base": 2500, "FNT1_Unit": 1000, "FNT1_Size": 1000,
+                                "FNT2_Thresh": 6000, "FNT2_Base": 4000, "FNT2_Unit": 1000, "FNT2_Size": 1000},
+        # Catalog 0-90D
+        {"Key": "CAT_0_90",    "FNT1_Thresh": 2500, "FNT1_Base": 2500, "FNT1_Unit": 1000, "FNT1_Size": 1000,
+                                "FNT2_Thresh": 2500, "FNT2_Base": 4000, "FNT2_Unit": 1000, "FNT2_Size": 1000},
+        # Catalog 90+
+        {"Key": "CAT_90p",     "FNT1_Thresh": 3500, "FNT1_Base": 2500, "FNT1_Unit": 1000, "FNT1_Size": 1000,
+                                "FNT2_Thresh": 3500, "FNT2_Base": 4000, "FNT2_Unit": 1000, "FNT2_Size": 1000},
+        # Listing 0-90D
+        {"Key": "LIST_0_90",   "FNT1_Thresh": 7500, "FNT1_Base": 2500, "FNT1_Unit": 1000, "FNT1_Size": 1000,
+                                "FNT2_Thresh": 7500, "FNT2_Base": 4000, "FNT2_Unit": 1000, "FNT2_Size": 2000},
+        # Listing 90+
+        {"Key": "LIST_90p",    "FNT1_Thresh": 11000,"FNT1_Base": 2500, "FNT1_Unit": 1000, "FNT1_Size": 1000,
+                                "FNT2_Thresh": 11000,"FNT2_Base": 4000, "FNT2_Unit": 1000, "FNT2_Size": 2000},
+    ])
+
+    # CSD SPS April base slabs (per-txn, per PCDV tier)
+    # 91-270D: 2400→1250/1500, 2600→2000/2400, 2800→2500/3000
+    csd_sps_91_270_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 2800, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 2600, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCDV_Threshold": 2400, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+    ])
+    # 270D+: 2600→1250/1500, 2800→2000/2400, 3000→2500/3000
+    csd_sps_270_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 3000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 2800, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+        {"PCDV_Threshold": 2600, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+    ])
+    # ROI 91-270D (from Slide 4 in image(7)): same as SPS 91-270D
+    csd_roi_91_270_apr = csd_sps_91_270_apr.copy()
+    # ROI 270D+ (from Slide 5): same as SPS 270D+
+    csd_roi_270_apr = csd_sps_270_apr.copy()
+
+    # KCD April base slabs (PCDV per-txn by vintage, CMR 72%/80%)
+    kcd_91_270_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 17000, "Slab1_Per_Txn": 3000, "Slab2_Per_Txn": 3600},
+        {"PCDV_Threshold": 14000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 11000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+    ])
+    kcd_270_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 19000, "Slab1_Per_Txn": 3000, "Slab2_Per_Txn": 3600},
+        {"PCDV_Threshold": 16000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 13000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+    ])
+    kcd_roi_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 14000, "Slab1_Per_Txn": 3000, "Slab2_Per_Txn": 3600},
+        {"PCDV_Threshold": 11000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold":  8000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+    ])
+    kcd_hvri_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 17000, "Slab1_Per_Txn": 3000, "Slab2_Per_Txn": 3600},
+        {"PCDV_Threshold": 14000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 10000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+    ])
+    kcd_nagpur_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 32000, "Slab1_Per_Txn": 3000, "Slab2_Per_Txn": 3600},
+        {"PCDV_Threshold": 28000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold": 24000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+    ])
+    # CSD-to-KCD new joined (after Dec'25): same as ROI rates
+    kcd_new_0_90_apr = _pd.DataFrame([
+        {"PCDV_Threshold": 14000, "Slab1_Per_Txn": 3000, "Slab2_Per_Txn": 3600},
+        {"PCDV_Threshold": 11000, "Slab1_Per_Txn": 2500, "Slab2_Per_Txn": 3000},
+        {"PCDV_Threshold":  8000, "Slab1_Per_Txn": 2000, "Slab2_Per_Txn": 2400},
+    ])
+    # KCD incremental rates for April (per-team)
+    kcd_incr_apr = _pd.DataFrame([
+        {"Team": "Regular_91_270", "Incr_Threshold": 17000, "Incr_Rate_%": 1.40},
+        {"Team": "Regular_270",    "Incr_Threshold": 19000, "Incr_Rate_%": 1.40},
+        {"Team": "ROI",            "Incr_Threshold": 14000, "Incr_Rate_%": 1.40},
+        {"Team": "HVRI",           "Incr_Threshold": 17000, "Incr_Rate_%": 1.40},
+        {"Team": "Nagpur",         "Incr_Threshold": 32000, "Incr_Rate_%": 0.85},
+        {"Team": "New_KCD",        "Incr_Threshold": 14000, "Incr_Rate_%": 1.40},
+    ])
+
+    return {
+        "CSD_New_Slabs_Apr":      csd_new_apr,
+        "CSD_New_Params_Apr":     csd_new_params_apr,
+        "CSD_Spot_Apr":           csd_spot_apr,
+        "KCD_Spot_Apr":           kcd_spot_apr,
+        "CSD_SPS_91_270_Apr":     csd_sps_91_270_apr,
+        "CSD_SPS_270_Apr":        csd_sps_270_apr,
+        "KCD_Regular_91_270_Apr": kcd_91_270_apr,
+        "KCD_Regular_270_Apr":    kcd_270_apr,
+        "KCD_ROI_Apr":            kcd_roi_apr,
+        "KCD_HVRI_Apr":           kcd_hvri_apr,
+        "KCD_Nagpur_Apr":         kcd_nagpur_apr,
+        "KCD_New_0_90_Apr":       kcd_new_0_90_apr,
+        "KCD_Incr_Rates_Apr":     kcd_incr_apr,
+    }
 
 
 def build_march_slab_config():
@@ -1571,14 +1718,14 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
     achv    = (net_dv / collection_target) * 100
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S["kcd_catalog_slabs"] if achv >= t), 0)
-    incr     = max(0, net_dv - collection_target) * 0.014
+    # Incremental computed separately in route_calc (needs PCR% gate not NDV% gate)
     btl_mult = 1.2 if btl_sales >= 2 else 1.0
     if ss_sent >= 3 and ss_cmr_pct < 70:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
     base = per_txn * txn_count * ss_mult * btl_mult
-    return round(base + incr, 0), \
+    return round(base, 0), \
            f"KCD Catalog {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | BTL:{btl_mult} | SS+:{ss_mult}"
 
 
@@ -1669,6 +1816,84 @@ def calc_spot_march_kcd(weekly_dv, client_a, team, location, vintage):
         tbl, extra = tables[wk]
         total += _spot_bullet(wk_pcdv, tbl, extra)
     return int(total)
+
+
+def calc_spot_april_csd(nr_upsell_count, S):
+    """
+    CSD April spot: NR Upsell/AMR productivity based.
+    FNT-1 (Apr 1-16): ≥3 prods → ₹1500 + ₹750/txn above 3
+    FNT-2 (Apr 20-30): ≥3 prods → ₹2500 + ₹1000/txn above 3
+    Both fortnights combined since we compute full month.
+    For simplicity we apply the FNT-2 (higher) rates for all qualifying txns.
+    TODO: split by receipt date FNT when per-fortnight data is available.
+    """
+    if nr_upsell_count < 3:
+        return 0
+    # Apply FNT-2 rates (conservative: use higher-earning fortnight)
+    fnt2_base = 2500
+    fnt2_per  = 1000
+    return fnt2_base + (nr_upsell_count - 3) * fnt2_per
+
+
+def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S):
+    """
+    KCD April spot: PCDV-based with FNT periods.
+    FNT-1 (Apr 1-16):  base amounts + ₹1000/1K PCDV after threshold
+    FNT-2 (Apr 20-30): higher base + same step
+    We compute both fortnights on the same monthly PCDV (proportional approach).
+    For accurate per-fortnight calculation, upload a receipt file with FNT column.
+    SS/LS upsell multiplier is computed externally (125% or 50%) but not available
+    here without receipt data — we return base spot only.
+    """
+    if not client_a or client_a <= 0 or monthly_pcdv <= 0:
+        return 0
+    team_up = str(team).upper()
+    loc_up  = str(location).upper()
+    is_0_90 = vintage in ("0-30D", "31-90D")
+    is_listing  = "LISTING" in team_up
+    is_catalog  = "CATALOG" in team_up
+    is_roi      = "ROI" in team_up or any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"])
+
+    # FNT-1 and FNT-2 config: (threshold, base, per_unit, unit_size)
+    # Key selection by team/vintage
+    if is_listing and is_0_90:
+        fnt1 = (7500,  2500, 1000, 1000)
+        fnt2 = (7500,  4000, 1000, 2000)
+    elif is_listing:
+        fnt1 = (11000, 2500, 1000, 1000)
+        fnt2 = (11000, 4000, 1000, 2000)
+    elif is_catalog and is_0_90:
+        fnt1 = (2500,  2500, 1000, 1000)
+        fnt2 = (2500,  4000, 1000, 1000)
+    elif is_catalog:
+        fnt1 = (3500,  2500, 1000, 1000)
+        fnt2 = (3500,  4000, 1000, 1000)
+    elif is_roi and is_0_90:
+        fnt1 = (4000,  2500, 1000, 1000)
+        fnt2 = (4000,  4000, 1000, 1000)
+    elif is_roi:
+        fnt1 = (6000,  2500, 1000, 1000)
+        fnt2 = (6000,  4000, 1000, 1000)
+    elif is_0_90:   # Regular 0-90D
+        fnt1 = (4000,  2500, 1000, 1000)
+        fnt2 = (4000,  4000, 1000, 1000)
+    else:           # Regular 90+
+        fnt1 = (6000,  2500, 1000, 1000)
+        fnt2 = (6000,  4000, 1000, 1000)
+
+    def _bullet(pcdv, cfg):
+        thresh, base, per_unit, unit_size = cfg
+        if pcdv < thresh:
+            return 0
+        return base + int((pcdv - thresh) / unit_size) * per_unit
+
+    # Combine both fortnights. Since we only have monthly PCDV, we give
+    # the employee the sum of FNT-1 + FNT-2 based on monthly PCDV / 2 as proxy.
+    # More accurate: use FNT column from receipt file when available.
+    pcdv_per_fnt = monthly_pcdv / 2   # rough split
+    fnt1_spot = _bullet(pcdv_per_fnt, fnt1)
+    fnt2_spot = _bullet(pcdv_per_fnt, fnt2)
+    return int(fnt1_spot + fnt2_spot)
 
 
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
@@ -2094,13 +2319,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
                     emp_mdc1_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
                     metric_label=metric_label, is_sps=is_sps_employee)
-            # Spot: March = PCDV Bullet Spot (weekly); April = NR upsell count
+            # Spot: March = weekly PCDV Bullet; April = FNT-based NR upsell count
             _month = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month:
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
             elif "APR" in _month:
-                spot_inc = calc_spot_csd(nr_upsell_count, S)
+                spot_inc = calc_spot_april_csd(nr_upsell_count, S)
             else:
                 spot_inc = 0
 
@@ -2131,13 +2356,17 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_list_c)
             # Incremental only when PCR% > 140% (from FSF formula)
-            _achv_pct = (kcd_net_dv / collection_target * 100) if (collection_target or 0) > 0 else 0
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (_achv_pct > 140 and (collection_target or 0) > 0) else 0
-            kcd_base_only   = base_inc - kcd_incremental
+            # Gate on PCR% > 140% (FSF: AG>140%), compute amount on Net DV
+            # pcr_pct uses Net Collection / PCR_Target (already computed above)
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0)                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
+            kcd_base_only = base_inc
+            base_inc = kcd_base_only + kcd_incremental
             _month_k = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_k:
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
+            elif "APR" in _month_k:
+                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
             else:
                 spot_inc = calc_spot_kcd(
                     pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
@@ -2150,13 +2379,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
-            _achv_pct_c = (kcd_net_dv / collection_target * 100) if (collection_target or 0) > 0 else 0
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (_achv_pct_c > 140 and (collection_target or 0) > 0) else 0
-            kcd_base_only   = base_inc - kcd_incremental
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0)                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
+            kcd_base_only = base_inc
+            base_inc = kcd_base_only + kcd_incremental
             _month_k2 = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_k2:
                 _wdv2 = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_kcd(_wdv2, spot_client, team, location, vintage)
+            elif "APR" in _month_k2:
+                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
             else:
                 spot_inc = calc_spot_kcd(
                     pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
@@ -2165,26 +2396,28 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            _achv_roi = (pcdv / (collection_target/client_cnt) * 100) if (collection_target > 0 and client_cnt > 0) else (kcd_net_dv / collection_target * 100) if collection_target > 0 else 0
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if (_achv_roi > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0)                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             _month_roi = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_roi:
                 _wdv_roi = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_kcd(_wdv_roi, spot_client, team, location, vintage)
+            elif "APR" in _month_roi:
+                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
             else:
                 spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            _achv_reg = (kcd_net_dv / collection_target * 100) if collection_target > 0 else 0
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if (_achv_reg > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0)                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             _month_reg = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_reg:
                 _wdv_reg = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_kcd(_wdv_reg, spot_client, team, location, vintage)
+            elif "APR" in _month_reg:
+                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
             elif vintage in ("0-30D", "31-90D"):
                 spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
 
@@ -2327,7 +2560,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v29")
+st.title("💰 IndiaMart Incentive Calculator — v30")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2383,6 +2616,15 @@ with st.sidebar:
 
     st.divider()
     st.header("📅 Select Month")
+    # Pre-select month so April slabs load correctly even before files are uploaded
+    _month_choice = st.radio(
+        "Which month are you calculating?",
+        options=["March 2026", "April 2026"],
+        index=1,
+        key="month_choice_radio",
+        horizontal=True,
+    )
+    _preselected_month = "APR26" if "April" in _month_choice else "MAR26"
     selected_month = st.selectbox(
         "Calculate incentives for",
         options=["(Upload files first)"],
@@ -2438,7 +2680,9 @@ with col_b:
     )
 
 # Load and parse slab config (uses defaults if not uploaded)
-slab_cfg_raw = load_slab_config(slab_cfg_file)
+# Use pre-selected month for slab loading (so April slabs apply even before receipt uploaded)
+_month_for_slabs = sel_month if sel_month else _preselected_month
+slab_cfg_raw = load_slab_config(slab_cfg_file, sel_month=_month_for_slabs)
 S = parse_slabs(slab_cfg_raw)
 
 if slab_cfg_file:
