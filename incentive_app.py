@@ -1335,11 +1335,18 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     """
     min_txn = S["min_txn_0_30"] if vintage == "0-30D" else S["min_txn_31_90"]
 
-    # Base incentive
+    # Base incentive — from FSF formula
     base  = next((r for t, r in S["csd_new_slabs"] if pcdv >= t), 0)
-    incr  = (pcdv - S["csd_new_incr_thresh"]) * client_c * S["csd_new_incr_rate"]             if pcdv > S["csd_new_incr_thresh"] else 0
-    mult  = S["csd_slab2_mult"] if cmr_slab == 2 else 1.0
-    base_total = (base + incr) * mult
+    # Incremental: (Net Collection − Highest Collection) × 3%
+    # Highest Collection = Client-C × 5000 (fixed in FSF: AB = P × 5000)
+    _net_coll_raw    = pcdv * client_c
+    _highest_coll_90 = client_c * 5000
+    incr  = (_net_coll_raw - _highest_coll_90) * S["csd_new_incr_rate"] if _net_coll_raw > _highest_coll_90 else 0
+    # CMR multiplier: 120% at slab2, 100% at slab1 or sent<=3, 0% below slab1
+    mult  = S["csd_slab2_mult"] if cmr_slab == 2 else (1.0 if cmr_slab >= 1 else 0.0)
+    _base_before_cap = (base + incr) * mult
+    # Cap at 30,000 (from FSF: MIN(..., 30000))
+    base_total = min(_base_before_cap, 30000.0)
 
     # Productivity (Annual + MYR only; IM Insta excluded)
     prod_score, _, reg_count = calc_productivity(rnl_prods, rnl_modes, "csd_new")
@@ -1528,8 +1535,8 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     """
     # If collection_target not in structure, derive from slab rates × client split
     if collection_target <= 0:
-        rates  = S["kcd_listing_rates"].get(vintage, (7000, 22000))
-        collection_target = base_clients * rates[0] + list_clients * rates[1]
+        # FSF formula: Collection Target = Catalog×8500 + Listing×48000
+        collection_target = base_clients * 8500 + list_clients * 48000
     if collection_target <= 0:
         return 0, "KCD Listing — target=0"
     achv    = (net_dv / collection_target) * 100
@@ -1557,8 +1564,8 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
     - SS penalty only when ss_sent >= 3 AND ss_cmr < 70%.
     """
     if collection_target <= 0:
-        rates  = S["kcd_listing_rates"].get(vintage, (7000, 22000))
-        collection_target = base_clients * rates[0] + list_clients * rates[1]
+        # FSF formula: Collection Target = Catalog×8500 + Listing×48000
+        collection_target = base_clients * 8500 + list_clients * 48000
     if collection_target <= 0:
         return 0, "KCD Catalog — target=0"
     achv    = (net_dv / collection_target) * 100
@@ -1943,6 +1950,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             pcr_target_v = 30000.0
         elif vintage == "270D+":
             pcr_target_v = 32000.0
+        # KCD Highest Collection = Client-A × 32000 (fixed in FSF formula, all employees)
+        highest_coll = client_cnt * 32000
         # Listing/Catalog/ROI: no standard rate - leave as 0 unless kcd_targets provides it
         # Recompute highest_coll with the standard PCR target
         if pcr_target_v > 0:
@@ -1993,8 +2002,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # ── CSD ──────────────────────────────────────────────────
     if "CSD" in vertical:
-        cmr_slab, cmr_note = get_cmr_slab(
-            cmr_pct, rnl_sent, sb.get("csd_slab1_target", 50), sb.get("csd_slab2_target", 60))
+        # FSF hardcodes 55%/65% for new joiners (0-30D/31-90D), 
+        # and individual targets for 91D+ (from CMR targets file or sidebar)
+        if vintage in ("0-30D", "31-90D"):
+            _s1, _s2 = 55.0, 65.0   # hardcoded in FSF formula
+        else:
+            _s1 = float(sb.get("csd_slab1_target", 65))
+            _s2 = float(sb.get("csd_slab2_target", 70))
+        cmr_slab, cmr_note = get_cmr_slab(cmr_pct, rnl_sent, _s1, _s2)
 
         if vintage == "0-30D":
             # 0-30D: fixed slab base + PoP
@@ -2115,7 +2130,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_list_c)
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
+            # Incremental only when PCR% > 140% (from FSF formula)
+            _achv_pct = (kcd_net_dv / collection_target * 100) if (collection_target or 0) > 0 else 0
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (_achv_pct > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only   = base_inc - kcd_incremental
             _month_k = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_k:
@@ -2133,7 +2150,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (collection_target or 0) > 0 else 0
+            _achv_pct_c = (kcd_net_dv / collection_target * 100) if (collection_target or 0) > 0 else 0
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) if (_achv_pct_c > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only   = base_inc - kcd_incremental
             _month_k2 = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_k2:
@@ -2147,7 +2165,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
+            _achv_roi = (pcdv / (collection_target/client_cnt) * 100) if (collection_target > 0 and client_cnt > 0) else (kcd_net_dv / collection_target * 100) if collection_target > 0 else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if (_achv_roi > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             _month_roi = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_roi:
@@ -2159,7 +2178,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if collection_target > 0 else 0
+            _achv_reg = (kcd_net_dv / collection_target * 100) if collection_target > 0 else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) if (_achv_reg > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             _month_reg = str(sb.get("sel_month", "")).upper()
             if "MAR" in _month_reg:
@@ -2185,15 +2205,20 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _bm = _re.search(r'boost:([0-9.]+)', notes)
     _boost_val = float(_bm.group(1)) if _bm else 1.0
 
+    # SPS vintage flag: MDC1 multiplier only applies to 91D+ employees, not new joiners
+    _is_sps_vintage = vintage not in ("0-30D",)
+
     # Extract MDC1 multiplier from scheme notes string
     # Pattern: "MDC1:1.2(60%)" or "MDC1:0.5(20%)"
     _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
     _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 0.0
-    # If not in notes, derive from the actual mdc1_cmr_pct value directly
-    if _mdc1_mult_val == 0.0 and _is_csd:
+    # Fallback: derive from mdc1_cmr_pct — only for SPS (91D+), not new joiners
+    if _mdc1_mult_val == 0.0 and _is_csd and _is_sps_vintage:
         _mdc1_pct_raw = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
         _mdc1_mult_val = (1.2 if _mdc1_pct_raw > 35 else
                           1.0 if _mdc1_pct_raw >= 25 else 0.5)
+    elif not _is_sps_vintage:
+        _mdc1_mult_val = 0.0  # N/A for 0-30D new joiners
 
     # For Rel Mgr, extract 2D CMR+1 multiplier
     _cmrp1_m = _re.search(r'CMR[+]1:([0-9.]+)', notes)
@@ -2203,16 +2228,19 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
 
     # Per-txn rate: extract directly from scheme notes "₹NNNN/txn"
+    # Only meaningful for SPS (91D+) - 0-30D uses fixed slab, not per-txn
     _per_txn_m = _re.search(r'₹([0-9]+)/txn', notes)
     if _per_txn_m:
         _per_txn_rate = int(_per_txn_m.group(1))
-    elif _is_csd and _prod_score > 0 and _mdc1_mult_val > 0 and _boost_val > 0:
+    elif _is_sps_vintage and _is_csd and _prod_score > 0 and _mdc1_mult_val > 0 and _boost_val > 0:
         _per_txn_rate = round(_net_inc_before_boost / (_prod_score * _mdc1_mult_val), 0)
     else:
         _per_txn_rate = 0
 
-    # Incentive Payout Multiplier = combined multiplier (MDC1 mult for Exec, 2D for RM)
-    _inc_payout_mult = _cmrp1_mult_val if _is_csd_rm else _mdc1_mult_val
+    # Incentive Payout Multiplier = MDC1 mult (only for SPS, blank for new joiners)
+    _inc_payout_mult = (_cmrp1_mult_val if _is_csd_rm
+                        else _mdc1_mult_val if _is_sps_vintage
+                        else 0.0)
 
     # KCD breakdown — extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
