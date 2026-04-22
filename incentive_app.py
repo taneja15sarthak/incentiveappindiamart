@@ -1186,14 +1186,16 @@ def load_kcd_targets(uploaded_file):
     try:
         df = _read_file(uploaded_file)
         df.columns = [str(c).strip().replace('\n', ' ') for c in df.columns]
-        emp_col = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
+        emp_col = find_col(df, ["Employee ID","Emp ID","EmpID","ID","employeeid","employee_id"])
         if not emp_col:
             return {}
-        ca_col  = find_col(df, ["Client-A", "Client A", "ClientA"])
-        lc_col  = find_col(df, ["Listing Client", "Listing Clients"])
-        cc_col  = find_col(df, ["Catalog Client", "Catalog Clients"])
-        pcr_col = find_col(df, ["PCR Target", "PCDV Target", "PCR_Target"])
-        ct_col  = find_col(df, ["Collection Target"])
+        ca_col  = find_col(df, ["Client-A","Client A","ClientA","Total Client","total_client"])
+        lc_col  = find_col(df, ["Listing Client","Listing Clients","listing_client"])
+        cc_col  = find_col(df, ["Catalog Client","Catalog Clients","catalog_client"])
+        pcr_col = find_col(df, ["PCR Target","PCDV Target","PCR_Target"])
+        ct_col  = find_col(df, ["Collection Target","Overall Target","overall_target"])
+        lt_col  = find_col(df, ["Listing Target","listing_target"])
+        cat_t_col = find_col(df, ["Catalog Target","catalog_target"])
         result = {}
         for _, row in df.iterrows():
             eid = str(row[emp_col]).strip().split('.')[0]
@@ -1202,9 +1204,16 @@ def load_kcd_targets(uploaded_file):
                 if not c: return 0.0
                 try: return float(row[c])
                 except: return 0.0
-            result[eid] = {"client_a": _n(ca_col), "listing": _n(lc_col),
-                           "catalog": _n(cc_col), "pcr_target": _n(pcr_col),
-                           "coll_target": _n(ct_col)}
+            _ct = _n(ct_col)
+            # If no overall target but have listing+catalog targets, sum them
+            if _ct == 0 and lt_col and cat_t_col:
+                _ct = _n(lt_col) + _n(cat_t_col)
+            # Derive PCR target from overall target / client-A if not available
+            _ca = _n(ca_col)
+            _pcr_t = _n(pcr_col) if pcr_col else (_ct / _ca if _ca > 0 else 0)
+            result[eid] = {"client_a": _ca, "listing": _n(lc_col),
+                           "catalog": _n(cc_col), "pcr_target": _pcr_t,
+                           "coll_target": _ct}
         return result
     except Exception as e:
         st.warning(f"KCD Targets file error: {e}")
@@ -1762,10 +1771,11 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
     # Productive rows — use file's Productivity column if present (1.0=full, 0.5=insta)
     # New receipt format pre-computes this; old format uses enrich_receipt output
     if "Productivity" in rec.columns:
-        prod_rows  = rec[rec["Productivity"] > 0]           # 1.0 and 0.5 both count
+        _prod_vals = rec["Productivity"].fillna(0).astype(float)
+        prod_rows  = rec[_prod_vals > 0]                    # 1.0 and 0.5 both productive
         svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
-        insta_count_receipt = int((rec["Productivity"].fillna(0) == 0.5).sum())
-        prod_score_receipt  = float(rec["Productivity"].fillna(0).sum())  # 1.0×full + 0.5×insta
+        insta_count_receipt = int((_prod_vals == 0.5).sum())  # rows with 0.5 = Insta
+        prod_score_receipt  = float(_prod_vals.sum())          # 1.0×full + 0.5×insta
     else:
         prod_rows           = rec
         svc_tiers           = []
@@ -1986,14 +1996,57 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         cmr_slab, cmr_note = get_cmr_slab(
             cmr_pct, rnl_sent, sb.get("csd_slab1_target", 50), sb.get("csd_slab2_target", 60))
 
-        if vintage in ("0-30D", "31-90D"):
-            # PoP scheme only for new joiners
+        if vintage == "0-30D":
+            # 0-30D: fixed slab base + PoP
             base_inc, pop_inc, notes = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
                 rnl_prods, rnl_modes, vintage, S,
                 svc_tiers=svc_tiers,
                 pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
                 metric_label=metric_label)
+        elif vintage == "31-90D":
+            # 31-90D: per-txn incentive same as 91-270D + PoP on top
+            # (from FSF analysis: 31-90D employees appear in Exec-CSD sheet with per-txn formula)
+            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
+            is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
+            is_sps_by_team   = "SPS" in str(team).upper()
+            is_sps_employee  = is_sps_by_bucket or is_sps_by_team
+            _is_rel_mgr_31   = any(k in str(designation).upper()
+                                   for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"])
+            if _is_rel_mgr_31:
+                base_inc, notes = calc_csd_rel_mgr(
+                    pcdv, prod_score_receipt or 0, txn_count,
+                    cmr_pct, emp_mdc1_cmr,
+                    float(sb.get("csd_slab1_target", 55)),
+                    float(sb.get("csd_slab2_target", 60)),
+                    sb.get("ext_tat"), sb.get("d60"),
+                    S, metric_label=metric_label, is_sps=is_sps_employee, vintage="91-270D")
+            else:
+                if cmr_slab == 0:
+                    _per_txn_31 = 0
+                else:
+                    _, _per_txn_31 = pcdv_slab(pcdv, S["csd_sps_91_270"], cmr_slab)
+                _mdc1_m_31 = (1.2 if emp_mdc1_cmr > 35 else
+                              1.0 if emp_mdc1_cmr >= 25 else 0.5)
+                _boost_31   = (S["boost_mult"]
+                               if is_sps_employee or
+                                  (sb.get("ext_tat", 99) < S["boost_tat"] and
+                                   sb.get("d60", 99) < S["boost_d60"])
+                               else 1.0)
+                base_inc = round(_per_txn_31 * (prod_score_receipt or 0) * _mdc1_m_31 * _boost_31, 0)
+                notes    = (f"CSD 31-90D | {metric_label}:{round(pcdv)} | "
+                            f"₹{_per_txn_31}/txn×{prod_score_receipt or 0:.1f} | "
+                            f"MDC1:{_mdc1_m_31}({emp_mdc1_cmr:.0f}%) boost:{_boost_31}")
+            # PoP still applies for 31-90D on top of base
+            _, _pop_inc_31, _pop_notes_31 = calc_csd_new(
+                pcdv, client_cnt, cmr_slab, cmr_pct,
+                rnl_prods, rnl_modes, vintage, S,
+                svc_tiers=svc_tiers,
+                pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
+                metric_label=metric_label)
+            pop_inc = _pop_inc_31
+            if pop_inc > 0:
+                notes += f" | PoP:{_pop_notes_31}"
         else:
             # SPS — no PoP; Insta = 0.5; productivity from receipt
             # MDC-1 CMR: per-employee from renewal file (MDC 2/3 Year excluded)
@@ -2132,9 +2185,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _bm = _re.search(r'boost:([0-9.]+)', notes)
     _boost_val = float(_bm.group(1)) if _bm else 1.0
 
-    # Extract MDC1 multiplier from scheme notes
+    # Extract MDC1 multiplier from scheme notes string
+    # Pattern: "MDC1:1.2(60%)" or "MDC1:0.5(20%)"
     _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
-    _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 1.0
+    _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 0.0
+    # If not in notes, derive from the actual mdc1_cmr_pct value directly
+    if _mdc1_mult_val == 0.0 and _is_csd:
+        _mdc1_pct_raw = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
+        _mdc1_mult_val = (1.2 if _mdc1_pct_raw > 35 else
+                          1.0 if _mdc1_pct_raw >= 25 else 0.5)
 
     # For Rel Mgr, extract 2D CMR+1 multiplier
     _cmrp1_m = _re.search(r'CMR[+]1:([0-9.]+)', notes)
@@ -2143,16 +2202,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # Net Incentive = base before booster
     _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
 
-    # Per-txn rate: net_inc_before_boost / (prod × mdc1_mult)
-    _effective_mult = _cmrp1_mult_val if _is_csd_rm else _mdc1_mult_val
-    if _is_csd and _prod_score > 0 and _effective_mult > 0:
-        _per_txn_rate = round(_net_inc_before_boost / (_prod_score * _effective_mult), 0)
+    # Per-txn rate: extract directly from scheme notes "₹NNNN/txn"
+    _per_txn_m = _re.search(r'₹([0-9]+)/txn', notes)
+    if _per_txn_m:
+        _per_txn_rate = int(_per_txn_m.group(1))
+    elif _is_csd and _prod_score > 0 and _mdc1_mult_val > 0 and _boost_val > 0:
+        _per_txn_rate = round(_net_inc_before_boost / (_prod_score * _mdc1_mult_val), 0)
     else:
         _per_txn_rate = 0
 
-    # Incentive Payout Multiplier = combined multiplier for the incentive row
-    # For Exec: this is the 3-band MDC1 mult (1.2/1.0/0.5)
-    # For Rel Mgr: this is the 2D table result
+    # Incentive Payout Multiplier = combined multiplier (MDC1 mult for Exec, 2D for RM)
     _inc_payout_mult = _cmrp1_mult_val if _is_csd_rm else _mdc1_mult_val
 
     # KCD breakdown — extract per-txn rate from scheme notes
@@ -2240,7 +2299,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v28")
+st.title("💰 IndiaMart Incentive Calculator — v29")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
