@@ -2681,6 +2681,9 @@ with col_b:
 
 # Load and parse slab config (uses defaults if not uploaded)
 # Use pre-selected month for slab loading (so April slabs apply even before receipt uploaded)
+# sel_month is assigned later (after files upload); default to None here so the
+# pre-selected month drives slab loading on first render.
+sel_month = None   # will be overwritten below once receipt/renewal data is available
 _month_for_slabs = sel_month if sel_month else _preselected_month
 slab_cfg_raw = load_slab_config(slab_cfg_file, sel_month=_month_for_slabs)
 S = parse_slabs(slab_cfg_raw)
