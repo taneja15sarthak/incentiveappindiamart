@@ -286,20 +286,14 @@ def build_default_slab_config():
     }
 
 
-def load_slab_config(uploaded_file, sel_month=None):
+def load_slab_config(uploaded_file):
     """
     Load slab config from uploaded Excel.
     Returns dict of DataFrames, one per sheet.
-    Falls back to defaults for any missing sheet.
-    Month-aware: April uses April slabs, all others use default (March).
+    Falls back to defaults (March) if not uploaded.
+    Upload an April config file to switch to April slabs.
     """
-    _is_april = "APR" in str(sel_month or "").upper()
-    if _is_april:
-        march_base = build_march_slab_config()
-        april_ext  = build_april_slab_config()
-        defaults   = {**march_base, **april_ext}
-    else:
-        defaults   = build_default_slab_config()
+    defaults = build_default_slab_config()
     if uploaded_file is None:
         return defaults
 
@@ -455,6 +449,9 @@ def parse_slabs(cfg):
         "kcd_catalog_slabs":   kcd_catalog_slabs,
         # KCD Spot
         "kcd_spot":            kcd_spot,
+        # Config-detection flags (True when the config has April-specific tables)
+        "has_apr_spot":        "CSD_Spot_Apr" in cfg,
+        "has_mar_spot":        "CSD_Spot" in cfg and "CSD_Spot_Apr" not in cfg,
     }
 
 
@@ -1039,7 +1036,8 @@ def load_structure_dump(uploaded_file):
     vertical_col= find_col(df, ["IIL Vertical Name", "Vertical", "IIL Vertical",
                                 "emp_vertical_name", "emp_fun_area_name"])
     location_col= find_col(df, ["Location", "LOCATION", "emp_loc"])
-    joining_col = find_col(df, ["Joining Date", "DOJ", "Date of Joining",
+    joining_col = find_col(df, ["Move/Join Date", "Move Join Date",
+                                "Joining Date", "DOJ", "Date of Joining",
                                 "emp_joining_date"])
     # "New Location/ROI Location" / "Textile Group & CSD KCD & NSD to CSD" carry the vintage
     # string (270D+, 91-270D, 31-90D, 0-30D) in the employee_structure.xlsx format
@@ -2319,13 +2317,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
                     emp_mdc1_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
                     metric_label=metric_label, is_sps=is_sps_employee)
-            # Spot: March = weekly PCDV Bullet; April = FNT-based NR upsell count
-            _month = str(sb.get("sel_month", "")).upper()
-            if "MAR" in _month:
+            # Spot: config-driven — April config has "CSD_Spot_Apr"; March has "CSD_Spot"
+            if S.get("has_apr_spot"):
+                spot_inc = calc_spot_april_csd(nr_upsell_count, S)
+            elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
-            elif "APR" in _month:
-                spot_inc = calc_spot_april_csd(nr_upsell_count, S)
             else:
                 spot_inc = 0
 
@@ -2347,6 +2344,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # Track base vs incremental separately for KCD output columns
         kcd_base_only  = 0
         kcd_incremental = 0
+
+        def _kcd_spot():
+            """Config-driven spot: April if CSD_Spot_Apr present, else March, else legacy."""
+            if S.get("has_apr_spot"):
+                return calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
+            elif S.get("has_mar_spot"):
+                _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
+                return calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
+            return 0
+
         if "LISTING" in team_up:
             # Use structure file Listing Clients; fall back to (total-1) if absent
             _list_c = listing_c if listing_c > 0 else max(1, client_cnt - 1)
@@ -2355,22 +2362,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_list_c)
-            # Incremental only when PCR% > 140% (from FSF formula)
-            # Gate on PCR% > 140% (FSF: AG>140%), compute amount on Net DV
-            # pcr_pct uses Net Collection / PCR_Target (already computed above)
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0)                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
+            # Incremental: gate on PCR% > 140% (collection-based), compute on Net DV
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) \
+                              if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
-            _month_k = str(sb.get("sel_month", "")).upper()
-            if "MAR" in _month_k:
-                _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
-            elif "APR" in _month_k:
-                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
-            else:
-                spot_inc = calc_spot_kcd(
-                    pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
-                    sb.get("spot_met", False), S)
+            spot_inc = _kcd_spot() or calc_spot_kcd(
+                pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
+                sb.get("spot_met", False), S)
         elif "CATALOG" in team_up:
             # Use structure file Catalog Clients; fall back to (total-1) if absent
             _cat_c  = catalog_c if catalog_c > 0 else max(1, client_cnt - 1)
@@ -2379,47 +2378,31 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0)                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) \
+                              if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
-            _month_k2 = str(sb.get("sel_month", "")).upper()
-            if "MAR" in _month_k2:
-                _wdv2 = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv2, spot_client, team, location, vintage)
-            elif "APR" in _month_k2:
-                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
-            else:
-                spot_inc = calc_spot_kcd(
-                    pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
-                    sb.get("spot_met", False), S)
+            spot_inc = _kcd_spot() or calc_spot_kcd(
+                pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
+                sb.get("spot_met", False), S)
         elif "ROI" in team_up:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0)                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
+                              if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
-            _month_roi = str(sb.get("sel_month", "")).upper()
-            if "MAR" in _month_roi:
-                _wdv_roi = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv_roi, spot_client, team, location, vintage)
-            elif "APR" in _month_roi:
-                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
-            else:
-                spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
+            spot_inc = _kcd_spot() or calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0)                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
+                              if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
-            _month_reg = str(sb.get("sel_month", "")).upper()
-            if "MAR" in _month_reg:
-                _wdv_reg = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                spot_inc = calc_spot_march_kcd(_wdv_reg, spot_client, team, location, vintage)
-            elif "APR" in _month_reg:
-                spot_inc = calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
-            elif vintage in ("0-30D", "31-90D"):
-                spot_inc = calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
+            _legacy_spot = (calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
+                            if vintage in ("0-30D", "31-90D") else 0)
+            spot_inc = _kcd_spot() or _legacy_spot
 
     # ── Decompose values matching sir's FSF column layout ────────────────────
     _prod_score = round(prod_score_receipt or (
@@ -2560,7 +2543,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 # UI
 # ═══════════════════════════════════════════════════════════════
 
-st.title("💰 IndiaMart Incentive Calculator — v30")
+st.title("💰 IndiaMart Incentive Calculator — v31")
 st.caption("Employee name from Renewal L1 column | CMR% auto-calculated | Slabs editable via config file")
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -2616,15 +2599,6 @@ with st.sidebar:
 
     st.divider()
     st.header("📅 Select Month")
-    # Pre-select month so April slabs load correctly even before files are uploaded
-    _month_choice = st.radio(
-        "Which month are you calculating?",
-        options=["March 2026", "April 2026"],
-        index=1,
-        key="month_choice_radio",
-        horizontal=True,
-    )
-    _preselected_month = "APR26" if "April" in _month_choice else "MAR26"
     selected_month = st.selectbox(
         "Calculate incentives for",
         options=["(Upload files first)"],
@@ -2680,18 +2654,16 @@ with col_b:
     )
 
 # Load and parse slab config (uses defaults if not uploaded)
-# Use pre-selected month for slab loading (so April slabs apply even before receipt uploaded)
-# sel_month is assigned later (after files upload); default to None here so the
-# pre-selected month drives slab loading on first render.
-sel_month = None   # will be overwritten below once receipt/renewal data is available
-_month_for_slabs = sel_month if sel_month else _preselected_month
-slab_cfg_raw = load_slab_config(slab_cfg_file, sel_month=_month_for_slabs)
+slab_cfg_raw = load_slab_config(slab_cfg_file)
 S = parse_slabs(slab_cfg_raw)
 
 if slab_cfg_file:
-    st.success("✅ Custom Slab Config loaded — using your edited values.")
+    _is_apr_cfg = "CSD_Spot_Apr" in slab_cfg_raw
+    _cfg_label = "April 2026 (April spot & slabs)" if _is_apr_cfg else "March 2026 (March slabs)"
+    st.success(f"✅ Slab Config loaded — **{_cfg_label}** values in use.")
 else:
-    st.info("No Slab Config uploaded — using built-in default values.", icon="ℹ️")
+    st.info("📋 Using **built-in March 2026** slabs. "
+            "Download the April config below and upload it to switch to April calculations.", icon="ℹ️")
 
 
 # ── Step 1: Structure Dump info ──────────────────────────────
