@@ -1241,11 +1241,12 @@ def load_structure_dump(uploaded_file):
 
         # ── Derive Team from Vertical + Vintage Bucket + Remarks + Location ──
         if "CSD" in vertical:
-            if any(x in vbucket_up for x in ["SPS", "90+ DAYS", "90+DAYS", "CSD ROI"]):
+            # Vintage column takes priority: 0-30D/31-90D always use new-joiner scheme
+            if vintage in ("0-30D", "31-90D"):
+                team = "0-90 Days (CSD new)"
+            elif any(x in vbucket_up for x in ["SPS", "90+ DAYS", "90+DAYS", "CSD ROI"]):
                 team = "SPS (CSD 91D+)"
             elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS"]):
-                team = "0-90 Days (CSD new)"
-            elif vintage in ("0-30D", "31-90D"):
                 team = "0-90 Days (CSD new)"
             else:
                 team = "SPS (CSD 91D+)"
@@ -2448,10 +2449,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                                   (sb.get("ext_tat", 99) < S["boost_tat"] and
                                    sb.get("d60", 99) < S["boost_d60"])
                                else 1.0)
-                base_inc = round(_per_txn_31 * (prod_score_receipt or 0) * _mdc1_m_31 * _boost_31, 0)
+                _base_raw_31 = round(_per_txn_31 * (prod_score_receipt or 0) * _mdc1_m_31 * _boost_31, 0)
+                _cap_31 = S.get("new_joiner_cap", 20000)
+                base_inc = min(_base_raw_31, _cap_31)
                 notes    = (f"CSD 31-90D | {metric_label}:{round(pcdv)} | "
                             f"₹{_per_txn_31}/txn×{prod_score_receipt or 0:.1f} | "
-                            f"MDC1:{_mdc1_m_31}({emp_mdc1_cmr:.0f}%) boost:{_boost_31}")
+                            f"MDC1:{_mdc1_m_31}({emp_mdc1_cmr:.0f}%) boost:{_boost_31}"
+                            + (f" | CAP:{int(_cap_31)}" if base_inc < _base_raw_31 else ""))
             # PoP still applies for 31-90D on top of base
             _, _pop_inc_31, _pop_notes_31 = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
