@@ -946,6 +946,68 @@ def enrich_receipt(df):
 
     df["Service_Tier"] = df.apply(_tier, axis=1)
 
+    # ── April-specific enrichment columns ─────────────────────────────────
+    # FNT: derive from Entry Date (FNT-1=Apr1-16, FNT-2=Apr20-30)
+    if "FNT" not in df.columns:
+        date_col = find_col(df, ["Entry Date", "Receipt Date", "Date"])
+        if date_col:
+            def _fnt(v):
+                try:
+                    dt = pd.to_datetime(v, errors='coerce')
+                    if pd.isna(dt):
+                        # Excel serial
+                        dt = pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(float(str(v))))
+                    if dt.day <= 16: return "FNT-1"
+                    if dt.day >= 20: return "FNT-2"
+                    return ""  # Apr 17-19 gap
+                except: return ""
+            df["FNT"] = df[date_col].apply(_fnt)
+
+    # AMR: MYR Remarks column (non-blank = AMR/MYR row)
+    if "AMR" not in df.columns:
+        myr_col = find_col(df, ["MYR Remarks", "MYR_Remarks"])
+        if myr_col:
+            df["AMR"] = df[myr_col].fillna("").astype(str).str.strip().apply(
+                lambda x: "Yes" if x not in ("", "nan") else "No")
+        else:
+            df["AMR"] = "No"
+
+    # Pref SS+: Unique/Upsell col contains Star/Leader/Pref products
+    if "Pref SS+" not in df.columns:
+        upsell_c = find_col(df, ["Unique", "Upsell", "UNIQUE"])
+        if upsell_c:
+            _ss_kw = {"STAR", "LEADER", "PREF"}
+            df["Pref SS+"] = df[upsell_c].fillna("").astype(str).str.upper().apply(
+                lambda x: "Yes" if any(k in x for k in _ss_kw) else "No")
+        else:
+            df["Pref SS+"] = "No"
+
+    # Base to List Sale: Prod/Upsell contains Listing-style products
+    if "Base to List Sale" not in df.columns:
+        prod_c2 = find_col(df, ["Prod", "Product"])
+        if prod_c2:
+            _btl_kw = {"MAXIMIS", "MAXI", "TS PRO", "TS1", "TS2", "TS3", "LISTING"}
+            df["Base to List Sale"] = df[prod_c2].fillna("").astype(str).str.upper().apply(
+                lambda x: "Yes" if any(k in x for k in _btl_kw) else "No")
+        else:
+            df["Base to List Sale"] = "No"
+
+    # IM Varient: Unique col contains IM Star/Leader/Pref Star
+    if "IM Varient" not in df.columns:
+        upsell_c2 = find_col(df, ["Unique", "Upsell", "UNIQUE"])
+        if upsell_c2:
+            _im_kw = {"IM STAR", "IM LEADER", "PREF STAR", "PREF LEADER", "PREFERRED STAR", "PREFERRED LEADER"}
+            df["IM Varient"] = df[upsell_c2].fillna("").astype(str).str.upper().apply(
+                lambda x: "Yes" if any(k in x for k in _im_kw) else "No")
+        else:
+            df["IM Varient"] = "No"
+
+    # Deal Val (WOT): alias for Deal Val (WT) when WOT not present
+    if "Deal Val (WOT)" not in df.columns:
+        dwt_col = find_col(df, ["Deal Val (WT)", "Deal Value", "Deal Val"])
+        if dwt_col:
+            df["Deal Val (WOT)"] = pd.to_numeric(df[dwt_col], errors='coerce').fillna(0)
+
     # Cleanup helper cols
     df.drop(columns=["_is_upsell","_is_pure_renewal","_has_upsell_on_receipt"],
             inplace=True, errors="ignore")
@@ -1816,32 +1878,33 @@ def calc_spot_march_kcd(weekly_dv, client_a, team, location, vintage):
     return int(total)
 
 
-def calc_spot_april_csd(nr_upsell_count, S):
+def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0):
     """
     CSD April spot: NR Upsell/AMR productivity based.
     FNT-1 (Apr 1-16): ≥3 prods → ₹1500 + ₹750/txn above 3
     FNT-2 (Apr 20-30): ≥3 prods → ₹2500 + ₹1000/txn above 3
-    Both fortnights combined since we compute full month.
-    For simplicity we apply the FNT-2 (higher) rates for all qualifying txns.
-    TODO: split by receipt date FNT when per-fortnight data is available.
+    Uses exact FNT counts when available (from FNT column in receipt).
     """
-    if nr_upsell_count < 3:
-        return 0
-    # Apply FNT-2 rates (conservative: use higher-earning fortnight)
-    fnt2_base = 2500
-    fnt2_per  = 1000
-    return fnt2_base + (nr_upsell_count - 3) * fnt2_per
+    spot = 0
+    if fnt1_count >= 3:
+        spot += 1500 + (fnt1_count - 3) * 750
+    if fnt2_count >= 3:
+        spot += 2500 + (fnt2_count - 3) * 1000
+    # Fallback: if no FNT split available, use total count with FNT-2 rates
+    if spot == 0 and nr_upsell_count >= 3:
+        spot = 2500 + (nr_upsell_count - 3) * 1000
+    return spot
 
 
-def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S):
+def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
+                        fnt1_pcdv=0, fnt2_pcdv=0,
+                        pref_ss_count=0, btl_count=0, im_var_count=0):
     """
-    KCD April spot: PCDV-based with FNT periods.
-    FNT-1 (Apr 1-16):  base amounts + ₹1000/1K PCDV after threshold
-    FNT-2 (Apr 20-30): higher base + same step
-    We compute both fortnights on the same monthly PCDV (proportional approach).
-    For accurate per-fortnight calculation, upload a receipt file with FNT column.
-    SS/LS upsell multiplier is computed externally (125% or 50%) but not available
-    here without receipt data — we return base spot only.
+    KCD April spot: PCDV-based with FNT periods + SS/LS multiplier.
+    FNT-1 (Apr 1-16): base ₹2500 + ₹1000/1K PCDV after threshold
+    FNT-2 (Apr 20-30): base ₹4000 + ₹1000/1K (Listing: ₹1000/2K)
+    SS/LS Upsell Multiplier: ≥2 → 125%, <2 → 50% (applied to total spot)
+    Uses FNT-split PCDV when available; falls back to monthly_pcdv/2.
     """
     if not client_a or client_a <= 0 or monthly_pcdv <= 0:
         return 0
@@ -1885,13 +1948,24 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S):
             return 0
         return base + int((pcdv - thresh) / unit_size) * per_unit
 
-    # Combine both fortnights. Since we only have monthly PCDV, we give
-    # the employee the sum of FNT-1 + FNT-2 based on monthly PCDV / 2 as proxy.
-    # More accurate: use FNT column from receipt file when available.
-    pcdv_per_fnt = monthly_pcdv / 2   # rough split
-    fnt1_spot = _bullet(pcdv_per_fnt, fnt1)
-    fnt2_spot = _bullet(pcdv_per_fnt, fnt2)
-    return int(fnt1_spot + fnt2_spot)
+    # Use exact FNT PCDV if available; fall back to monthly/2 proxy
+    _pcdv1 = fnt1_pcdv if fnt1_pcdv > 0 else monthly_pcdv / 2
+    _pcdv2 = fnt2_pcdv if fnt2_pcdv > 0 else monthly_pcdv / 2
+    fnt1_spot = _bullet(_pcdv1, fnt1)
+    fnt2_spot = _bullet(_pcdv2, fnt2)
+    raw_spot  = int(fnt1_spot + fnt2_spot)
+    if raw_spot == 0:
+        return 0
+    # SS/LS Upsell Multiplier (applies to the combined spot amount)
+    # Regular/ROI: Pref SS+ count; Catalog: Base-to-List count; Listing: IM Variant count
+    if is_listing:
+        _mult_count = im_var_count
+    elif is_catalog:
+        _mult_count = btl_count
+    else:
+        _mult_count = pref_ss_count
+    ss_mult = 1.25 if _mult_count >= 2 else 0.5
+    return int(raw_spot * ss_mult)
 
 
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
@@ -1985,7 +2059,7 @@ def build_emp_list(receipt_df):
     return emp.reset_index(drop=True)
 
 
-def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
+def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0):
     # Use string comparison to handle both int and string EMP IDs across files
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
@@ -2078,10 +2152,28 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
         except Exception:
             pass
 
+    # Per-FNT deal value for KCD PCDV Bullet Spot (April)
+    fnt1_dv = 0.0; fnt2_dv = 0.0
+    _fnt_col = find_col(receipt_df, ["FNT", "Fortnight"])
+    _dv_col  = find_col(receipt_df, ["Deal Val (WOT)", "Deal Val", "WT AMT", "WT_AMT"])
+    if _fnt_col and _dv_col and len(rec) > 0:
+        _fnt_vals = rec[_fnt_col].fillna("").astype(str).str.upper().str.strip()
+        _dv_vals  = pd.to_numeric(rec[_dv_col], errors='coerce').fillna(0)
+        fnt1_dv = float(_dv_vals[_fnt_vals == "FNT-1"].sum())
+        fnt2_dv = float(_dv_vals[_fnt_vals == "FNT-2"].sum())
+    # Per-client FNT PCDV (for KCD spot threshold comparison)
+    fnt1_pcdv = (fnt1_dv / client_a) if client_a > 0 else 0
+    fnt2_pcdv = (fnt2_dv / client_a) if client_a > 0 else 0
+
     # Per-employee NR Upsell count for CSD Spot incentive
-    # Counts productive upsell rows (Upsell/Unique not blank AND WT AMT > 0)
+    # Also compute AMR count and FNT-split counts for accurate April spot
+    fnt1_prod_count = 0   # productive rows in FNT-1 (CSD spot)
+    fnt2_prod_count = 0   # productive rows in FNT-2 (CSD spot)
+    pref_ss_count   = 0   # KCD Regular/ROI SS/LS upsell count (for 125%/50% mult)
+    btl_count       = 0   # KCD Catalog Base-to-Listing sale count
+    im_var_count    = 0   # KCD Listing Pref Star/Leader count
+
     if "Productivity" in rec.columns and "_is_upsell" not in rec.columns:
-        # enrich_receipt already ran; productive upsell = rows where Productivity=1 AND it's an upsell
         upsell_col_name = find_col(receipt_df, ["Upsell", "UPSELL", "Unique", "UNIQUE"])
         if upsell_col_name:
             wt_col_name = find_col(receipt_df, ["WT AMT", "WT_AMT", "WTAMT"])
@@ -2091,6 +2183,28 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
             nr_upsell_count = int(upsell_mask.sum())
         else:
             nr_upsell_count = 0
+
+        # FNT-based spot counts (April)
+        fnt_col = find_col(receipt_df, ["FNT", "Fortnight"])
+        amr_col = find_col(receipt_df, ["AMR"])
+        prod_col = "Productivity"
+        if fnt_col and amr_col:
+            _prod = rec[prod_col].fillna(0).astype(float) > 0
+            _amr  = rec[amr_col].fillna("").astype(str).str.upper().str.strip() == "YES"
+            _fnt  = rec[fnt_col].fillna("").astype(str).str.upper().str.strip()
+            fnt1_prod_count = int((_prod & _amr & (_fnt == "FNT-1")).sum())
+            fnt2_prod_count = int((_prod & _amr & (_fnt == "FNT-2")).sum())
+
+        # KCD multiplier counts
+        pref_ss_col = find_col(receipt_df, ["Pref SS+", "PrefSS", "SS+"])
+        btl_col     = find_col(receipt_df, ["Base to List Sale", "Base to Listing", "BTL"])
+        im_col      = find_col(receipt_df, ["IM Varient", "IM Variant", "IM Upsell"])
+        if pref_ss_col:
+            pref_ss_count = int((rec[pref_ss_col].fillna("").astype(str).str.upper().str.strip() == "YES").sum())
+        if btl_col:
+            btl_count = int((rec[btl_col].fillna("").astype(str).str.upper().str.strip() == "YES").sum())
+        if im_col:
+            im_var_count = int((rec[im_col].fillna("").astype(str).str.upper().str.strip() == "YES").sum())
     else:
         nr_upsell_count = 0
 
@@ -2098,7 +2212,10 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id):
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
             gross_collection, gross_deal_val, deal_loss, net_deal_val,
-            nr_upsell_count, weekly_dv)
+            nr_upsell_count, weekly_dv,
+            fnt1_prod_count, fnt2_prod_count,
+            pref_ss_count, btl_count, im_var_count,
+            fnt1_pcdv, fnt2_pcdv)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -2319,7 +2436,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     metric_label=metric_label, is_sps=is_sps_employee)
             # Spot: config-driven — April config has "CSD_Spot_Apr"; March has "CSD_Spot"
             if S.get("has_apr_spot"):
-                spot_inc = calc_spot_april_csd(nr_upsell_count, S)
+                spot_inc = calc_spot_april_csd(
+                    nr_upsell_count, S,
+                    fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count)
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
@@ -2348,7 +2467,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         def _kcd_spot():
             """Config-driven spot: April if CSD_Spot_Apr present, else March, else legacy."""
             if S.get("has_apr_spot"):
-                return calc_spot_april_kcd(pcdv_val, spot_client, team, location, vintage, S)
+                return calc_spot_april_kcd(
+                    pcdv_val, spot_client, team, location, vintage, S,
+                    fnt1_pcdv=fnt1_pcdv, fnt2_pcdv=fnt2_pcdv,
+                    pref_ss_count=pref_ss_count, btl_count=btl_count,
+                    im_var_count=im_var_count)
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 return calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
@@ -2842,8 +2965,12 @@ if calc_btn:
          rnl_count, total_ref, all_rnl_count,
          svc_tiers, insta_cnt_receipt, prod_score_receipt,
          gross_collection, gross_deal_val, deal_loss, net_deal_val,
-         nr_upsell_count, weekly_dv) = \
-            get_transactions(receipt_df, refund_df, renewal_df, emp_id)
+         nr_upsell_count, weekly_dv,
+            fnt1_prod_count, fnt2_prod_count,
+            pref_ss_count, btl_count, im_var_count,
+            fnt1_pcdv, fnt2_pcdv) = \
+            get_transactions(receipt_df, refund_df, renewal_df, emp_id,
+                             client_a=float(cfg_row.get("Client Count", 0) or 0))
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
