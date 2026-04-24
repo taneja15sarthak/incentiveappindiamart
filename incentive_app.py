@@ -2970,7 +2970,7 @@ if calc_btn:
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
-                             client_a=float(cfg_row.get("Client Count", 0) or 0))
+                             client_a=float(s.get("Client Count", 0) or 0))  # s is available before cfg_row
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
