@@ -158,12 +158,63 @@ def build_default_slab_config():
         {"PCDV_Threshold": 2600, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
     ])
 
-    # ── CSD Relationship Manager slabs (Mar'26: PCR 3800/4300/4800) ──
-    # Slab1 = CMR 55%, Slab2 = CMR 60%
+    # ── CSD Relationship Manager slabs (Apr'26: PCDV 2500/2700/2900) ──
+    # Slab1 = individual CMR target, Slab2 = higher target
     csd_rm = pd.DataFrame([
-        {"PCDV_Threshold": 4800, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1750},
-        {"PCDV_Threshold": 4300, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
-        {"PCDV_Threshold": 3800, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCDV_Threshold": 2900, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1750},
+        {"PCDV_Threshold": 2700, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCDV_Threshold": 2500, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+    ])
+
+    # ── KCD SAM (L2) -- Sr. Account Manager slabs (Apr'26) ──────────────────
+    # Same PCDV thresholds as L1 but lower per-txn rates
+    # Regular SAM (91-270D and 270D+ use same slabs -- no vintage split in PPT)
+    kcd_sam_regular = pd.DataFrame([
+        {"PCDV_Threshold": 17000, "CMR72_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
+        {"PCDV_Threshold": 14000, "CMR72_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
+        {"PCDV_Threshold": 11000, "CMR72_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
+    ])
+    # SAM ROI
+    kcd_sam_roi = pd.DataFrame([
+        {"PCDV_Threshold": 14000, "CMR72_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
+        {"PCDV_Threshold": 11000, "CMR72_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
+        {"PCDV_Threshold": 8000,  "CMR72_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
+    ])
+    # SAM HVRI
+    kcd_sam_hvri = pd.DataFrame([
+        {"PCDV_Threshold": 17000, "CMR72_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
+        {"PCDV_Threshold": 14000, "CMR72_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
+        {"PCDV_Threshold": 10000, "CMR72_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
+    ])
+    # SAM Nagpur
+    kcd_sam_nagpur = pd.DataFrame([
+        {"PCDV_Threshold": 32000, "CMR72_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
+        {"PCDV_Threshold": 28000, "CMR72_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
+        {"PCDV_Threshold": 24000, "CMR72_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
+    ])
+    # SAM Listing (target%-based, same as L1 but lower per-txn)
+    kcd_sam_listing = pd.DataFrame([
+        {"Target_Pct": 140, "CMR70_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
+        {"Target_Pct": 120, "CMR70_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
+        {"Target_Pct": 95,  "CMR70_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
+    ])
+    # SAM Catalog (same as SAM Listing)
+    kcd_sam_catalog = kcd_sam_listing.copy()
+
+    # SAM-ILP incentive % rates (standard variant; upload separate for L-variant)
+    kcd_sam_ilp = pd.DataFrame([
+        {"Target_Achievement_%": 120, "Incentive_Rate_%": 0.80},
+        {"Target_Achievement_%": 100, "Incentive_Rate_%": 0.75},
+        {"Target_Achievement_%": 95,  "Incentive_Rate_%": 0.65},
+    ])
+    # SAM Incremental rates (lower than L1)
+    kcd_sam_incr = pd.DataFrame([
+        {"Team": "Regular", "Incr_Threshold_PCDV": 17000, "Incr_Rate_%": 0.65},
+        {"Team": "ROI",     "Incr_Threshold_PCDV": 14000, "Incr_Rate_%": 0.65},
+        {"Team": "HVRI",    "Incr_Threshold_PCDV": 17000, "Incr_Rate_%": 0.65},
+        {"Team": "Nagpur",  "Incr_Threshold_PCDV": 32000, "Incr_Rate_%": 0.45},
+        {"Team": "Listing", "Incr_Threshold_Pct":  140,   "Incr_Rate_%": 0.65},
+        {"Team": "Catalog", "Incr_Threshold_Pct":  140,   "Incr_Rate_%": 0.65},
     ])
 
     # ── CSD SPS Multipliers ──
@@ -273,6 +324,15 @@ def build_default_slab_config():
         "CSD_SPS_Multipliers":  csd_sps_mult,
         "CSD_Spot":             csd_spot,
         "Power_of_Productivity":pop,
+        # KCD L2 (SAM) slabs
+        "KCD_SAM_Regular":      kcd_sam_regular,
+        "KCD_SAM_ROI":          kcd_sam_roi,
+        "KCD_SAM_HVRI":         kcd_sam_hvri,
+        "KCD_SAM_Nagpur":       kcd_sam_nagpur,
+        "KCD_SAM_Listing":      kcd_sam_listing,
+        "KCD_SAM_Catalog":      kcd_sam_catalog,
+        "KCD_SAM_Incr_Rates":   kcd_sam_incr,
+        "KCD_SAM_ILP":          kcd_sam_ilp,
         "KCD_Regular_270D":     kcd_270,
         "KCD_Regular_91_270D":  kcd_91_270,
         "KCD_Regular_0_90D":    kcd_0_90,
@@ -431,7 +491,10 @@ def parse_slabs(cfg):
     ]
     kcd_listing_rates = {}
     for _, r in cfg["KCD_Listing_Rates"].iterrows():
-        kcd_listing_rates[str(r["Vintage"])] = (float(r["Base_Client_Rate"]), float(r["Listing_Client_Rate"]))
+        kcd_listing_rates[str(r["Vintage"])] = {
+            "base_rate":    float(r["Base_Client_Rate"]),
+            "listing_rate": float(r["Listing_Client_Rate"]),
+        }
 
     # ── KCD Catalog ──────────────────────────────────────────
     kcd_catalog_slabs = [
@@ -447,6 +510,34 @@ def parse_slabs(cfg):
             "base":   int(r["Base_Reward"]),
             "per1k":  int(r["Per_1K_After"]),
         }
+
+    # ── SAM slab parsing helpers ─────────────────────────────
+    def _sam_kcd_slabs(key_apr, key_mar):
+        k = key_apr if key_apr in cfg else key_mar
+        df = cfg.get(k)
+        if df is None or len(df) == 0: return []
+        c1 = "Slab1_Per_Txn" if "Slab1_Per_Txn" in df.columns else "CMR72_Per_Txn"
+        c2 = "Slab2_Per_Txn" if "Slab2_Per_Txn" in df.columns else "CMR80_Per_Txn"
+        # SAM uses PCR_Threshold (collection-based), not PCDV_Threshold
+        t_col = ("PCR_Threshold" if "PCR_Threshold" in df.columns
+                 else "PCDV_Threshold" if "PCDV_Threshold" in df.columns
+                 else df.columns[0])
+        return [(int(r[t_col]), int(r[c1]), int(r[c2])) for _, r in df.iterrows()]
+    def _sam_listing_slabs(key):
+        df = cfg.get(key)
+        if df is None or len(df) == 0: return []
+        c1 = "CMR70_Per_Txn" if "CMR70_Per_Txn" in df.columns else "CMR72_Per_Txn"
+        t_col = "Target_Pct" if "Target_Pct" in df.columns else "PCDV_Threshold"
+        return [(int(r[t_col]), int(r[c1]), int(r["CMR80_Per_Txn"])) for _, r in df.iterrows()]
+    _sam_incr_df = cfg.get("KCD_SAM_Incr_Rates", pd.DataFrame())
+    _sam_incr = _sam_incr_df.to_dict("records") if len(_sam_incr_df) > 0 else []
+    sam_regular_slabs = _sam_kcd_slabs("KCD_SAM_Regular", "KCD_Regular_91_270D")
+    sam_roi_slabs     = _sam_kcd_slabs("KCD_SAM_ROI",     "KCD_Regular_0_90D")
+    sam_hvri_slabs    = _sam_kcd_slabs("KCD_SAM_HVRI",    "KCD_HVRI")
+    sam_nagpur_slabs  = _sam_kcd_slabs("KCD_SAM_Nagpur",  "KCD_Nagpur_Pharma")
+    sam_listing_slabs = _sam_listing_slabs("KCD_SAM_Listing")
+    sam_catalog_slabs = _sam_listing_slabs("KCD_SAM_Catalog")
+
 
     return {
         # CSD New
@@ -492,6 +583,20 @@ def parse_slabs(cfg):
         # Config-detection flags (True when the config has April-specific tables)
         "has_apr_spot":        "CSD_Spot_Apr" in cfg,
         "has_mar_spot":        "CSD_Spot" in cfg and "CSD_Spot_Apr" not in cfg,
+        # KCD SAM (L2) slabs
+        "kcd_sam_regular":     sam_regular_slabs,
+        "kcd_sam_roi":         sam_roi_slabs,
+        "kcd_sam_hvri":        sam_hvri_slabs,
+        "kcd_sam_nagpur":      sam_nagpur_slabs,
+        "kcd_sam_listing":     sam_listing_slabs,
+        "kcd_sam_catalog":     sam_catalog_slabs,
+        "kcd_sam_incr":        _sam_incr,
+        "kcd_sam_ilp_rates":   [(int(r.get("Target_Achievement_%", 0)),
+                                  float(r.get("Incentive_Rate_%", 0))/100
+                                  if float(r.get("Incentive_Rate_%", 0)) > 1
+                                  else float(r.get("Incentive_Rate_%", 0)))
+                                 for r in cfg.get("KCD_SAM_ILP", pd.DataFrame()).to_dict("records")]
+                                or [(120, 0.008), (100, 0.0075), (95, 0.0065)],
     }
 
 
@@ -725,11 +830,15 @@ def build_march_slab_config():
         {"Target_Pct": 100, "CMR70_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
         {"Target_Pct": 95,  "CMR70_Per_Txn": 1750, "CMR80_Per_Txn": 2000},
     ])
+    # KCD Collection Target rates: Base_Client_Rate * base_clients + Listing_Client_Rate * list_clients
+    # April PPT: Listing/Catalog 270D+/91-270D = 7K base + 22K listing
+    #            CSD-to-KCD new joiners = 5K base + 15K listing
+    # March FSF: 8500 + 48000 (different -- configurable via slab config)
     kcd_listing_rates = pd.DataFrame([
-        {"Vintage": "270D+",   "Base_Client_Rate": 8500, "Listing_Client_Rate": 48000},
-        {"Vintage": "91-270D", "Base_Client_Rate": 8500, "Listing_Client_Rate": 48000},
-        {"Vintage": "31-90D",  "Base_Client_Rate": 6000, "Listing_Client_Rate": 34000},
-        {"Vintage": "0-30D",   "Base_Client_Rate": 6000, "Listing_Client_Rate": 34000},
+        {"Vintage": "270D+",   "Base_Client_Rate": 7000, "Listing_Client_Rate": 22000},
+        {"Vintage": "91-270D", "Base_Client_Rate": 7000, "Listing_Client_Rate": 22000},
+        {"Vintage": "31-90D",  "Base_Client_Rate": 5000, "Listing_Client_Rate": 15000},
+        {"Vintage": "0-30D",   "Base_Client_Rate": 5000, "Listing_Client_Rate": 15000},
     ])
     kcd_catalog = pd.DataFrame([
         {"Target_Pct": 140, "CMR72_Per_Txn": 3250, "CMR80_Per_Txn": 3600},
@@ -1759,6 +1868,220 @@ def calc_csd_rel_mgr(pcdv, prod_score, txn_count, cmr_pct, mdc1_cmr,
     return round(total, 0), notes
 
 
+def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
+                 cmr_pct, ss_cmr_pct, ss_sent, btl_sales,
+                 team, location, vintage,
+                 client_a, listing_c, catalog_c, collection_target, S):
+    """
+    KCD Sr. Account Manager (L2) incentive -- exact FSF KCD-SAM formula.
+
+    Two types based on team:
+    TYPE A  Regular / HVRI / ROI / Nagpur:
+       Per-txn threshold uses PCR (net collection / client-A)
+       Incremental = (Net_DV - Highest_Coll) * rate%  when PCR > threshold
+       Highest Collection = Client-A * 32000
+    TYPE B  Listing / Catalog:
+       Per-txn threshold uses PCR% (PCR / PCR_Target)
+       Incremental = (Net_DV - Collection_Target) * 0.65%  when PCR% > 140%
+       Highest Collection = Client-A * 18000
+       Collection Target = Listing*8500 + Catalog*48000
+
+    Productivity: RAW total weekly productivity (not divided by L1 count).
+    SS+ multiplier: Sent>=3 -> 100% or 50%; Sent<3 -> no penalty (AY unchanged).
+    """
+    team_up = str(team).upper()
+    loc_up  = str(location).upper()
+    is_hvri    = any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"]) or "HVRI" in team_up
+    is_roi     = "ROI" in team_up
+    is_nagpur  = "NAGPUR" in team_up or "PHARMA" in team_up
+    is_listing = "LISTING" in team_up
+    is_catalog = "CATALOG" in team_up
+
+    # ── Type B: Listing / Catalog ─────────────────────────────────────────────
+    if is_listing or is_catalog:
+        # Highest Collection = Client-A * 18000 (FSF row7: AA = L*18000)
+        highest_coll = float(client_a or 0) * 18000
+        # Collection Target from structure file or slab config rates (not hardcoded)
+        if not collection_target or collection_target <= 0:
+            _lv3 = str(vintage)
+            _r3  = S.get("kcd_listing_rates", {})
+            _rv3 = _r3.get(_lv3, _r3.get("270D+", {}))
+            _bc3 = max(0, float(client_a or 0) - float(listing_c or 0) - float(catalog_c or 0))
+            _lc3 = float(listing_c or 0) + float(catalog_c or 0)
+            collection_target = (_bc3 * float(_rv3.get("base_rate", 7000))
+                                 + _lc3 * float(_rv3.get("listing_rate", 22000)))
+        pcr_target = (collection_target / client_a) if client_a > 0 else 0
+        pcr_pct_val = (pcr_val / pcr_target * 100) if pcr_target > 0 else 0
+
+        # Per-txn: threshold is PCR% (95%/120%/140%) and CMR%
+        # FSF AX row7: IF(PCR%>=140% AND CMR>=80%,1800, IF(>=140% AND >=72%,1500,
+        #               IF(>=120% AND >=80%,1500, IF(>=120% AND >=72%,1250,
+        #               IF(>=95% AND >=80%,1200, IF(>=95% AND >=72%,1000, 0)))))
+        slabs = S.get("kcd_sam_listing" if is_listing else "kcd_sam_catalog", [])
+        is_cmr80 = cmr_pct >= 80
+        per_txn = 0
+        for (thresh_pct, r1, r2) in sorted(slabs, reverse=True):
+            if pcr_pct_val >= thresh_pct:
+                per_txn = r2 if is_cmr80 else r1
+                break
+
+        # Incremental = IF(PCR% > 140%, (Net_DV - CT) * 0.65%, 0)
+        incr_rate = next((float(r.get("Incr_Rate_%",0.65))/100
+                          for r in S.get("kcd_sam_incr",[])
+                          if str(r.get("Team","")).upper() in
+                          ("LISTING" if is_listing else "CATALOG")), 0.0065)
+        incremental = round(max(0, net_dv - collection_target) * incr_rate, 0) \
+                      if pcr_pct_val > 140 else 0
+
+        # BTL multiplier for Catalog
+        btl_mult = 1.2 if (is_catalog and int(btl_sales or 0) >= 2) else 1.0
+
+        # Base = per_txn * raw_wk_productivity * btl_mult + incremental
+        base_before_ss = round(per_txn * float(txn_prod_raw or 0) * btl_mult + incremental, 0)
+
+        # SS+ mult: FSF BA=AY then BB=IF(sent>=3, BA*AZ, BA)
+        if ss_sent >= 3:
+            ss_mult = 1.0 if ss_cmr_pct >= 70 else 0.5
+        else:
+            ss_mult = 1.0
+        total = round(base_before_ss * ss_mult, 0)
+
+        notes = (f"KCD SAM {'Listing' if is_listing else 'Catalog'} {vintage} | "
+                 f"PCR%:{pcr_pct_val:.1f}% | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
+                 f"BTL:{btl_mult} | Incr:{incremental:.0f} | SS+:{ss_mult}")
+        return total, notes
+
+    # ── Type A: Regular / HVRI / ROI / Nagpur ────────────────────────────────
+    # Highest Collection = Client-A * 32000 (FSF: AA = L*32000)
+    highest_coll = float(client_a or 0) * 32000
+
+    # Per-txn: threshold is PCR (collection per client) and CMR%
+    # Get SAM slabs for this team
+    if is_nagpur:
+        slabs = S.get("kcd_sam_nagpur", [])
+    elif is_hvri:
+        slabs = S.get("kcd_sam_hvri", [])
+    elif is_roi:
+        slabs = S.get("kcd_sam_roi", [])
+    else:
+        slabs = S.get("kcd_sam_regular", [])
+
+    is_cmr80 = cmr_pct >= 80
+    per_txn = 0
+    for (thresh_pcr, r1, r2) in sorted(slabs, reverse=True):
+        if pcr_val >= thresh_pcr:
+            per_txn = r2 if is_cmr80 else r1
+            break
+
+    # Incremental: (Net_DV - Highest_Coll) * rate%  when PCR > threshold
+    # Threshold = lowest PCR slab that earns something
+    _team_key = ("NAGPUR" if is_nagpur else "HVRI" if is_hvri else
+                 "ROI" if is_roi else "REGULAR")
+    _incr_rec = next((r for r in S.get("kcd_sam_incr",[])
+                      if str(r.get("Team","")).upper() == _team_key), {})
+    incr_thresh_pcr = float(_incr_rec.get("Incr_Threshold_PCR", 0) or 0)
+    incr_rate       = float(_incr_rec.get("Incr_Rate_%", 0.65) or 0.65) / 100
+    # FSF: IF(PCR > incr_thresh, IF(NetDV <= HC, 0, (NetDV-HC)*rate), 0)
+    incremental = 0.0
+    if pcr_val > incr_thresh_pcr and net_dv > highest_coll:
+        incremental = round((net_dv - highest_coll) * incr_rate, 0)
+
+    # Base = per_txn * raw_wk_productivity + incremental
+    base_before_ss = round(per_txn * float(txn_prod_raw or 0) + incremental, 0)
+
+    # SS+ mult: FSF AZ = IF(SS_sent>=3, IF(CMR>=70%, 100%, 50%), 0)
+    #           BA = IF(SS_sent>=3, AY*AZ, AY)
+    if ss_sent >= 3:
+        ss_mult = 1.0 if ss_cmr_pct >= 70 else 0.5
+    else:
+        ss_mult = 1.0
+    total = round(base_before_ss * ss_mult, 0)
+
+    notes = (f"KCD SAM {'Nagpur' if is_nagpur else 'HVRI' if is_hvri else 'ROI' if is_roi else 'Regular'}"
+             f" {vintage} | PCR:{pcr_val:.0f} | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
+             f"HC:{highest_coll:.0f} | Incr:{incremental:.0f} | SS+:{ss_mult}")
+    return total, notes
+    team_up = str(team).upper()
+    loc_up  = str(location).upper()
+    is_hvri = any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"]) or "HVRI" in team_up
+    is_roi  = "ROI" in team_up
+    is_nagpur = "NAGPUR" in team_up or "PHARMA" in team_up
+    is_listing = "LISTING" in team_up
+    is_catalog = "CATALOG" in team_up
+
+    # Select slab table
+    if is_listing:
+        slabs = S.get("kcd_sam_listing", [])
+        achv  = (net_dv / collection_target * 100) if collection_target > 0 else 0
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in slabs if achv >= t), 0)
+    elif is_catalog:
+        slabs = S.get("kcd_sam_catalog", [])
+        achv  = (net_dv / collection_target * 100) if collection_target > 0 else 0
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in slabs if achv >= t), 0)
+        btl_mult = 1.2 if btl_sales >= 2 else 1.0
+    elif is_hvri:
+        slabs = S.get("kcd_sam_hvri", [])
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in slabs if pcdv >= t), 0)
+    elif is_roi:
+        slabs = S.get("kcd_sam_roi", [])
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in slabs if pcdv >= t), 0)
+    elif is_nagpur:
+        slabs = S.get("kcd_sam_nagpur", [])
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in slabs if pcdv >= t), 0)
+    else:  # Regular
+        slabs = S.get("kcd_sam_regular", [])
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in slabs if pcdv >= t), 0)
+
+    # SS+ multiplier
+    if ss_sent >= 3 and ss_cmr_pct < 72:
+        ss_mult = 0.5
+    else:
+        ss_mult = 1.0
+
+    # BTL multiplier (Catalog only)
+    btl_m = 1.2 if (is_catalog and btl_sales >= 2) else 1.0
+
+    base = round(per_txn * txn_count * ss_mult * btl_m, 0)
+
+    # Incremental: 0.65% or 0.45% depending on team
+    _sam_incr = S.get("kcd_sam_incr", [])
+    incr_rate = 0.0065  # default 0.65%
+    incr_thresh_pcdv = 0
+    incr_thresh_pct  = 0
+    for rec in _sam_incr:
+        t = str(rec.get("Team","")).upper()
+        if ((is_listing and t == "LISTING") or (is_catalog and t == "CATALOG") or
+            (is_hvri and t == "HVRI") or (is_roi and t == "ROI") or
+            (is_nagpur and t == "NAGPUR") or
+            (not any([is_listing, is_catalog, is_hvri, is_roi, is_nagpur]) and t == "REGULAR")):
+            incr_rate = float(rec.get("Incr_Rate_%", 0.65)) / 100
+            incr_thresh_pcdv = float(rec.get("Incr_Threshold_PCDV", 0) or 0)
+            incr_thresh_pct  = float(rec.get("Incr_Threshold_Pct", 0) or 0)
+            break
+
+    # Compute incremental
+    incr = 0.0
+    if incr_thresh_pct > 0 and collection_target > 0:
+        achv2 = (net_dv / collection_target * 100)
+        if achv2 > incr_thresh_pct:
+            incr = round(max(0, net_dv - collection_target) * incr_rate, 0)
+    elif incr_thresh_pcdv > 0 and pcdv > incr_thresh_pcdv:
+        incr = round(net_dv * incr_rate, 0)  # pcdv above threshold -> incr on full DV
+
+    team_label = ("Listing" if is_listing else "Catalog" if is_catalog else
+                  "HVRI" if is_hvri else "ROI" if is_roi else
+                  "Nagpur" if is_nagpur else "Regular")
+    notes = (f"KCD SAM (L2) {team_label} {vintage} | PCDV:{round(pcdv)} | "
+             f"Rs{per_txn}/txn*{txn_count} | SS+:{ss_mult} | Incr:{incr:.0f}")
+    return round(base + incr, 0), notes
+
+
 def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
                     ss_cmr_pct, ss_sent, S, collection_target=0, metric_label="PCDV"):
     """
@@ -1803,8 +2126,12 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     """
     # If collection_target not in structure, derive from slab rates × client split
     if collection_target <= 0:
-        # FSF formula: Collection Target = Catalog×8500 + Listing×48000
-        collection_target = base_clients * 8500 + list_clients * 48000
+        # Use kcd_listing_rates from slab config (configurable, not hardcoded)
+        _lv = str(vintage)
+        _r  = S.get("kcd_listing_rates", {})
+        _rv = _r.get(_lv, _r.get("270D+", {}))
+        collection_target = (base_clients * float(_rv.get("base_rate", 7000))
+                             + list_clients * float(_rv.get("listing_rate", 22000)))
     if collection_target <= 0:
         return 0, "KCD Listing -- target=0"
     achv    = (net_dv / collection_target) * 100
@@ -1832,8 +2159,12 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
     - SS penalty only when ss_sent >= 3 AND ss_cmr < 70%.
     """
     if collection_target <= 0:
-        # FSF formula: Collection Target = Catalog×8500 + Listing×48000
-        collection_target = base_clients * 8500 + list_clients * 48000
+        # Use kcd_listing_rates from slab config (configurable, not hardcoded)
+        _lv2 = str(vintage)
+        _r2  = S.get("kcd_listing_rates", {})
+        _rv2 = _r2.get(_lv2, _r2.get("270D+", {}))
+        collection_target = (base_clients * float(_rv2.get("base_rate", 7000))
+                             + list_clients * float(_rv2.get("listing_rate", 22000)))
     if collection_target <= 0:
         return 0, "KCD Catalog -- target=0"
     achv    = (net_dv / collection_target) * 100
@@ -2027,6 +2358,68 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
         _mult_count = pref_ss_count
     ss_mult = 1.25 if _mult_count >= 2 else 0.5
     return int(raw_spot * ss_mult)
+
+
+def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct, ss_cmr_pct, ss_sent,
+                     big_ticket_count, S):
+    """
+    KCD SAM-ILP incentive: % of Deal Value based on individual target.
+    Rates (from slab config KCD_SAM_ILP sheet):
+      95%+ -> 0.65%, 100%+ -> 0.75%, 120%+ -> 0.80%  (standard)
+    Renewal CMR booster: 72-79.9% -> 75%; 80%+ -> 100%
+    SS+ CMR: >=75% -> 100%; <75% -> 50%
+    Big Ticket: 4 x 10L+ deals -> 1.2x multiplier
+    Returns (incentive, notes)
+    """
+    if not dv_target or dv_target <= 0:
+        return 0, "KCD SAM-ILP -- no DV target set"
+    achv_pct = net_dv / dv_target * 100
+
+    # Read rates from slab config
+    ilp_rates = S.get("kcd_sam_ilp_rates", [
+        (120, 0.0080), (100, 0.0075), (95, 0.0065)
+    ])
+    rate = 0.0
+    for (thresh, r) in sorted(ilp_rates, reverse=True):
+        if achv_pct >= thresh:
+            rate = r
+            break
+    if rate == 0:
+        return 0, f"KCD SAM-ILP -- achv {achv_pct:.1f}% below min threshold"
+
+    base_incr = round(net_dv * rate, 0)
+
+    # Renewal CMR booster
+    if cmr_pct >= 80:
+        cmr_mult = 1.0
+    elif cmr_pct >= 72:
+        cmr_mult = 0.75
+    else:
+        cmr_mult = 0.0   # below 72% = no incentive per booster table
+    base_after_cmr = round(base_incr * cmr_mult, 0)
+
+    # Big Ticket multiplier (4+ deals >= 10L)
+    bt_mult = 1.2 if int(big_ticket_count or 0) >= 4 else 1.0
+
+    # SS+ CMR multiplier
+    ss_mult = 1.0 if ss_cmr_pct >= 75 else 0.5
+
+    total = round(base_after_cmr * bt_mult * ss_mult, 0)
+    notes = (f"KCD SAM-ILP | Achv:{achv_pct:.1f}% | {rate*100:.2f}% of DV | "
+             f"CMR:{cmr_mult} | BT:{bt_mult} | SS+:{ss_mult}")
+    return total, notes
+
+
+def calc_mcats_renewal(im_star_amr_count, S):
+    """
+    KCD 'More MCATs Sell on Renewals' scheme (Apr'26).
+    IM Star/Leader AMR renewals: >= 3 MCATs -> Rs 3000 incentive.
+    Requires Monthly PCDV & CMR% qualification (passed in from route_calc).
+    """
+    # If >= 3 IM Star/Leader AMR renewals in the month
+    if im_star_amr_count >= 3:
+        return 3000
+    return 0
 
 
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
@@ -2402,6 +2795,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     notes = cmr_note = ""
 
     # ── CSD ──────────────────────────────────────────────────
+    # Only L1 employees use L1 CSD scheme; L2+ use their own logic
+    _desig_str = str(sb.get("Designation", sb.get("designation", ""))).upper().strip()
+    _is_l1 = _desig_str in ("L1", "EXEC", "SR EXEC", "SR. EXEC", "EXECUTIVE",
+                              "SENIOR EXECUTIVE", "AM", "MGR", "MANAGER", "") or not _desig_str
+    _is_l2_csd = _desig_str == "L2"
+
     if "CSD" in vertical:
         # FSF hardcodes 55%/65% for new joiners (0-30D/31-90D), 
         # and individual targets for 91D+ (from CMR targets file or sidebar)
@@ -2511,6 +2910,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # ── KCD ──────────────────────────────────────────────────
     elif "KCD" in vertical:
+        # Check if this is an L2 (SAM) or ILP employee using Designation field
+        _desig_up = str(sb.get("Designation", sb.get("designation", ""))).upper().strip()
+        # Primary check: Designation column (L1/L2/ILP from structure file)
+        _is_sam   = _desig_up == "L2" or any(k in _desig_up for k in
+                    ("SAM", "SR. ACCOUNT", "SR.ACCOUNT", "SENIOR ACCOUNT MANAGER"))
+        _is_ilp_desig = _desig_up == "ILP" or "ILP" in _desig_up
+        if not _is_sam and "SAM" in str(team).upper(): _is_sam = True
+        if not _is_ilp_desig and "ILP" in str(team).upper(): _is_ilp_desig = True
+
         kcd_col, cmr_note = get_kcd_cmr_col(
             cmr_pct, rnl_sent, sb.get("kcd_slab1_target", 72), sb.get("kcd_slab2_target", 80))
         team_up = team.upper()
@@ -2541,7 +2949,35 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 return calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
             return 0
 
-        if "LISTING" in team_up:
+        if _is_sam:
+            # Detect SAM-ILP vs regular SAM
+            _is_ilp = _is_ilp_desig or "ILP" in team_up
+            if _is_ilp:
+                # SAM-ILP: % of DV against individual target
+                _ilp_tgt = sam_ilp_targets.get(emp_id, 0)
+                _bt_count = int(sb.get("btl_sales", 0))  # big-ticket deals from receipt
+                base_inc, notes = calc_kcd_sam_ilp(
+                    kcd_net_dv, _ilp_tgt, cmr_pct, ss_cmr_pct, ss_sent_count,
+                    _bt_count, S)
+                kcd_base_only   = base_inc
+                kcd_incremental = 0
+                spot_inc        = _kcd_spot()
+            else:
+                # L2 SAM scheme -- lower per-txn rates, 0.65%/0.45% incremental
+                base_inc, notes = calc_kcd_sam(
+                pcr_val=pcr_val, pcdv_val=pcdv,
+                net_dv=kcd_net_dv, net_coll=net_coll,
+                txn_prod_raw=prod_score_receipt or txn_count,
+                cmr_pct=cmr_pct,
+                ss_cmr_pct=ss_cmr_pct, ss_sent=ss_sent_count,
+                btl_sales=sb.get("btl_sales", 0),
+                team=team, location=location, vintage=vintage,
+                client_a=client_cnt, listing_c=listing_c, catalog_c=catalog_c,
+                collection_target=collection_target, S=S)
+            kcd_base_only   = base_inc
+            kcd_incremental = 0  # already inside calc_kcd_sam
+            spot_inc        = _kcd_spot()
+        elif "LISTING" in team_up:
             # Use structure file Listing Clients; fall back to (total-1) if absent
             _list_c = listing_c if listing_c > 0 else max(1, client_cnt - 1)
             _base_c = max(client_cnt - _list_c, 1)
@@ -2885,6 +3321,7 @@ renewal_df_raw  = _read_file(renewal_file)
 struct_map      = load_structure_dump(structure_file)
 cmr_targets     = load_cmr_targets(cmr_target_file)
 kcd_targets     = load_kcd_targets(kcd_target_file) if kcd_target_file else {}
+sam_ilp_targets = load_sam_ilp_targets(sam_ilp_file) if sam_ilp_file else {}
 
 if not struct_map or len(struct_map) == 0:
     st.error("Could not read the structure file. Check column names.")
