@@ -1281,11 +1281,28 @@ def load_structure_dump(uploaded_file):
     Load the Employee Structure Dump file.
     Derives Vintage, Team, Client Count, Joining Date from it automatically.
     Returns a dict keyed by Employee ID string.
+    Only CSD and KCD employees are loaded.
+    Automatically reads the FSF_TA sheet if present in multi-sheet Excel files.
     """
     if uploaded_file is None:
         return {}
 
-    df = _read_file(uploaded_file)
+    # Prefer FSF_TA sheet if available (multi-sheet HRMS-style exports)
+    df = None
+    try:
+        _xl = pd.ExcelFile(uploaded_file)
+        _sheets_norm = [s.strip().upper() for s in _xl.sheet_names]
+        if "FSF_TA" in _sheets_norm:
+            _target_sheet = _xl.sheet_names[_sheets_norm.index("FSF_TA")]
+            df = pd.read_excel(uploaded_file, sheet_name=_target_sheet)
+        uploaded_file.seek(0)
+    except Exception:
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
+    if df is None:
+        df = _read_file(uploaded_file)
     df.columns = df.columns.str.strip()
 
     # Normalise column names to lowercase for flexible matching
@@ -1321,6 +1338,19 @@ def load_structure_dump(uploaded_file):
     l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
     l4_col      = find_col(df, ["L4 Name", "L4Name", "L4", "level4_name"])
     l5_col      = find_col(df, ["L5 Name", "L5Name", "L5", "level5_name"])
+    # Warn if this looks like an HRMS dump rather than incentive structure file
+    _required_incentive_cols = ["Client-A", "Vintage", "Remarks", "L2 ID"]
+    _missing_incentive_cols  = [c for c in _required_incentive_cols
+                                 if not any(c.lower() in col.lower() for col in df.columns)]
+    if len(_missing_incentive_cols) >= 3:
+        st.warning(
+            f"⚠️ Structure file appears to be an HRMS export, not the Incentive Structure Dump. "
+            f"Missing columns: {', '.join(_missing_incentive_cols)}. "
+            f"Please upload the file with columns: Employee ID, Vintage, Client-A, Client-C, "
+            f"Remarks, Group, L2 ID, Move/Join Date.",
+            icon="⚠️"
+        )
+
     desig_col   = find_col(df, ["Designation", "designation", "Role",
                                 "Employee Role", "emp_designation"])
 
@@ -1338,6 +1368,11 @@ def load_structure_dump(uploaded_file):
             continue
 
         vertical = str(row[vertical_col]).strip().upper() if vertical_col else ""
+
+        # Only process CSD and KCD employees
+        if vertical_col and "CSD" not in vertical and "KCD" not in vertical:
+            continue
+
         location = str(row[location_col]).strip()        if location_col else ""
         vintage  = str(row[final_grp]).strip()  if final_grp  else "91-270D"
         vbucket  = str(row[vintage_bkt]).strip() if vintage_bkt else ""
