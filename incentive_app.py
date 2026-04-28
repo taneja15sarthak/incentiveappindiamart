@@ -1212,41 +1212,83 @@ def enrich_receipt(df):
     return df
 
 
+def calc_all_cmr_per_employee(renewal_df):
+    """
+    Calculate CMR% per employee from ALL renewal rows for a given month.
+    Sir's FSF Exec-CSD formula (columns AU/AV/AW):
+      Sent     = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month)       -- ALL renewals
+      Received = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month, Status="Received")
+      CMR%     = Received / Sent
+    No product filter applied.
+    Returns dict: { emp_id_str: {"cmr_sent", "cmr_recd", "cmr_pct"} }
+    """
+    if renewal_df is None or len(renewal_df) == 0:
+        return {}
+    emp_col    = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
+    status_col = find_col(renewal_df, ["Status", "STATUS"])
+    if not emp_col:
+        return {}
+    df = renewal_df.copy()
+    df[emp_col] = df[emp_col].astype(str).str.split('.').str[0].str.strip()
+    if status_col:
+        df["_recv"] = df[status_col].astype(str).str.upper().str.contains("RECEIVED", na=False)
+    else:
+        df["_recv"] = False
+    result = {}
+    for emp_id, grp in df.groupby(emp_col):
+        eid = str(emp_id).split('.')[0].strip()
+        sent = len(grp)
+        recd = int(grp["_recv"].sum())
+        result[eid] = {"cmr_sent": sent, "cmr_recd": recd,
+                       "cmr_pct": round(recd / sent * 100, 2) if sent > 0 else 0.0}
+    return result
+
+
 def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None):
     """
     Calculate MDC-1 CMR% per employee from renewal file.
-    MDC-1 products = Mini Dynamic Catalog / MDC Annual etc. (Annual mode only, not Multi Year)
-    
-    mdc_client_counts: optional dict {emp_id_str: int} from structure file's MDC column.
-                       If provided, used as the sent denominator (more accurate than row count).
+
+    Exact FSF Exec-CSD formula (columns AX/AY/AZ):
+      Sent     = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month,
+                          Renewal."Remarks (New)"="MDC-1")
+      Received = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month,
+                          Renewal."Remarks (New)"="MDC-1",
+                          Renewal.Status="Received")
+      CMR%     = Received / Sent
+
+    "Remarks (New)" column tags each renewal as MDC-1 / MDC-2+ / MDC-TS etc.
+    Only rows tagged "MDC-1" count for both sent and received.
+
     Returns dict: { emp_id_str: {"mdc1_sent", "mdc1_recd", "mdc1_cmr_pct"} }
     """
     if renewal_df is None:
         return {}
 
-    emp_col     = find_col(renewal_df, ["EMP ID","Emp ID","EmpID","Employee ID"])
-    status_col  = find_col(renewal_df, ["Status","STATUS"])
-    product_col = find_col(renewal_df, ["WS/MDC Main","DCR Services","Product","Prod","Service"])
-    mode_col    = find_col(renewal_df, ["Mode","MODE","Deal Mode","Renewal Mode"])
+    emp_col     = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
+    status_col  = find_col(renewal_df, ["Status", "STATUS"])
+    remarks_col = find_col(renewal_df, ["Remarks (New)", "Remarks(New)", "Remarks_New",
+                                        "AS", "Remarks New"])
 
-    if not emp_col or not product_col:
+    if not emp_col:
         return {}
 
     df = renewal_df.copy()
-    df[emp_col] = df[emp_col].astype(str)
+    df[emp_col] = df[emp_col].astype(str).str.split('.').str[0].str.strip()
 
-    # Only Annual MDC products count for MDC-1 CMR (not Multi Year)
-    is_mdc1_prod = df[product_col].apply(
-        lambda p: any(k.upper() in str(p).upper() for k in MDC1_PRODUCTS)
-    )
-    if mode_col:
-        is_annual = df[mode_col].astype(str).str.upper().isin(
-            ["ANNUAL", "ANNUAL ", " ANNUAL"])
-        df_mdc1 = df[is_mdc1_prod & is_annual].copy()
+    # Filter to MDC-1 tagged rows only (FSF: AS column = "MDC-1")
+    if remarks_col and remarks_col in df.columns:
+        df_mdc1 = df[df[remarks_col].astype(str).str.strip().str.upper() == "MDC-1"].copy()
     else:
-        df_mdc1 = df[is_mdc1_prod].copy()
+        # Fallback: use product name filter if no Remarks(New) column
+        product_col = find_col(renewal_df, ["WS/MDC Main", "DCR Services", "Product", "Prod"])
+        if product_col:
+            df_mdc1 = df[df[product_col].apply(
+                lambda p: any(k.upper() in str(p).upper() for k in MDC1_PRODUCTS)
+            )].copy()
+        else:
+            return {}
 
-    if status_col:
+    if status_col and status_col in df_mdc1.columns:
         df_mdc1["_recv"] = df_mdc1[status_col].astype(str).str.upper().str.contains(
             "RECEIVED", na=False)
     else:
@@ -1254,27 +1296,14 @@ def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None):
 
     result = {}
     for emp_id, grp in df_mdc1.groupby(emp_col):
-        eid_str = str(emp_id)
-        recd    = int(grp["_recv"].sum())
-        # Denominator: use structure file MDC client count if available, else row count
-        if mdc_client_counts and eid_str in mdc_client_counts:
-            struct_mdc = mdc_client_counts[eid_str]
-            renewal_mdc = len(grp)
-            # Use the smaller of the two: structure file may have total client count
-            # (not just MDC clients) which would inflate the denominator and deflate CMR%.
-            # The renewal file row count is the most reliable lower bound.
-            sent = min(struct_mdc, renewal_mdc) if renewal_mdc > 0 else struct_mdc
-        else:
-            sent = len(grp)
-        pct = round(recd / sent * 100, 2) if sent > 0 else 0.0
+        eid_str = str(emp_id).split('.')[0].strip()
+        sent = len(grp)
+        recd = int(grp["_recv"].sum())
+        pct  = round(recd / sent * 100, 2) if sent > 0 else 0.0
         result[eid_str] = {"mdc1_sent": sent, "mdc1_recd": recd, "mdc1_cmr_pct": pct}
-    
-    # Also handle employees with MDC clients in structure but 0 received in renewal
-    if mdc_client_counts:
-        for eid_str, cnt in mdc_client_counts.items():
-            if eid_str not in result and cnt > 0:
-                result[eid_str] = {"mdc1_sent": cnt, "mdc1_recd": 0, "mdc1_cmr_pct": 0.0}
+
     return result
+
 
 def load_structure_dump(uploaded_file):
     """
@@ -1935,13 +1964,18 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
 
 
 def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
-                mdc1_cmr, ext_tat, d60, S, metric_label="PCDV", is_sps=False):
+                mdc1_cmr, ext_tat, d60, S, metric_label="PCDV", is_sps=False,
+                mdc1_cmr_plus1=None):
     """
     CSD SPS 91-270D / 270D+.
-    - is_sps=True  → Vintage Bucket = 'SPS' in structure file → 1.2× booster always applied.
-    - is_sps=False → 91-270D / 270D+ / CSD ROI bucket → booster only via Pune TAT/60D conditions.
-    - CMR slab 0 → per_txn = 0 → incentive = 0.
+    - is_sps=True  
+    mdc1_cmr      = current month MDC-1 CMR% (April, for display as "MDC-1 CMR%")
+    mdc1_cmr_plus1 = next month MDC-1 CMR% (May, used for the multiplier)
+                     If None or sent=0 → 100% (no clients due = no penalty)
     """
+    # Use next-month MDC-1 for the multiplier (scheme: "MDC 1- CMR+1% Multiplier")
+    # mdc1_cmr_plus1=None means sent=0 → 100%
+    _mdc1_for_mult = mdc1_cmr_plus1 if mdc1_cmr_plus1 is not None else 100.0
     slabs = S["csd_sps_270p"] if vintage == "270D+" else S["csd_sps_91_270"]
     # cmr_slab=0 means employee is below Slab1 CMR target → no per-txn incentive
     if cmr_slab == 0:
@@ -2946,6 +2980,30 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0):
             _fnt  = rec[fnt_col].fillna("").astype(str).str.upper().str.strip()
             fnt1_prod_count = int((_prod & _amr & (_fnt == "FNT-1")).sum())
             fnt2_prod_count = int((_prod & _amr & (_fnt == "FNT-2")).sum())
+        # Always derive FNT from Rem+Rnl Remarks (sir's exact spot logic)
+        # NR = Rem="Upsell-NR"; AMR = Rem="Renewal" AND Rnl Remarks in CMR set
+        _rem_col  = find_col(receipt_df, ["Rem", "REM"])
+        _rnl_col  = find_col(receipt_df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks"])
+        _date_col2 = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+        if _rem_col and _date_col2:
+            _AMR_VALS = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
+            _is_nr  = rec[_rem_col].astype(str).str.strip() == "Upsell-NR"
+            if _rnl_col:
+                _is_amr = ((rec[_rem_col].astype(str).str.strip() == "Renewal") &
+                           (rec[_rnl_col].astype(str).str.strip().isin(_AMR_VALS)))
+            else:
+                _is_amr = pd.Series(False, index=rec.index)
+            _spot_qual = _is_nr | _is_amr
+            _dates2    = pd.to_datetime(rec[_date_col2], errors='coerce')
+            fnt1_prod_count = int((_spot_qual & (_dates2.dt.day <= 16)).sum())
+            fnt2_prod_count = int((_spot_qual & (_dates2.dt.day >= 20)).sum())
+            nr_upsell_count = int(_spot_qual.sum())
+        elif upsell_col_name:
+            _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+            if _date_col:
+                _dates = pd.to_datetime(rec[_date_col], errors='coerce')
+                fnt1_prod_count = int((upsell_mask & (_dates.dt.day <= 16)).sum())
+                fnt2_prod_count = int((upsell_mask & (_dates.dt.day >= 20)).sum())
 
         # KCD multiplier counts
         pref_ss_col = find_col(receipt_df, ["Pref SS+", "PrefSS", "SS+"])
@@ -2988,6 +3046,7 @@ def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
 def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
                svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None, cmr_plus1_pct=0.0,
+               all_cmr_pct=None, all_cmr_sent=0,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
                vintage_bucket="", designation="", weekly_dv=None,
                cmr_plus1_sent=0):
@@ -3135,6 +3194,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # Scheme doc: PCDV 1800/2100/2400/2800 -> fixed Rs. payout + 3% incr above 2800
             # CMR Slab1=100%, Slab2=120%. No MDC-1 multiplier.
             # L2 Rel Mgr exception still applies
+            # all_cmr: all-renewals CMR% for current month (FSF AW column - slab multiplier)
+            # mdc1_cmr: MDC-1 only CMR% (not used in L1 slab mult - only for reference)
+            emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else (mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0)
+            emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else (mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0)
             emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
             is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
             is_sps_by_team   = "SPS" in str(team).upper()
@@ -3169,9 +3232,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     notes += f" | COMBINED_CAP:{_cap_31}"
         else:
             # SPS -- no PoP; Insta = 0.5; productivity from receipt
-            # MDC-1 CMR: per-employee from renewal file (MDC 2/3 Year excluded)
-            # Use per-employee MDC1 CMR% from renewal file if available
-            # Fallback to 0 (not sidebar default) so wrong band is obvious in output
+            # all_cmr: ALL-renewals CMR% (sir's AW column) - used for MDC-1 multiplier
+            emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else (mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0)
             emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
             # is_sps: True for ALL "SPS (CSD 91D+)" team employees
             # SPS booster applies to the whole SPS team unconditionally per scheme.
@@ -3203,8 +3265,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             else:
                 base_inc, notes = calc_csd_sps(
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
-                    emp_mdc1_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
-                    metric_label=metric_label, is_sps=is_sps_employee)
+                    emp_all_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
+                    metric_label=metric_label, is_sps=is_sps_employee,
+                    mdc1_cmr_plus1=(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1
+                                    else cmr_plus1_pct) if cmr_plus1_sent > 0 else None)
             # Spot: config-driven -- April config has "CSD_Spot_Apr"; March has "CSD_Spot"
             if S.get("has_apr_spot"):
                 spot_inc = calc_spot_april_csd(
@@ -3444,7 +3508,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "CMR Slab":            cmr_note,
         "SS+ Sent":            cmr_data.get("ss_sent", 0),
         "SS+ Received":        cmr_data.get("ss_received", 0),
-        "MDC-1 CMR%":          round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else "",
+        "MDC-1 CMR%":          round(all_cmr_pct, 1) if all_cmr_pct is not None else (round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else ""),
         "PCR":                 round(pcr_val, 0),
         "PCDV":                round(pcdv_val, 0),
         "Slab Metric Used":    metric_label,   # which one drove the slab lookup
@@ -3454,7 +3518,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Renewal Txns":        rnl_count,
         # ── CSD SPS columns (match sir's csd_calc.xlsx) ──────────
         # ── CSD detailed breakdown (matches sir's csd_calc columns) ───
-        "MDC1 CMR+1%":         round(mdc1_cmr_pct, 1) if (_is_csd and mdc1_cmr_pct is not None) else "",
+        "MDC1 CMR+1%":         (round(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct, 1)
+                         if (cmr_plus1_sent > 0 and _is_csd)
+                         else (100.0 if _is_csd else "")),
         "CMR+1 Multiplier":    _inc_payout_mult if _is_csd else "",
         "Inc. Payout Mult":    _inc_payout_mult if _is_csd else "",
         "Inc. Per Txn (₹)":    int(_per_txn_rate) if _is_csd and _prod_score > 0 else "",
@@ -3755,6 +3821,9 @@ mdc_client_counts_map = {
     for eid, s in struct_map.items()
     if s.get("MDC Client Count", 0) > 0
 }
+# Current month CMR% (all renewals) - for CSD L1 slab multiplier (FSF AW column)
+all_cmr_map  = calc_all_cmr_per_employee(renewal_df)
+# MDC-1 CMR% (current month, MDC-1 tagged only) - NOT the main slab mult but kept for reference
 mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None)
 # CMR+1 = April MDC-1 data (used in CSD RM cross-multiplier AK step)
 # For March calc: filter renewal to April; for April calc: same file contains both months
@@ -3872,6 +3941,8 @@ if calc_btn:
                              svc_tiers=svc_tiers,
                              prod_score_receipt=prod_score_receipt,
                              mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
+                             all_cmr_pct=all_cmr_map.get(emp_id, {}).get("cmr_pct", None),
+                             all_cmr_sent=all_cmr_map.get(emp_id, {}).get("cmr_sent", 0),
                              cmr_plus1_pct=cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0),
                              cmr_plus1_sent=cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0),
                              nr_upsell_count=nr_upsell_count,
