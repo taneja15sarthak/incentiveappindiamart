@@ -1878,18 +1878,20 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     """
     min_txn = S["min_txn_0_30"] if vintage == "0-30D" else S["min_txn_31_90"]
 
-    # Base incentive -- from FSF formula
-    base  = next((r for t, r in S["csd_new_slabs"] if pcdv >= t), 0)
-    # Incremental: (Net Collection − Highest Collection) × 3%
-    # Highest Collection = Client-C × 5000 (fixed in FSF: AB = P × 5000)
-    _net_coll_raw    = pcdv * client_c
-    _highest_coll_90 = client_c * 5000
-    incr  = (_net_coll_raw - _highest_coll_90) * S["csd_new_incr_rate"] if _net_coll_raw > _highest_coll_90 else 0
-    # CMR multiplier: 120% at slab2, 100% at slab1 or sent<=3, 0% below slab1
+    # Base incentive: fixed payout from PCDV slab table
+    _slabs = S["csd_new_slabs"]  # [(threshold, payout), ...] sorted descending
+    base   = next((r for t, r in _slabs if pcdv >= t), 0)
+    # Highest slab threshold (2800): incremental = (PCDV - 2800) * clients * 3%
+    # Scheme doc: "3% on Deal Value above 2800 PCDV"
+    # (FAQ example: PCDV 3500, 100 clients -> incr = (3500-2800)*100*3% = 2100)
+    _incr_threshold = _slabs[0][0] if _slabs else 2800  # highest threshold in config
+    incr  = max(0, pcdv - _incr_threshold) * client_c * S["csd_new_incr_rate"] if pcdv > _incr_threshold else 0
+    # CMR multiplier: Slab 2 -> 120%, Slab 1 -> 100%, below Slab 1 -> 0%
     mult  = S["csd_slab2_mult"] if cmr_slab == 2 else (1.0 if cmr_slab >= 1 else 0.0)
     _base_before_cap = (base + incr) * mult
-    # Cap at 30,000 (from FSF: MIN(..., 30000))
-    base_total = min(_base_before_cap, 30000.0)
+    # Cap at 20,000 (scheme: "earn up to Rs.20000") applied to base only here
+    # Final cap base+PoP is applied in route_calc
+    base_total = min(_base_before_cap, S.get("new_joiner_cap", 20000))
 
     # Productivity (Annual + MYR only; IM Insta excluded)
     prod_score, _, reg_count = calc_productivity(rnl_prods, rnl_modes, "csd_new")
@@ -3101,16 +3103,24 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         cmr_slab, cmr_note = get_cmr_slab(cmr_pct, rnl_sent, _s1, _s2)
 
         if vintage == "0-30D":
-            # 0-30D: fixed slab base + PoP
+            # 0-30D: fixed slab base + PoP, combined cap = 20,000
             base_inc, pop_inc, notes = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
                 rnl_prods, rnl_modes, vintage, S,
                 svc_tiers=svc_tiers,
                 pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
                 metric_label=metric_label)
+            # Apply combined cap to base+PoP
+            _combined = base_inc + pop_inc
+            _cap = S.get("new_joiner_cap", 20000)
+            if _combined > _cap:
+                pop_inc = max(0, _cap - base_inc)
+                notes += f" | COMBINED_CAP:{_cap}"
         elif vintage == "31-90D":
-            # 31-90D: per-txn incentive same as 91-270D + PoP on top
-            # (from FSF analysis: 31-90D employees appear in Exec-CSD sheet with per-txn formula)
+            # 31-90D: SAME fixed PCDV slab formula as 0-30D (NOT per-txn)
+            # Scheme doc: PCDV 1800/2100/2400/2800 -> fixed Rs. payout + 3% incr above 2800
+            # CMR Slab1=100%, Slab2=120%. No MDC-1 multiplier.
+            # L2 Rel Mgr exception still applies
             emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
             is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
             is_sps_by_team   = "SPS" in str(team).upper()
@@ -3126,35 +3136,22 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     cmr_plus1_pct=_cmr_plus1_31,
                     ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
                     is_sps=is_sps_employee, S=S)
+                pop_inc = 0
             else:
-                if cmr_slab == 0:
-                    _per_txn_31 = 0
-                else:
-                    _, _per_txn_31 = pcdv_slab(pcdv, S["csd_sps_91_270"], cmr_slab)
-                _mdc1_m_31 = (1.2 if emp_mdc1_cmr > 35 else
-                              1.0 if emp_mdc1_cmr >= 25 else 0.5)
-                _boost_31   = (S["boost_mult"]
-                               if is_sps_employee or
-                                  (sb.get("ext_tat", 99) < S["boost_tat"] and
-                                   sb.get("d60", 99) < S["boost_d60"])
-                               else 1.0)
-                _base_raw_31 = round(_per_txn_31 * (prod_score_receipt or 0) * _mdc1_m_31 * _boost_31, 0)
+                # Use calc_csd_new -- same fixed PCDV slab as 0-30D
+                base_inc, pop_inc, notes = calc_csd_new(
+                    pcdv, client_cnt, cmr_slab, cmr_pct,
+                    rnl_prods, rnl_modes, vintage, S,
+                    svc_tiers=svc_tiers,
+                    pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
+                    metric_label=metric_label)
+            # Apply combined cap to base+PoP (scheme: earn up to Rs.20,000)
+            if not _is_rel_mgr_31:
+                _combined_31 = base_inc + pop_inc
                 _cap_31 = S.get("new_joiner_cap", 20000)
-                base_inc = min(_base_raw_31, _cap_31)
-                notes    = (f"CSD 31-90D | {metric_label}:{round(pcdv)} | "
-                            f"₹{_per_txn_31}/txn×{prod_score_receipt or 0:.1f} | "
-                            f"MDC1:{_mdc1_m_31}({emp_mdc1_cmr:.0f}%) boost:{_boost_31}"
-                            + (f" | CAP:{int(_cap_31)}" if base_inc < _base_raw_31 else ""))
-            # PoP still applies for 31-90D on top of base
-            _, _pop_inc_31, _pop_notes_31 = calc_csd_new(
-                pcdv, client_cnt, cmr_slab, cmr_pct,
-                rnl_prods, rnl_modes, vintage, S,
-                svc_tiers=svc_tiers,
-                pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
-                metric_label=metric_label)
-            pop_inc = _pop_inc_31
-            if pop_inc > 0:
-                notes += f" | PoP:{_pop_notes_31}"
+                if _combined_31 > _cap_31:
+                    pop_inc = max(0, _cap_31 - base_inc)
+                    notes += f" | COMBINED_CAP:{_cap_31}"
         else:
             # SPS -- no PoP; Insta = 0.5; productivity from receipt
             # MDC-1 CMR: per-employee from renewal file (MDC 2/3 Year excluded)
