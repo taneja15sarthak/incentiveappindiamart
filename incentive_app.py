@@ -1212,7 +1212,7 @@ def enrich_receipt(df):
     return df
 
 
-def calc_all_cmr_per_employee(renewal_df):
+def calc_all_cmr_per_employee(renewal_df, emp_col_override=None):
     """
     Calculate CMR% per employee from ALL renewal rows for a given month.
     Sir's FSF Exec-CSD formula (columns AU/AV/AW):
@@ -1220,11 +1220,12 @@ def calc_all_cmr_per_employee(renewal_df):
       Received = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month, Status="Received")
       CMR%     = Received / Sent
     No product filter applied.
-    Returns dict: { emp_id_str: {"cmr_sent", "cmr_recd", "cmr_pct"} }
+    emp_col_override: group by this column instead of EMP ID (used for CSD L2 name lookup).
+    Returns dict: { key_val: {"cmr_sent", "cmr_recd", "cmr_pct"} }
     """
     if renewal_df is None or len(renewal_df) == 0:
         return {}
-    emp_col    = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
+    emp_col    = emp_col_override or find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
     status_col = find_col(renewal_df, ["Status", "STATUS"])
     if not emp_col:
         return {}
@@ -1804,6 +1805,38 @@ def load_kcd_targets(uploaded_file):
     except Exception as e:
         st.warning(f"KCD Targets file error: {e}")
         return {}
+
+
+def calc_cmr_per_employee_by_col(renewal_df, group_col):
+    """Group renewal data by a custom column (e.g. L2 name) instead of EMP ID.
+    Used for CSD L2 Rel Mgr whose renewals are tagged with their NAME in the 'L2' column.
+    Returns dict keyed by the group_col values (name strings).
+    """
+    if renewal_df is None or group_col not in renewal_df.columns:
+        return {}
+    df = renewal_df.copy()
+    status_col  = find_col(df, ["Status", "STATUS"])
+    product_col = find_col(df, ["WS/MDC Main", "DCR Services", "Product", "Service"])
+    df["_key"] = df[group_col].astype(str).str.strip()
+    df["_received"] = df[status_col].astype(str).str.upper().str.contains("RECEIVED", na=False) if status_col else False
+    df["_is_ss_plus"] = df[product_col].astype(str).str.upper().apply(
+        lambda p: any(k in p for k in SS_PLUS_KEYWORDS)) if product_col else False
+    result = {}
+    for key, grp in df.groupby("_key"):
+        key_str = str(key).strip()
+        if not key_str or key_str.lower() in ("nan", "none", "direct", ""):
+            continue
+        total_sent     = len(grp)
+        total_received = int(grp["_received"].sum())
+        ss_sent        = int(grp["_is_ss_plus"].sum())
+        ss_received    = int((grp["_is_ss_plus"] & grp["_received"]).sum())
+        result[key_str] = {
+            "renewal_sent": total_sent, "renewal_received": total_received,
+            "cmr_pct": round(total_received / total_sent * 100, 2) if total_sent > 0 else 0.0,
+            "ss_sent": ss_sent, "ss_received": ss_received,
+            "ss_cmr_pct": round(ss_received / ss_sent * 100, 2) if ss_sent > 0 else 0.0,
+        }
+    return result
 
 
 def calc_cmr_per_employee(renewal_df):
@@ -2845,9 +2878,11 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
 
-    # For CSD L2 Rel Mgr: use Manager Id to get team receipts (FSF AS col = L2 ID)
+    # For CSD L2 Rel Mgr: use HOD-3 / L2-ID column to get ALL team receipts
+    # (Manager Id misses some L1s who report via different hierarchy path)
+    # FSF AS col = L2 ID; our file: 'Old Sales HOD-3 ID' is most complete
     if is_l2_csd:
-        _mgr_col  = find_col(receipt_df, ["Manager Id", "Old Sales HOD-3 ID"])
+        _mgr_col  = find_col(receipt_df, ["Old Sales HOD-3 ID", "Manager Id"])
         _vert_col = find_col(receipt_df, ["Vertical.1", "Vertical"])
         if _mgr_col:
             _mask = receipt_df[_mgr_col].astype(str).str.split(".").str[0].str.strip() == eid_str
@@ -3836,6 +3871,19 @@ receipt_df = enrich_receipt(receipt_df)
 
 # ── CMR% from month-filtered renewal data ────────────────────
 cmr_map     = calc_cmr_per_employee(renewal_df)
+# For CSD L2 Rel Mgr: CMR uses L2 name col in renewal (FSF Renewal.AX = L2 ID mapped to name)
+_rnl_l2_col = find_col(renewal_df, ["L2", "L2 Name", "L2Name", "RM Name"]) if (
+    renewal_df is not None and isinstance(renewal_df, pd.DataFrame) and len(renewal_df) > 0) else None
+if _rnl_l2_col and struct_map:
+    try:
+        _l2_cmr_by_name = calc_cmr_per_employee_by_col(renewal_df, _rnl_l2_col)
+        for _eid3, _sd3 in struct_map.items():
+            if str(_sd3.get("Designation","")).upper() == "L2" and "CSD" in str(_sd3.get("Vertical","")).upper():
+                _nm3 = str(_sd3.get("Employee Name","")).strip()
+                if _nm3 and _nm3 in _l2_cmr_by_name:
+                    cmr_map[_eid3] = _l2_cmr_by_name[_nm3]
+    except Exception:
+        pass
 # Build per-employee MDC client count from structure file
 mdc_client_counts_map = {
     eid: s.get("MDC Client Count", 0)
@@ -4028,6 +4076,10 @@ if calc_btn:
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
             "Designation":        s.get("Designation", ""),
+        "Client-A (aggregated)": int(s.get("Client Count", 0) or 0),
+        "Client-C (aggregated)": round(float(s.get("Client-C", 0) or 0), 0),
+        "Effective Team Size":  int(s.get("Effective Team Size", 0) or 0),
+        "L1 Count":             int(s.get("L1 Count", 0) or 0),
             "Calc Month":         sel_month if sel_month else "All",
             "Vertical":           s.get("Vertical", ""),
             "Vintage":            s.get("Vintage", ""),
@@ -4184,6 +4236,7 @@ if calc_btn:
             csd_l2 = csd_res[csd_res["Designation"].astype(str) == "L2"] if "Designation" in csd_res.columns else csd_res.iloc[0:0]
             rm_cols = [c for c in [
                 "Employee ID","Employee Name","Designation","Location","SPS Group","Vintage Bucket",
+                "Client-A (aggregated)","Client-C (aggregated)","Effective Team Size","L1 Count",
                 "Collection (₹)","Refund (₹)","Net Collection (₹)","Net Deal Value (₹)",
                 "PCR","PCDV",
                 "CMR Slab1 Target","CMR Slab2 Target","CMR% (auto)",
