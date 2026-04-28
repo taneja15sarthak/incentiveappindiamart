@@ -1485,6 +1485,68 @@ def load_structure_dump(uploaded_file):
             "Remarks":           remarks,
             "MDC Client Count":  mdc_client_cnt,
         }
+
+    # ── Aggregate L1 client counts onto L2 employees ─────────────────────────
+    # FSF formula: L2 Client-A = SUMIFS(L1 Client-A, L1.Manager_ID = L2.EmpID)
+    # The structure file has "L2 ID" column on L1 rows = their direct manager.
+    # L2 employees' own rows have Client-A=0; we must build it from L1 subordinates.
+    l2_id_col = find_col(df, ["L2 ID", "L2ID", "Manager ID", "ManagerID"])
+    if l2_id_col:
+        l1_rows = df[df[desig_col].astype(str).str.upper().str.strip() == "L1"].copy() if desig_col else pd.DataFrame()
+        if len(l1_rows) > 0:
+            for col in [client_a, client_c, "Base", "Listing"]:
+                if col and col in l1_rows.columns:
+                    l1_rows[col] = pd.to_numeric(l1_rows[col], errors='coerce').fillna(0)
+            l1_rows["_l2_id"] = l1_rows[l2_id_col].astype(str).str.split('.').str[0].str.strip()
+
+            # Build aggregation per L2 ID and vertical
+            vert_col_name = find_col(df, ["IIL Vertical Name", "Vertical", "vertical"])
+            if vert_col_name:
+                l1_rows["_vert"] = l1_rows[vert_col_name].astype(str).str.upper().str.strip()
+            else:
+                l1_rows["_vert"] = ""
+
+            _agg_cols = {c: 'sum' for c in ([client_a, client_c] + (["Base","Listing"] if "Base" in l1_rows.columns else []))
+                         if c and c in l1_rows.columns}
+            _agg_cols["Employee ID" if "Employee ID" in l1_rows.columns else l1_rows.columns[0]] = 'count'
+            _cnt_col = list(_agg_cols.keys())[-1]
+            l2_agg = l1_rows.groupby(["_l2_id", "_vert"]).agg(_agg_cols).reset_index()
+            l2_agg.columns = ["_l2_id", "_vert"] + list(_agg_cols.keys())
+
+            # Patch L2 employees in result dict
+            for eid, emp_data in result.items():
+                desig_v = str(emp_data.get("Designation", "")).upper().strip()
+                if desig_v not in ("L2", "ILP"):
+                    continue
+                vert_v = str(emp_data.get("Vertical", "")).upper().strip()
+                # Find matching row in aggregation
+                mask = (l2_agg["_l2_id"] == eid)
+                if vert_v:
+                    vert_mask = l2_agg["_vert"].str.contains(vert_v[:3], na=False)
+                    if vert_mask.any():
+                        mask = mask & vert_mask
+                matched = l2_agg[mask]
+                if len(matched) == 0:
+                    continue
+                row_agg = matched.iloc[0]
+                # Only overwrite if L2's own Client-A is 0 (not pre-filled)
+                if emp_data.get("Client Count", 0) == 0:
+                    if client_a and client_a in row_agg.index:
+                        result[eid]["Client Count"] = float(row_agg[client_a])
+                    if client_c and client_c in row_agg.index:
+                        result[eid]["Client-C"] = float(row_agg[client_c])
+                    if "Listing" in row_agg.index:
+                        result[eid]["Listing Clients"] = float(row_agg.get("Listing", 0))
+                    if "Base" in row_agg.index:
+                        result[eid]["Base Clients"] = float(row_agg.get("Base", 0))
+                    # L1 count for effective team size (min 4 per FSF)
+                    if _cnt_col in row_agg.index:
+                        l1_cnt = int(row_agg[_cnt_col])
+                        eff_team = (4 if (result[eid].get("Client Count", 0) > 375 and l1_cnt < 4)
+                                    else max(3, l1_cnt))
+                        result[eid]["L1 Count"] = l1_cnt
+                        result[eid]["Effective Team Size"] = eff_team
+
     return result
 
 def is_insta(prod_str):
@@ -1570,6 +1632,46 @@ def load_cmr_targets(uploaded_file):
         return result
     except Exception as e:
         st.error(f"Error loading CMR Targets file: {e}")
+        return {}
+
+
+def load_sam_ilp_targets(uploaded_file):
+    """Load SAM-ILP individual DV targets from uploaded file.
+    Expected columns: Employee ID, DV_Target, Rate_% (optional base rate at 95% tier).
+    If Rate_% provided as percentage (e.g. 0.60): stored as decimal 0.006.
+    Returns dict: {emp_id: {"target": float, "rate_95": float|None}}
+    """
+    if uploaded_file is None:
+        return {}
+    try:
+        df = _read_file(uploaded_file)
+        df.columns = [str(c).strip() for c in df.columns]
+        emp_col = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
+        tgt_col = find_col(df, ["DV_Target", "DV Target", "Deal Value Target",
+                                 "Target", "dv_target", "Overall Target"])
+        rate_col = find_col(df, ["Rate_%", "Rate", "Incentive_Rate", "Base_Rate",
+                                  "Rate_95%", "Base_Rate_%"])
+        if not emp_col or not tgt_col:
+            st.warning("SAM-ILP targets file: need 'Employee ID' and 'DV_Target' columns")
+            return {}
+        result = {}
+        for _, row in df.iterrows():
+            eid = str(row[emp_col]).strip().split('.')[0]
+            if not eid or eid.lower() in ('nan', ''):
+                continue
+            try:
+                tgt = float(row[tgt_col])
+                rate = None
+                if rate_col and pd.notna(row.get(rate_col)):
+                    r = float(row[rate_col])
+                    # Convert: if given as 0.60 (percent) -> 0.006; if 0.006 already -> keep
+                    rate = r / 100 if r > 0.1 else r
+                result[eid] = {"target": tgt, "rate_95": rate}
+            except Exception:
+                pass
+        return result
+    except Exception as e:
+        st.warning(f"SAM-ILP targets file error: {e}")
         return {}
 
 
@@ -1957,7 +2059,7 @@ def calc_csd_rel_mgr(pcr, prod_raw, cmr_pct, mdc1_cmr_pct,
 def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
                  cmr_pct, ss_cmr_pct, ss_sent, btl_sales,
                  team, location, vintage,
-                 client_a, listing_c, catalog_c, collection_target, S):
+                 client_a, listing_c, catalog_c, collection_target, S, l1_count=4):
     """
     KCD Sr. Account Manager (L2) incentive -- exact FSF KCD-SAM formula.
 
@@ -2019,11 +2121,20 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         incremental = round(max(0, net_dv - collection_target) * incr_rate, 0) \
                       if pcr_pct_val > 140 else 0
 
-        # BTL multiplier for Catalog
-        btl_mult = 1.2 if (is_catalog and int(btl_sales or 0) >= 2) else 1.0
-
-        # Base = per_txn * raw_wk_productivity * btl_mult + incremental
-        base_before_ss = round(per_txn * float(txn_prod_raw or 0) * btl_mult + incremental, 0)
+        # BTL (Base-to-Listing): FSF AP = btl_sales / L1_count, threshold 1 or 2
+        # FSF BA = IF(AP>=2,(AY+AQ)*1.2, IF(AP>=1,AY+AQ, 0)) where AQ=incremental
+        # AY already includes AQ; BA adds AQ again -- this is exact FSF behaviour
+        _btl_per_l1 = float(btl_sales or 0) / max(1, int(l1_count or 1))
+        _ay = per_txn * float(txn_prod_raw or 0) + incremental   # AY = (AX*AJ) + AQ
+        if is_catalog:
+            if _btl_per_l1 >= 2:
+                base_before_ss = round((_ay + incremental) * 1.2, 0)
+            elif _btl_per_l1 >= 1:
+                base_before_ss = round(_ay + incremental, 0)
+            else:
+                base_before_ss = 0   # must have >=1 BTL/L1 sale to earn
+        else:
+            base_before_ss = round(_ay, 0)   # Listing: no BTL mult
 
         # SS+ mult: FSF BA=AY then BB=IF(sent>=3, BA*AZ, BA)
         if ss_sent >= 3:
@@ -2446,54 +2557,85 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
     return int(raw_spot * ss_mult)
 
 
-def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct, ss_cmr_pct, ss_sent,
-                     big_ticket_count, S):
+def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct=0, cmr_sent=0, cmr_recd=0,
+                     ss_cmr_pct=0, big_ticket_count=0,
+                     emp_rate_95=None, S=None):
     """
-    KCD SAM-ILP incentive: % of Deal Value based on individual target.
-    Rates (from slab config KCD_SAM_ILP sheet):
-      95%+ -> 0.65%, 100%+ -> 0.75%, 120%+ -> 0.80%  (standard)
-    Renewal CMR booster: 72-79.9% -> 75%; 80%+ -> 100%
-    SS+ CMR: >=75% -> 100%; <75% -> 50%
-    Big Ticket: 4 x 10L+ deals -> 1.2x multiplier
-    Returns (incentive, notes)
+    KCD SAM-ILP incentive -- exact FSF ' KCD-SAM ILP' formula.
+
+    FSF column chain:
+      AG = eligible  = (DV_in_Lac >= Target) i.e. net_dv >= dv_target
+      AT = base      = IF(eligible, IF(achv>=120%, DV*r120, IF(>=100%, DV*r100,
+                                       IF(>=95%, DV*r95, 0))), 0)
+      AV = CMR_mult  = complex count-based logic (see below)
+      AW = AT * AV
+      AX = IF(big_ticket>=4, AW*1.2, AW)
+      AY = IF(SS_CMR%>=75%, AX, AX*0.5)
+
+    Rates are per-employee (from upload file column Rate_%):
+      Variant A: r95=0.60%, r100=0.65%, r120=0.75%
+      Variant B: r95=0.65%, r100=0.75%, r120=0.80%  (default)
     """
+    if S is None:
+        S = {}
     if not dv_target or dv_target <= 0:
         return 0, "KCD SAM-ILP -- no DV target set"
+
     achv_pct = net_dv / dv_target * 100
 
-    # Read rates from slab config
-    ilp_rates = S.get("kcd_sam_ilp_rates", [
-        (120, 0.0080), (100, 0.0075), (95, 0.0065)
-    ])
-    rate = 0.0
-    for (thresh, r) in sorted(ilp_rates, reverse=True):
-        if achv_pct >= thresh:
-            rate = r
-            break
-    if rate == 0:
-        return 0, f"KCD SAM-ILP -- achv {achv_pct:.1f}% below min threshold"
+    # AG: must reach 100% to be eligible
+    eligible = (net_dv >= dv_target)
 
-    base_incr = round(net_dv * rate, 0)
-
-    # Renewal CMR booster
-    if cmr_pct >= 80:
-        cmr_mult = 1.0
-    elif cmr_pct >= 72:
-        cmr_mult = 0.75
+    # Per-employee rates (from upload file, or config default)
+    if emp_rate_95 and float(emp_rate_95 or 0) > 0:
+        r95  = float(emp_rate_95)
+        r100 = r95 + 0.0005
+        r120 = r95 + 0.0015
     else:
-        cmr_mult = 0.0   # below 72% = no incentive per booster table
-    base_after_cmr = round(base_incr * cmr_mult, 0)
+        ilp_rates = S.get("kcd_sam_ilp_rates", [(120, 0.0080), (100, 0.0075), (95, 0.0065)])
+        r_map = {t: r for t, r in ilp_rates}
+        r95  = r_map.get(95,  0.0065)
+        r100 = r_map.get(100, 0.0075)
+        r120 = r_map.get(120, 0.0080)
 
-    # Big Ticket multiplier (4+ deals >= 10L)
-    bt_mult = 1.2 if int(big_ticket_count or 0) >= 4 else 1.0
+    # AT: base incentive
+    if eligible:
+        if   achv_pct >= 120: at = net_dv * r120
+        elif achv_pct >= 100: at = net_dv * r100
+        elif achv_pct >= 95:  at = net_dv * r95
+        else:                 at = 0
+    else:
+        at = 0
 
-    # SS+ CMR multiplier
-    ss_mult = 1.0 if ss_cmr_pct >= 75 else 0.5
+    if at == 0:
+        return 0, f"KCD SAM-ILP -- achv {achv_pct:.1f}% (eligible:{eligible})"
 
-    total = round(base_after_cmr * bt_mult * ss_mult, 0)
-    notes = (f"KCD SAM-ILP | Achv:{achv_pct:.1f}% | {rate*100:.2f}% of DV | "
-             f"CMR:{cmr_mult} | BT:{bt_mult} | SS+:{ss_mult}")
-    return total, notes
+    # AV: CMR multiplier -- exact FSF AV formula
+    _sent = int(cmr_sent or 0)
+    _recd = int(cmr_recd or 0)
+    _cpct = float(cmr_pct) * 100 if float(cmr_pct or 0) <= 1 else float(cmr_pct or 0)
+    if   (_sent == 3 and _recd >= 2): av = 1.00
+    elif (_sent == 2 and _recd >= 1): av = 1.00
+    elif (_sent == 1 and _recd == 1): av = 1.00
+    elif (_sent == 0 and _recd == 0): av = 1.00  # no clients to renew -> still eligible
+    elif _cpct >= 80:                 av = 1.00
+    elif _cpct >= 72:                 av = 0.75
+    else:                             av = 0.00
+
+    aw = round(at * av, 0)
+
+    # AX: Big Ticket (>=4 deals of 10L+)
+    ax = round(aw * 1.2 if int(big_ticket_count or 0) >= 4 else aw, 0)
+
+    # AY: SS+ CMR multiplier
+    _ss = float(ss_cmr_pct) * 100 if float(ss_cmr_pct or 0) <= 1 else float(ss_cmr_pct or 0)
+    ay = round(ax if _ss >= 75 else ax * 0.5, 0)
+
+    notes = (f"KCD SAM-ILP | Achv:{achv_pct:.1f}% | "
+             f"r95:{r95*100:.2f}%/r100:{r100*100:.2f}%/r120:{r120*100:.2f}% | "
+             f"CMR_mult:{av:.0%}(sent={_sent},recd={_recd}) | "
+             f"BT:{int(big_ticket_count or 0)} | SS+:{_ss:.0f}%")
+    return int(ay), notes
 
 
 def calc_mcats_renewal(im_star_amr_count, S):
@@ -2810,8 +2952,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     use_pcr = sb.get("use_pcr", False)
 
     dv_for_pcdv = net_deal_val if net_deal_val > 0 else net_dv   # prefer deal value
-    pcr_val  = (net_dv       / client_cnt) if client_cnt > 0 else 0   # always collection
-    pcdv_val = (dv_for_pcdv  / client_cnt) if client_cnt > 0 else 0   # always deal value
+    # For CSD L2 (Rel Mgr): PCR denominator = Client-C (FSF V = U/L = net_coll/Client-C)
+    # For all others: PCR denominator = Client-A
+    _client_c_val = float(sb.get("Client-C", 0) or 0)
+    _is_l2_csd    = (str(sb.get("Designation","")).upper().strip() == "L2"
+                     and "CSD" in str(sb.get("Vertical","")).upper())
+    _pcr_denom    = _client_c_val if (_is_l2_csd and _client_c_val > 0) else client_cnt
+    pcr_val  = (net_dv       / _pcr_denom) if _pcr_denom > 0 else 0
+    pcdv_val = (dv_for_pcdv  / client_cnt) if client_cnt > 0 else 0
 
     # slab_metric = the metric used for incentive slab lookup (sidebar-controlled)
     slab_metric  = pcr_val if use_pcr else pcdv_val
@@ -3041,11 +3189,18 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _is_ilp = _is_ilp_desig or "ILP" in team_up
             if _is_ilp:
                 # SAM-ILP: % of DV against individual target
-                _ilp_tgt = sam_ilp_targets.get(emp_id, 0)
-                _bt_count = int(sb.get("btl_sales", 0))  # big-ticket deals from receipt
+                _ilp_rec  = sam_ilp_targets.get(emp_id, {})
+                _ilp_tgt  = _ilp_rec.get("target", 0) if isinstance(_ilp_rec, dict) else float(_ilp_rec or 0)
+                _ilp_rate = _ilp_rec.get("rate_95") if isinstance(_ilp_rec, dict) else None
+                _bt_count = int(sb.get("btl_sales", 0))
                 base_inc, notes = calc_kcd_sam_ilp(
-                    kcd_net_dv, _ilp_tgt, cmr_pct, ss_cmr_pct, ss_sent_count,
-                    _bt_count, S)
+                    kcd_net_dv, _ilp_tgt,
+                    cmr_pct=cmr_pct,
+                    cmr_sent=cmr_data.get("renewal_sent", 0),
+                    cmr_recd=cmr_data.get("renewal_received", 0),
+                    ss_cmr_pct=ss_cmr_pct,
+                    big_ticket_count=_bt_count,
+                    emp_rate_95=_ilp_rate, S=S)
                 kcd_base_only   = base_inc
                 kcd_incremental = 0
                 spot_inc        = _kcd_spot()
@@ -3060,7 +3215,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 btl_sales=sb.get("btl_sales", 0),
                 team=team, location=location, vintage=vintage,
                 client_a=client_cnt, listing_c=listing_c, catalog_c=catalog_c,
-                collection_target=collection_target, S=S)
+                collection_target=collection_target, S=S,
+                l1_count=int(sb.get("L1 Count", 4) or 4))
             kcd_base_only   = base_inc
             kcd_incremental = 0  # already inside calc_kcd_sam
             spot_inc        = _kcd_spot()
@@ -3935,4 +4091,3 @@ if calc_btn:
             st.dataframe(z[["Employee ID", "Employee Name", "Vertical", "Vintage",
                              "CMR% (auto)", "CMR Slab", "Net Deal Value (₹)", "Scheme"]],
                          use_container_width=True, hide_index=True)
- 
