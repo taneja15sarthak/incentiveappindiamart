@@ -1640,12 +1640,24 @@ def load_cmr_targets(uploaded_file):
     """
     Load per-employee CMR% slab targets from the targets file.
     Expected columns: Employee ID, Slab 1, Slab 2
+    Reads ALL sheets (Sheet1=L1, Sheet2=L2, etc.) and merges them.
     Returns dict: { emp_id_str: {"slab1": float, "slab2": float} }
     """
     if uploaded_file is None:
         return {}
     try:
-        df = _read_file(uploaded_file)
+        # Read all sheets and combine (Sheet1=L1 targets, Sheet2=L2 targets)
+        try:
+            all_sheets = pd.read_excel(uploaded_file, sheet_name=None,
+                                       engine="pyxlsb" if str(getattr(uploaded_file,"name","")).endswith(".xlsb") else None)
+            uploaded_file.seek(0)
+            df = pd.concat([s for s in all_sheets.values() if len(s) > 0], ignore_index=True)
+        except Exception:
+            try:
+                uploaded_file.seek(0)
+            except Exception:
+                pass
+            df = _read_file(uploaded_file)
         df.columns = df.columns.str.strip()
 
         emp_col   = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
@@ -2900,8 +2912,10 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0):
         fnt1_dv = float(_dv_vals[_fnt_vals == "FNT-1"].sum())
         fnt2_dv = float(_dv_vals[_fnt_vals == "FNT-2"].sum())
     # Per-client FNT PCDV (for KCD spot threshold comparison)
-    fnt1_pcdv = (fnt1_dv / client_a) if client_a > 0 else 0
-    fnt2_pcdv = (fnt2_dv / client_a) if client_a > 0 else 0
+    # Use same min-50-client rule as base PCDV for KCD spot
+    _client_a_eff = max(50, client_a) if client_a > 0 else 50
+    fnt1_pcdv = (fnt1_dv / _client_a_eff) if _client_a_eff > 0 else 0
+    fnt2_pcdv = (fnt2_dv / _client_a_eff) if _client_a_eff > 0 else 0
 
     # Per-employee NR Upsell count for CSD Spot incentive
     # Also compute AMR count and FNT-split counts for accurate April spot
@@ -2975,7 +2989,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
                svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None, cmr_plus1_pct=0.0,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
-               vintage_bucket="", designation="", weekly_dv=None):
+               vintage_bucket="", designation="", weekly_dv=None,
+               cmr_plus1_sent=0):
     """
     Main routing -- all fixes applied:
     - SPS booster: auto 1.2× when vintage_bucket='SPS'; Pune TAT/60D override for others
@@ -3087,7 +3102,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # ── CSD ──────────────────────────────────────────────────
     # Only L1 employees use L1 CSD scheme; L2+ use their own logic
-    _desig_str = str(sb.get("Designation", sb.get("designation", ""))).upper().strip()
+    _desig_str = str(designation).upper().strip()
     _is_l1 = _desig_str in ("L1", "EXEC", "SR EXEC", "SR. EXEC", "EXECUTIVE",
                               "SENIOR EXECUTIVE", "AM", "MGR", "MANAGER", "") or not _desig_str
     _is_l2_csd = _desig_str == "L2"
@@ -3110,11 +3125,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 svc_tiers=svc_tiers,
                 pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
                 metric_label=metric_label)
-            # Apply combined cap to base+PoP
-            _combined = base_inc + pop_inc
+            # Combined cap: Total = min(base+PoP, 20000)
+            # We store full PoP and apply cap at output (shows true PoP earned)
             _cap = S.get("new_joiner_cap", 20000)
-            if _combined > _cap:
-                pop_inc = max(0, _cap - base_inc)
+            if base_inc + pop_inc > _cap:
                 notes += f" | COMBINED_CAP:{_cap}"
         elif vintage == "31-90D":
             # 31-90D: SAME fixed PCDV slab formula as 0-30D (NOT per-txn)
@@ -3125,11 +3139,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
             is_sps_by_team   = "SPS" in str(team).upper()
             is_sps_employee  = is_sps_by_bucket or is_sps_by_team
-            _is_rel_mgr_31 = (str(sb.get("Designation","")).upper().strip() == "L2" or
+            _is_rel_mgr_31 = (str(designation).upper().strip() == "L2" or
                               any(k in str(designation).upper()
                                   for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
             if _is_rel_mgr_31:
-                _cmr_plus1_31 = cmr_plus1_pct if cmr_plus1_pct > 0 else emp_mdc1_cmr / 100
+                # sent=0 for next month → no MDC-1 clients due → 100% (no penalty)
+                # sent≥1 but pct=0 → 0% (none received)
+                _cmr_plus1_31 = (100.0 if cmr_plus1_sent == 0
+                                 else cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct)
                 base_inc, notes = calc_csd_rel_mgr(
                     pcr=pcr_val, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
@@ -3145,12 +3162,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     svc_tiers=svc_tiers,
                     pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
                     metric_label=metric_label)
-            # Apply combined cap to base+PoP (scheme: earn up to Rs.20,000)
+            # Combined cap: Total = min(base+PoP, 20000)
             if not _is_rel_mgr_31:
-                _combined_31 = base_inc + pop_inc
                 _cap_31 = S.get("new_joiner_cap", 20000)
-                if _combined_31 > _cap_31:
-                    pop_inc = max(0, _cap_31 - base_inc)
+                if base_inc + pop_inc > _cap_31:
                     notes += f" | COMBINED_CAP:{_cap_31}"
         else:
             # SPS -- no PoP; Insta = 0.5; productivity from receipt
@@ -3170,13 +3185,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # Relationship Managers use the 2D CMR+1 table (PPT slides 8-11)
             # Execs/Sr.Execs/AMs/Mgrs use the simple 3-band MDC1 multiplier (slides 2-7)
             # CSD L2 = Relationship Manager (from Designation column)
-            _is_rel_mgr = (str(sb.get("Designation","")).upper().strip() == "L2" or
+            _is_rel_mgr = (str(designation).upper().strip() == "L2" or
                            any(k in str(designation).upper()
                                for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
             if _is_rel_mgr:
                 # CMR+1% = next month MDC-1 for March calc;
                 # for April (no May data), fall back to current month MDC-1
-                _cmr_plus1 = cmr_plus1_pct if cmr_plus1_pct > 0 else emp_mdc1_cmr / 100
+                # sent=0 for next month → no MDC-1 clients due → 100% (no penalty)
+                _cmr_plus1 = (100.0 if cmr_plus1_sent == 0
+                              else cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct)
                 base_inc, notes = calc_csd_rel_mgr(
                     pcr=pcr_val, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
@@ -3218,7 +3235,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                                f" AND total={_total_prod_kcd:.0f}<{_kcd_monthly_min}")
 
         # Check if this is an L2 (SAM) or ILP employee using Designation field
-        _desig_up = str(sb.get("Designation", sb.get("designation", ""))).upper().strip()
+        _desig_up = str(designation).upper().strip()
         # Primary check: Designation column (L1/L2/ILP from structure file)
         _is_sam   = _desig_up == "L2" or any(k in _desig_up for k in
                     ("SAM", "SR. ACCOUNT", "SR.ACCOUNT", "SENIOR ACCOUNT MANAGER"))
@@ -3484,7 +3501,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
         "Spot Incentive (₹)":  int(spot_inc),
-        "Total Incentive (₹)": int(base_inc + pop_inc + spot_inc),
+        "Total Incentive (₹)": int(min(base_inc + pop_inc, S.get("new_joiner_cap", 20000))
+                               + spot_inc
+                               if vintage in ("0-30D","31-90D") and "CSD" in vertical
+                               else base_inc + pop_inc + spot_inc),
         "Scheme":              notes,
     }
 # ═══════════════════════════════════════════════════════════════
@@ -3853,6 +3873,7 @@ if calc_btn:
                              prod_score_receipt=prod_score_receipt,
                              mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
                              cmr_plus1_pct=cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0),
+                             cmr_plus1_sent=cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0),
                              nr_upsell_count=nr_upsell_count,
                              net_deal_val=net_deal_val,
                              collection_target=s.get("Collection Target", 0),
@@ -4036,7 +4057,25 @@ if calc_btn:
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not csd_res.empty:
-            write_sheet(csd_res[csd_cols], "Exec-CSD", header_fmt=grn)
+            # L1 only on Exec-CSD sheet
+            csd_l1 = csd_res[csd_res.get("Designation", pd.Series(dtype=str)).ne("L2") if "Designation" in csd_res.columns else csd_res.index]
+            csd_l1 = csd_res[csd_res["Designation"].astype(str) != "L2"] if "Designation" in csd_res.columns else csd_res
+            write_sheet(csd_l1[csd_cols], "Exec-CSD", header_fmt=grn)
+            # L2 on separate Rel Mgr-CSD sheet (mirrors FSF KCD-SAM structure)
+            csd_l2 = csd_res[csd_res["Designation"].astype(str) == "L2"] if "Designation" in csd_res.columns else csd_res.iloc[0:0]
+            rm_cols = [c for c in [
+                "Employee ID","Employee Name","Designation","Location","SPS Group","Vintage Bucket",
+                "Collection (₹)","Refund (₹)","Net Collection (₹)","Net Deal Value (₹)",
+                "PCR","PCDV",
+                "CMR Slab1 Target","CMR Slab2 Target","CMR% (auto)",
+                "Renewals Sent","Renewals Received",
+                "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","MDC1 Sent","MDC1 Recd",
+                "Productivity Score","Receipt Txns",
+                "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
+                "Base Incentive (₹)","Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+            ] if c in res.columns]
+            if not csd_l2.empty:
+                write_sheet(csd_l2[rm_cols], "Rel Mgr-CSD", header_fmt=grn)
 
         # ── Sheet 3: KCD-Exec -- KCD employees only ────────────────────────────
         kcd_res = res[res["Vertical"] == "KCD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
@@ -4061,7 +4100,23 @@ if calc_btn:
             "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not kcd_res.empty:
-            write_sheet(kcd_res[kcd_cols], "KCD-Exec", header_fmt=org)
+            # L1 on KCD-Exec sheet
+            kcd_l1 = kcd_res[kcd_res["Designation"].astype(str) != "L2"] if "Designation" in kcd_res.columns else kcd_res
+            write_sheet(kcd_l1[kcd_cols], "KCD-Exec", header_fmt=org)
+            # L2 SAM on separate KCD-SAM sheet
+            kcd_l2 = kcd_res[kcd_res["Designation"].astype(str) == "L2"] if "Designation" in kcd_res.columns else kcd_res.iloc[0:0]
+            sam_cols = [c for c in [
+                "Employee ID","Employee Name","Designation","Location","Team","Vintage",
+                "Net Deal Value (₹)","Net Collection (₹)","PCR","PCDV",
+                "Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR%",
+                "CMR% (auto)","SS+ CMR% (auto)","KCD SS+Ren Mult",
+                "Renewals Sent","Renewals Received",
+                "Productivity Score","Receipt Txns","KCD BTL",
+                "KCD Base Incentive (₹)","KCD Incremental (₹)",
+                "Base Incentive (₹)","Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+            ] if c in res.columns]
+            if not kcd_l2.empty:
+                write_sheet(kcd_l2[sam_cols], "KCD-SAM", header_fmt=org)
 
         # ── Sheet 4: CMR Validation -- renewal CMR details ────────────────────
         cmr_cols = [c for c in [
