@@ -504,9 +504,13 @@ def parse_slabs(cfg):
         kcd_incr[str(r["Vintage"])] = (float(r["Incr_Threshold"]), float(r["Incr_Rate_%"]) / 100)
 
     # ── KCD Listing ──────────────────────────────────────────
+    _ls_df = cfg["KCD_Listing_Slabs"]
+    _ls_c1 = ("CMR72_Per_Txn" if "CMR72_Per_Txn" in _ls_df.columns
+              else "CMR70_Per_Txn" if "CMR70_Per_Txn" in _ls_df.columns
+              else _ls_df.columns[1])
     kcd_listing_slabs = [
-        (int(r["Target_Pct"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
-        for _, r in cfg["KCD_Listing_Slabs"].iterrows()
+        (int(r["Target_Pct"]), int(r[_ls_c1]), int(r["CMR80_Per_Txn"]))
+        for _, r in _ls_df.iterrows()
     ]
     kcd_listing_rates = {}
     for _, r in cfg["KCD_Listing_Rates"].iterrows():
@@ -516,9 +520,13 @@ def parse_slabs(cfg):
         }
 
     # ── KCD Catalog ──────────────────────────────────────────
+    _cat_df = cfg["KCD_Catalog_Slabs"]
+    _cat_c1 = ("CMR72_Per_Txn" if "CMR72_Per_Txn" in _cat_df.columns
+               else "CMR70_Per_Txn" if "CMR70_Per_Txn" in _cat_df.columns
+               else _cat_df.columns[1])
     kcd_catalog_slabs = [
-        (int(r["Target_Pct"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
-        for _, r in cfg["KCD_Catalog_Slabs"].iterrows()
+        (int(r["Target_Pct"]), int(r[_cat_c1]), int(r["CMR80_Per_Txn"]))
+        for _, r in _cat_df.iterrows()
     ]
 
     # ── KCD Spot ─────────────────────────────────────────────
