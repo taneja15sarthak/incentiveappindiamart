@@ -158,12 +158,19 @@ def build_default_slab_config():
         {"PCDV_Threshold": 2600, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
     ])
 
-    # ── CSD Relationship Manager slabs (Apr'26: PCDV 2500/2700/2900) ──
-    # Slab1 = individual CMR target, Slab2 = higher target
+    # ── CSD Relationship Manager slabs (Apr'26) ──────────────────────────────
+    # FSF Rel Mgr-CSD: threshold = PCR (Net Collection / Client-C)
+    # April PPT slide 6: PCR 2500/2700/2900 -> Slab1(55%)/Slab2(60%)
+    # CMR slab targets: configurable in CSD_RM_Params
     csd_rm = pd.DataFrame([
-        {"PCDV_Threshold": 2900, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1750},
-        {"PCDV_Threshold": 2700, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
-        {"PCDV_Threshold": 2500, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+        {"PCR_Threshold": 2900, "Slab1_Per_Txn": 1500, "Slab2_Per_Txn": 1750},
+        {"PCR_Threshold": 2700, "Slab1_Per_Txn": 1250, "Slab2_Per_Txn": 1500},
+        {"PCR_Threshold": 2500, "Slab1_Per_Txn": 1000, "Slab2_Per_Txn": 1200},
+    ])
+    # RM CMR slab targets (individual CMR% thresholds for Slab1 and Slab2)
+    csd_rm_params = pd.DataFrame([
+        {"Parameter": "CMR_Slab1_Target_%", "Value": 55},
+        {"Parameter": "CMR_Slab2_Target_%", "Value": 60},
     ])
 
     # ── KCD SAM (L2) -- Sr. Account Manager slabs (Apr'26) ──────────────────
@@ -321,6 +328,7 @@ def build_default_slab_config():
         "CSD_SPS_91_270D":      csd_sps_91,
         "CSD_SPS_270D_Plus":    csd_sps_270,
         "CSD_RM":               csd_rm,
+        "CSD_RM_Params":        csd_rm_params,
         "CSD_SPS_Multipliers":  csd_sps_mult,
         "CSD_Spot":             csd_spot,
         "Power_of_Productivity":pop,
@@ -405,10 +413,21 @@ def parse_slabs(cfg):
     csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
     csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
     # CSD Relationship Manager slabs (different from Exec slabs)
+    _rm_df = cfg.get("CSD_RM", cfg.get("CSD_SPS_91_270D", pd.DataFrame()))
+    _rm_thresh_col = ("PCR_Threshold" if "PCR_Threshold" in _rm_df.columns
+                      else "PCDV_Threshold" if "PCDV_Threshold" in _rm_df.columns
+                      else (_rm_df.columns[0] if len(_rm_df.columns) > 0 else "PCR_Threshold"))
     csd_rm_slabs = [
-        (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
-        for _, r in cfg.get("CSD_RM", cfg["CSD_SPS_91_270D"]).iterrows()
+        (int(r[_rm_thresh_col]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+        for _, r in _rm_df.iterrows() if _rm_thresh_col in _rm_df.columns
     ]
+    # RM CMR slab targets (configurable)
+    _rm_params = cfg.get("CSD_RM_Params", pd.DataFrame())
+    _rm_params_dict = {}
+    if len(_rm_params) > 0 and "Parameter" in _rm_params.columns:
+        _rm_params_dict = {str(r["Parameter"]): float(r["Value"]) for _, r in _rm_params.iterrows()}
+    rm_cmr_slab1 = _rm_params_dict.get("CMR_Slab1_Target_%", 55)
+    rm_cmr_slab2 = _rm_params_dict.get("CMR_Slab2_Target_%", 60)
 
     # ── CSD SPS Multipliers ──────────────────────────────────
     mult_rows = cfg["CSD_SPS_Multipliers"].set_index("Parameter")
@@ -551,6 +570,8 @@ def parse_slabs(cfg):
         "csd_sps_91_270":      csd_sps_91_270,
         "csd_sps_270p":        csd_sps_270p,
         "csd_rm_slabs":        csd_rm_slabs,
+        "rm_cmr_slab1":        rm_cmr_slab1,
+        "rm_cmr_slab2":        rm_cmr_slab2,
         "mdc1_above":          mdc1_above,
         "mdc1_between":        mdc1_between,
         "mdc1_mult_hi":        mdc1_mult_hi,
@@ -1833,39 +1854,104 @@ def get_cmr_plus1_2d_mult(cmr_pct, mdc1_pct, cmr_slab1, cmr_slab2):
     return table[cmr_tier][mdc1_band]
 
 
-def calc_csd_rel_mgr(pcdv, prod_score, txn_count, cmr_pct, mdc1_cmr,
-                     cmr_slab1_target, cmr_slab2_target,
-                     ext_tat, d60, S, metric_label="PCDV", is_sps=False, vintage="91-270D"):
+def calc_csd_rel_mgr(pcr, prod_raw, cmr_pct, mdc1_cmr_pct,
+                     cmr_plus1_pct, ext_tat, d60, is_sps, S):
     """
-    CSD Relationship Manager scheme.
-    Uses a 2D multiplier table (Overall CMR% × MDC1 CMR%) instead of the simple
-    3-band MDC1 multiplier used for Exec employees.
-    Formula: NetInc = PerTxn × Prod × 2D_mult × SPS_booster
+    CSD Relationship Manager (L2) incentive -- exact FSF Rel Mgr-CSD formula.
+
+    FSF columns mapped:
+      V  = pcr           (Net Collection / Client-C)
+      Y  = cmr_pct       (March CMR% = CMR Received / CMR Sent)
+      AE = mdc1_cmr_pct  (March MDC-1 CMR%)
+      AB = cmr_plus1_pct (April MDC-1 CMR% -- next month's renewals)
+      AG = prod_raw      (RAW productivity -- total receipt rows, not per-client)
+      AO = is_sps        (SPS / Others group)
+      AL = ext_tat       (External Ticket TAT < 1)
+      AM = d60           (60D Not Met < 10%)
+
+    Formula chain:
+      AF = per-txn  = 2D(PCR, CMR%)  slabs from CSD_RM config
+      AH = AF * AG  (base before cross mult)
+      AI = cross_mult = 2D(CMR%, MDC-1 CMR%)
+      AJ = AH * AI
+      AK = IF(AJ>=1, IF(CMR+1%>35%, AJ*120%, IF(>=25%, AJ*100%, AJ*50%)), 0)
+      AN = IF(SPS AND ext_tat<1 AND 60D<10% AND AK>=1): AK*120% else AK
+      AP = IF(AN>=1, AN, 0)
     """
-    # Use RM slab table if available, else fall back to SPS slab
-    rm_slabs = S.get("csd_rm_slabs", S.get("csd_sps_91_270"))
-    _, per_txn = pcdv_slab(pcdv, rm_slabs, 1)  # RM scheme has CMR 55%/60% column
+    # ── AF: Per-txn from CSD_RM slab (PCR x CMR%) ──────────────────────────
+    # Config: CSD_RM rows with PCDV_Threshold (actually PCR threshold) + Slab1/Slab2
+    slabs = S.get("csd_rm_slabs", [])  # list of (pcr_thresh, slab1_per_txn, slab2_per_txn)
+    # CMR slab: Slab1 = lower CMR target, Slab2 = higher CMR target
+    # From FSF: Slab1=55%, Slab2=60% (Mar); April PPT thresholds differ
+    _cmr_slab1 = S.get("rm_cmr_slab1", 55)   # configurable
+    _cmr_slab2 = S.get("rm_cmr_slab2", 60)   # configurable
+    cmr_pct_v  = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct  # normalise to 0-100
+    per_txn = 0
+    for (thresh, r1, r2) in sorted(slabs, reverse=True):
+        if pcr >= thresh:
+            per_txn = r2 if cmr_pct_v >= _cmr_slab2 else (r1 if cmr_pct_v >= _cmr_slab1 else 0)
+            break
 
-    eff_prod = max(int(prod_score), 0) if prod_score > 0 else txn_count
+    # ── AH: Base = per_txn * RAW productivity ───────────────────────────────
+    ah = per_txn * float(prod_raw or 0)
 
-    # 2D CMR+1 multiplier
-    cmr_plus1_mult = get_cmr_plus1_2d_mult(cmr_pct, mdc1_cmr,
-                                            cmr_slab1_target, cmr_slab2_target)
-
-    # SPS booster (same logic as Exec)
-    if is_sps:
-        booster = S["boost_mult"]
-    elif (ext_tat is not None and d60 is not None
-          and ext_tat < S["boost_tat"] and d60 < S["boost_d60"]):
-        booster = S["boost_mult"]
+    # ── AI: Cross Multiplier (2D: CMR% x MDC-1 CMR%) ────────────────────────
+    # FSF formula (exact):
+    # IF(CMR>=65% AND MDC1>=45%): 130%
+    # IF(CMR>=65% AND MDC1>=40%): 120%  IF(CMR>=65% AND MDC1>=35%): 110%
+    # IF(CMR>=65% AND MDC1<35%):  100%
+    # IF(CMR>=60% AND MDC1>=45%): 120%  IF(CMR>=60% AND MDC1>=40%): 110%
+    # IF(CMR>=60% AND MDC1>=35%): 100%  IF(CMR>=60% AND MDC1<35%):  75%
+    # IF(CMR>=55% AND MDC1>=45%): 110%  IF(CMR>=55% AND MDC1>=40%): 100%
+    # IF(CMR>=55% AND MDC1>=35%): 50%   IF(CMR>=55% AND MDC1<35%):  50%
+    # else: 0
+    mdc = mdc1_cmr_pct * 100 if mdc1_cmr_pct <= 1 else mdc1_cmr_pct
+    cmr = cmr_pct_v
+    if cmr >= 65:
+        if mdc >= 45:   ai = 1.30
+        elif mdc >= 40: ai = 1.20
+        elif mdc >= 35: ai = 1.10
+        else:           ai = 1.00
+    elif cmr >= 60:
+        if mdc >= 45:   ai = 1.20
+        elif mdc >= 40: ai = 1.10
+        elif mdc >= 35: ai = 1.00
+        else:           ai = 0.75
+    elif cmr >= 55:
+        if mdc >= 45:   ai = 1.10
+        elif mdc >= 40: ai = 1.00
+        else:           ai = 0.50
     else:
-        booster = 1.0
+        ai = 0.0
 
-    total = per_txn * eff_prod * cmr_plus1_mult * booster
-    notes = (f"CSD RM {vintage} | {metric_label}:{round(pcdv)} | "
-             f"₹{per_txn}/txn×{eff_prod} | CMR+1:{cmr_plus1_mult:.2f}({cmr_pct:.0f}%CMR,{mdc1_cmr:.0f}%MDC1) "
-             f"boost:{booster}")
-    return round(total, 0), notes
+    # ── AJ = AH * AI ────────────────────────────────────────────────────────
+    aj = ah * ai
+
+    # ── AK: CMR+1 (April MDC-1) Multiplier ──────────────────────────────────
+    # FSF: IF(AJ>=1, IF(AB>35%, AJ*120%, IF(AB>=25%, AJ*100%, AJ*50%)), 0)
+    cp1 = cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct
+    if aj >= 1:
+        if cp1 > 35:   ak = aj * 1.20
+        elif cp1 >= 25: ak = aj * 1.00
+        else:           ak = aj * 0.50
+    else:
+        ak = 0.0
+
+    # ── AN: SPS Booster ──────────────────────────────────────────────────────
+    # FSF: IF(SPS AND ext_tat<1 AND 60D<10% AND AK>=1): AK*120% else AK
+    if is_sps and float(ext_tat or 99) < 1 and float(d60 or 100) < 10 and ak >= 1:
+        an = ak * 1.20
+    else:
+        an = ak
+
+    # ── AP: Floor at 0 ───────────────────────────────────────────────────────
+    total = round(max(0, an), 0)
+
+    notes = (f"CSD RM | PCR:{pcr:.0f} | CMR:{cmr:.0f}% | MDC1:{mdc:.0f}% | "
+             f"PerTxn:{per_txn} | Prod:{prod_raw:.1f} | "
+             f"Cross:{ai:.0%} | CMR+1:{cp1:.0f}% | SPS:{is_sps} | Total:{total:.0f}")
+    return total, notes
+
 
 
 def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
@@ -2688,7 +2774,7 @@ def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
 
 def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
-               svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None,
+               svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None, cmr_plus1_pct=0.0,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
                vintage_bucket="", designation="", weekly_dv=None):
     """
@@ -2826,16 +2912,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
             is_sps_by_team   = "SPS" in str(team).upper()
             is_sps_employee  = is_sps_by_bucket or is_sps_by_team
-            _is_rel_mgr_31   = any(k in str(designation).upper()
-                                   for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"])
+            _is_rel_mgr_31 = (str(sb.get("Designation","")).upper().strip() == "L2" or
+                              any(k in str(designation).upper()
+                                  for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
             if _is_rel_mgr_31:
                 base_inc, notes = calc_csd_rel_mgr(
-                    pcdv, prod_score_receipt or 0, txn_count,
-                    cmr_pct, emp_mdc1_cmr,
-                    float(sb.get("csd_slab1_target", 55)),
-                    float(sb.get("csd_slab2_target", 60)),
-                    sb.get("ext_tat"), sb.get("d60"),
-                    S, metric_label=metric_label, is_sps=is_sps_employee, vintage="91-270D")
+                    pcr=pcr_val, prod_raw=prod_score_receipt or 0,
+                    cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
+                    cmr_plus1_pct=cmr_plus1_pct,
+                    ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
+                    is_sps=is_sps_employee, S=S)
             else:
                 if cmr_slab == 0:
                     _per_txn_31 = 0
@@ -2882,16 +2968,17 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
             # Relationship Managers use the 2D CMR+1 table (PPT slides 8-11)
             # Execs/Sr.Execs/AMs/Mgrs use the simple 3-band MDC1 multiplier (slides 2-7)
-            _is_rel_mgr = any(k in str(designation).upper()
-                              for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"])
+            # CSD L2 = Relationship Manager (from Designation column)
+            _is_rel_mgr = (str(sb.get("Designation","")).upper().strip() == "L2" or
+                           any(k in str(designation).upper()
+                               for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
             if _is_rel_mgr:
                 base_inc, notes = calc_csd_rel_mgr(
-                    pcdv, prod_score_receipt or 0, txn_count,
-                    cmr_pct, emp_mdc1_cmr,
-                    float(sb.get("csd_slab1_target", 55)),
-                    float(sb.get("csd_slab2_target", 60)),
-                    sb.get("ext_tat"), sb.get("d60"),
-                    S, metric_label=metric_label, is_sps=is_sps_employee, vintage=vintage)
+                    pcr=pcr_val, prod_raw=prod_score_receipt or 0,
+                    cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
+                    cmr_plus1_pct=cmr_plus1_pct,
+                    ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
+                    is_sps=is_sps_employee, S=S)
             else:
                 base_inc, notes = calc_csd_sps(
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
@@ -3403,6 +3490,20 @@ mdc_client_counts_map = {
     if s.get("MDC Client Count", 0) > 0
 }
 mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None)
+# CMR+1 = April MDC-1 data (used in CSD RM cross-multiplier AK step)
+# For March calc: filter renewal to April; for April calc: same file contains both months
+_cmr_plus1_month = "APR'26" if sel_month and "MAR" in str(sel_month).upper() else (
+                   "MAY'26" if sel_month and "APR" in str(sel_month).upper() else None)
+if _cmr_plus1_month and renewal_df_raw is not None and len(renewal_df_raw) > 0:
+    _rnl_plus1 = renewal_df_raw[
+        renewal_df_raw[find_col(renewal_df_raw,
+            ["Month","MONTH","month"]) or renewal_df_raw.columns[0]
+        ].astype(str).str.upper().str.contains(
+            "APR" if "MAR" in str(sel_month or "").upper() else "MAY", na=False)
+    ] if find_col(renewal_df_raw, ["Month","MONTH"]) else pd.DataFrame()
+    cmr_plus1_map = calc_mdc1_cmr_per_employee(_rnl_plus1, mdc_client_counts_map or None) if len(_rnl_plus1) > 0 else {}
+else:
+    cmr_plus1_map = {}
 
 # Build emp hierarchy fallback from receipt
 emp_df = build_emp_list(receipt_df)
@@ -3504,6 +3605,7 @@ if calc_btn:
                              svc_tiers=svc_tiers,
                              prod_score_receipt=prod_score_receipt,
                              mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
+                             cmr_plus1_pct=cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0),
                              nr_upsell_count=nr_upsell_count,
                              net_deal_val=net_deal_val,
                              collection_target=s.get("Collection Target", 0),
