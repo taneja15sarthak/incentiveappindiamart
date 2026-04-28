@@ -201,9 +201,9 @@ def build_default_slab_config():
     ])
     # SAM Listing (target%-based, same as L1 but lower per-txn)
     kcd_sam_listing = pd.DataFrame([
-        {"Target_Pct": 140, "CMR70_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
-        {"Target_Pct": 120, "CMR70_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
-        {"Target_Pct": 95,  "CMR70_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
+        {"Target_Pct": 140, "CMR72_Per_Txn": 1500, "CMR80_Per_Txn": 1800},
+        {"Target_Pct": 120, "CMR72_Per_Txn": 1250, "CMR80_Per_Txn": 1500},
+        {"Target_Pct": 95,  "CMR72_Per_Txn": 1000, "CMR80_Per_Txn": 1200},
     ])
     # SAM Catalog (same as SAM Listing)
     kcd_sam_catalog = kcd_sam_listing.copy()
@@ -294,9 +294,9 @@ def build_default_slab_config():
 
     # ── KCD Listing Slabs (% target) ──
     kcd_listing = pd.DataFrame([
-        {"Target_Pct": 140, "CMR70_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
-        {"Target_Pct": 120, "CMR70_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
-        {"Target_Pct": 100, "CMR70_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+        {"Target_Pct": 140, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"Target_Pct": 120, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"Target_Pct": 100, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
     ])
     kcd_listing_rates = pd.DataFrame([
         {"Vintage":  "270D+",   "Base_Client_Rate": 7000, "Listing_Client_Rate": 22000},
@@ -505,7 +505,7 @@ def parse_slabs(cfg):
 
     # ── KCD Listing ──────────────────────────────────────────
     kcd_listing_slabs = [
-        (int(r["Target_Pct"]), int(r["CMR70_Per_Txn"]), int(r["CMR80_Per_Txn"]))
+        (int(r["Target_Pct"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
         for _, r in cfg["KCD_Listing_Slabs"].iterrows()
     ]
     kcd_listing_rates = {}
@@ -545,7 +545,7 @@ def parse_slabs(cfg):
     def _sam_listing_slabs(key):
         df = cfg.get(key)
         if df is None or len(df) == 0: return []
-        c1 = "CMR70_Per_Txn" if "CMR70_Per_Txn" in df.columns else "CMR72_Per_Txn"
+        c1 = "CMR72_Per_Txn" if "CMR72_Per_Txn" in df.columns else "CMR72_Per_Txn"
         t_col = "Target_Pct" if "Target_Pct" in df.columns else "PCDV_Threshold"
         return [(int(r[t_col]), int(r[c1]), int(r["CMR80_Per_Txn"])) for _, r in df.iterrows()]
     _sam_incr_df = cfg.get("KCD_SAM_Incr_Rates", pd.DataFrame())
@@ -846,10 +846,10 @@ def build_march_slab_config():
         {"Vintage": "Nagpur",  "Incr_Threshold": 88000, "Incr_Rate_%": 0.85},
     ])
     kcd_listing = pd.DataFrame([
-        {"Target_Pct": 140, "CMR70_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
-        {"Target_Pct": 120, "CMR70_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
-        {"Target_Pct": 100, "CMR70_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
-        {"Target_Pct": 95,  "CMR70_Per_Txn": 1750, "CMR80_Per_Txn": 2000},
+        {"Target_Pct": 140, "CMR72_Per_Txn": 3000, "CMR80_Per_Txn": 3600},
+        {"Target_Pct": 120, "CMR72_Per_Txn": 2500, "CMR80_Per_Txn": 3000},
+        {"Target_Pct": 100, "CMR72_Per_Txn": 2000, "CMR80_Per_Txn": 2400},
+        {"Target_Pct": 95,  "CMR72_Per_Txn": 1750, "CMR80_Per_Txn": 2000},
     ])
     # KCD Collection Target rates: Base_Client_Rate * base_clients + Listing_Client_Rate * list_clients
     # April PPT: Listing/Catalog 270D+/91-270D = 7K base + 22K listing
@@ -1901,11 +1901,11 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
     else:
         mdc1_mult = S["mdc1_mult_lo"]
 
-    # Booster: auto 1.2× for SPS-bucket employees; Pune-override for others
-    if is_sps:
-        booster = S["boost_mult"]
-    elif (ext_tat is not None and d60 is not None
-          and ext_tat < S["boost_tat"] and d60 < S["boost_d60"]):
+    # Booster: FSF AN = IF(AND(SPS, ext_tat<1, 60D<10%, base>=1), base*1.2, base)
+    # Must be SPS group AND meet BOTH criteria. Non-SPS (90+ Days) never get booster.
+    if (is_sps
+            and ext_tat is not None and float(ext_tat) < S["boost_tat"]
+            and d60 is not None     and float(d60)     < S["boost_d60"]):
         booster = S["boost_mult"]
     else:
         booster = 1.0
@@ -2138,7 +2138,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
         # SS+ mult: FSF BA=AY then BB=IF(sent>=3, BA*AZ, BA)
         if ss_sent >= 3:
-            ss_mult = 1.0 if ss_cmr_pct >= 70 else 0.5
+            ss_mult = 1.0 if ss_cmr_pct >= 72 else 0.5
         else:
             ss_mult = 1.0
         total = round(base_before_ss * ss_mult, 0)
@@ -2189,7 +2189,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
     # SS+ mult: FSF AZ = IF(SS_sent>=3, IF(CMR>=70%, 100%, 50%), 0)
     #           BA = IF(SS_sent>=3, AY*AZ, AY)
     if ss_sent >= 3:
-        ss_mult = 1.0 if ss_cmr_pct >= 70 else 0.5
+        ss_mult = 1.0 if ss_cmr_pct >= 72 else 0.5
     else:
         ss_mult = 1.0
     total = round(base_before_ss * ss_mult, 0)
@@ -2300,7 +2300,7 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
 
     # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 70%
     # ss_sent <= 2 → no penalty (not enough data to penalise)
-    if ss_sent >= 3 and ss_cmr_pct < 70:
+    if ss_sent >= 3 and ss_cmr_pct < 72:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -2335,7 +2335,7 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S["kcd_listing_slabs"] if achv >= t), 0)
     incr    = max(0, net_dv - collection_target) * 0.014
-    if ss_sent >= 3 and ss_cmr_pct < 70:
+    if ss_sent >= 3 and ss_cmr_pct < 72:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -2369,7 +2369,7 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
                     for t, r1, r2 in S["kcd_catalog_slabs"] if achv >= t), 0)
     # Incremental computed separately in route_calc (needs PCR% gate not NDV% gate)
     btl_mult = 1.2 if btl_sales >= 2 else 1.0
-    if ss_sent >= 3 and ss_cmr_pct < 70:
+    if ss_sent >= 3 and ss_cmr_pct < 72:
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -2762,11 +2762,22 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0):
         svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
         insta_count_receipt = int((_prod_vals == 0.5).sum())  # rows with 0.5 = Insta
         prod_score_receipt  = float(_prod_vals.sum())          # 1.0×full + 0.5×insta
+        # Per-week productivity counts (for min-productivity gate)
+        _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+        weekly_prod_counts = {}  # {week_num: productive_count}
+        if _date_col and len(prod_rows) > 0:
+            _dates = pd.to_datetime(prod_rows[_date_col], errors='coerce')
+            _weeks = _dates.apply(lambda d: (1 if d.day<=7 else 2 if d.day<=14 else 3 if d.day<=21 else 4)
+                                  if pd.notna(d) else 0)
+            for w, cnt in _weeks.value_counts().items():
+                if w > 0:
+                    weekly_prod_counts[int(w)] = int(cnt)
     else:
         prod_rows           = rec
         svc_tiers           = []
         insta_count_receipt = 0
         prod_score_receipt  = txn_count
+        weekly_prod_counts  = {}
     ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
     ref       = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     total_ref = ref["WT Amount"].fillna(0).sum()
@@ -2897,7 +2908,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0):
             nr_upsell_count, weekly_dv,
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
-            fnt1_pcdv, fnt2_pcdv)
+            fnt1_pcdv, fnt2_pcdv,
+            weekly_prod_counts)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -3064,10 +3076,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                               any(k in str(designation).upper()
                                   for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
             if _is_rel_mgr_31:
+                _cmr_plus1_31 = cmr_plus1_pct if cmr_plus1_pct > 0 else emp_mdc1_cmr / 100
                 base_inc, notes = calc_csd_rel_mgr(
                     pcr=pcr_val, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
-                    cmr_plus1_pct=cmr_plus1_pct,
+                    cmr_plus1_pct=_cmr_plus1_31,
                     ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
                     is_sps=is_sps_employee, S=S)
             else:
@@ -3121,10 +3134,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                            any(k in str(designation).upper()
                                for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
             if _is_rel_mgr:
+                # CMR+1% = next month MDC-1 for March calc;
+                # for April (no May data), fall back to current month MDC-1
+                _cmr_plus1 = cmr_plus1_pct if cmr_plus1_pct > 0 else emp_mdc1_cmr / 100
                 base_inc, notes = calc_csd_rel_mgr(
                     pcr=pcr_val, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
-                    cmr_plus1_pct=cmr_plus1_pct,
+                    cmr_plus1_pct=_cmr_plus1,
                     ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
                     is_sps=is_sps_employee, S=S)
             else:
@@ -3145,6 +3161,22 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # ── KCD ──────────────────────────────────────────────────
     elif "KCD" in vertical:
+        # Minimum productivity gate: 2 in any week OR N total per month
+        # N = 6 for CSD-to-KCD new joiners (0-30D/31-90D), N = 8 for all others
+        _kcd_monthly_min = 6 if vintage in ("0-30D", "31-90D") else 8
+        _has_2_in_a_week = any(v >= 2 for v in weekly_prod_counts.values())
+        _total_prod_kcd  = float(prod_score_receipt or txn_count or 0)
+        if _has_2_in_a_week:
+            _prod_gate_met  = True
+            _prod_gate_note = f"2+/wk (max={max(weekly_prod_counts.values()) if weekly_prod_counts else 0})"
+        elif _total_prod_kcd >= _kcd_monthly_min:
+            _prod_gate_met  = True
+            _prod_gate_note = f"{_total_prod_kcd:.0f}>={_kcd_monthly_min}/mo"
+        else:
+            _prod_gate_met  = False
+            _prod_gate_note = (f"max_wk={max(weekly_prod_counts.values()) if weekly_prod_counts else 0}<2"
+                               f" AND total={_total_prod_kcd:.0f}<{_kcd_monthly_min}")
+
         # Check if this is an L2 (SAM) or ILP employee using Designation field
         _desig_up = str(sb.get("Designation", sb.get("designation", ""))).upper().strip()
         # Primary check: Designation column (L1/L2/ILP from structure file)
@@ -3270,6 +3302,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                             if vintage in ("0-30D", "31-90D") else 0)
             spot_inc = _kcd_spot() or _legacy_spot
 
+        # ── KCD Min Productivity Gate (L1 only) ──────────────────────────────
+        # Scheme: min 2 per week OR 8/month (6/month for CSD-to-KCD new joiners)
+        # SAM/ILP handle their own eligibility separately
+        if "KCD" in vertical and not _is_sam:
+            if not _prod_gate_met:
+                kcd_base_only   = 0
+                kcd_incremental = 0
+                base_inc        = 0
+                notes           = (notes or "") + f" | MIN_PROD_NOT_MET ({_prod_gate_note})"
+
     # ── Decompose values matching sir's FSF column layout ────────────────────
     _prod_score = round(prod_score_receipt or (
                         prod_score_new if "CSD" in vertical and vintage in ("0-30D","31-90D")
@@ -3327,7 +3369,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # KCD breakdown -- extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
     _kcd_incr   = int(kcd_incremental) if "KCD" in vertical else 0
-    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 70) else 1.0) if "KCD" in vertical else 1.0
+    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 72) else 1.0) if "KCD" in vertical else 1.0
     # Total productive txns used (same variable used in KCD calc)
     _kcd_prod   = (prod_score_receipt or txn_count) if "KCD" in vertical else 0
     # Per-txn rate: extract from scheme notes "₹{rate}/txn×"
@@ -3456,15 +3498,18 @@ with st.sidebar:
     )
 
     with st.expander("CSD SPS (91D+ vintage)"):
-        def_mdc1 = st.number_input("MDC-1 CMR+1%",   0.0, 100.0, 30.0)
-        def_tat  = st.number_input("Ext. Ticket TAT", 0.0, 10.0,  1.5)
-        def_d60  = st.number_input("60D Not Met %",   0.0, 100.0, 12.0)
+        st.caption("MDC-1 CMR% is auto-computed per employee from the renewal file. "
+                   "Set the booster thresholds below only if needed.")
+        def_tat  = st.number_input("Ext. Ticket TAT (SPS booster)", 0.0, 10.0,  1.5,
+                                   help="SPS booster applies when ext tickets TAT < this value")
+        def_d60  = st.number_input("60D Not Met % (SPS booster)",   0.0, 100.0, 12.0,
+                                   help="SPS booster applies when 60D not met % < this value")
     with st.expander("Spot Rate"):
         def_nr   = st.number_input("CSD NR Upsell/AMR count", 0, 50, 0)
         def_btl  = st.number_input("KCD Base-to-Listing sales", 0, 20, 0)
         def_spot = st.checkbox("KCD Spot multiplier met (≥2 SS+ sales)?")
 
-    sb = dict(mdc1_cmr=def_mdc1, ext_tat=def_tat, d60=def_d60,
+    sb = dict(ext_tat=def_tat, d60=def_d60,
               nr_upsell=def_nr, btl_sales=def_btl, spot_met=def_spot,
               use_pcr=use_pcr, pop_cmr_floor=pop_cmr_floor)
 
@@ -3731,7 +3776,8 @@ if calc_btn:
          nr_upsell_count, weekly_dv,
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
-            fnt1_pcdv, fnt2_pcdv) = \
+            fnt1_pcdv, fnt2_pcdv,
+            weekly_prod_counts) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0))  # s is available before cfg_row
 
