@@ -3848,10 +3848,10 @@ all_cmr_map  = calc_all_cmr_per_employee(renewal_df)
 _l2_name_col_rnl = None
 if renewal_df is not None and isinstance(renewal_df, pd.DataFrame) and len(renewal_df) > 0:
     _l2_name_col_rnl = find_col(renewal_df, ["L2", "L2 Name", "L2Name", "RM Name"])
-if _l2_name_col_rnl and struct_data:
+if _l2_name_col_rnl and struct_map:
     try:
         _l2_name_cmr = calc_all_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
-        for _eid2, _sdata2 in struct_data.items():
+        for _eid2, _sdata2 in struct_map.items():
             if str(_sdata2.get("Designation","")).upper() == "L2" and "CSD" in str(_sdata2.get("Vertical","")).upper():
                 _l2name2 = str(_sdata2.get("Employee Name","")).strip()
                 if _l2name2 and _l2name2 in _l2_name_cmr:
@@ -3860,10 +3860,10 @@ if _l2_name_col_rnl and struct_data:
         pass
 
 mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None)
-if _l2_name_col_rnl and struct_data:
+if _l2_name_col_rnl and struct_map:
     try:
         _l2_name_mdc1 = calc_mdc1_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
-        for _eid2, _sdata2 in struct_data.items():
+        for _eid2, _sdata2 in struct_map.items():
             if str(_sdata2.get("Designation","")).upper() == "L2" and "CSD" in str(_sdata2.get("Vertical","")).upper():
                 _l2name2 = str(_sdata2.get("Employee Name","")).strip()
                 if _l2name2 and _l2name2 in _l2_name_mdc1:
