@@ -1244,7 +1244,7 @@ def calc_all_cmr_per_employee(renewal_df):
     return result
 
 
-def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None):
+def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None, emp_col_override=None):
     """
     Calculate MDC-1 CMR% per employee from renewal file.
 
@@ -1258,13 +1258,14 @@ def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None):
 
     "Remarks (New)" column tags each renewal as MDC-1 / MDC-2+ / MDC-TS etc.
     Only rows tagged "MDC-1" count for both sent and received.
+    emp_col_override: use a different grouping column (e.g. L2 name for CSD L2).
 
-    Returns dict: { emp_id_str: {"mdc1_sent", "mdc1_recd", "mdc1_cmr_pct"} }
+    Returns dict: { key_val: {"mdc1_sent", "mdc1_recd", "mdc1_cmr_pct"} }
     """
     if renewal_df is None:
         return {}
 
-    emp_col     = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
+    emp_col     = emp_col_override or find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
     status_col  = find_col(renewal_df, ["Status", "STATUS"])
     remarks_col = find_col(renewal_df, ["Remarks (New)", "Remarks(New)", "Remarks_New",
                                         "AS", "Remarks New"])
@@ -1601,8 +1602,9 @@ def load_structure_dump(uploaded_file):
                 if len(matched) == 0:
                     continue
                 row_agg = matched.iloc[0]
-                # Only overwrite if L2's own Client-A is 0 (not pre-filled)
-                if emp_data.get("Client Count", 0) == 0:
+                # Always overwrite for L2/ILP using aggregated L1 values
+                # (even if Client Count was floored to 50 by the min-50 rule)
+                if True:
                     if client_a and client_a in row_agg.index:
                         result[eid]["Client Count"] = float(row_agg[client_a])
                     if client_c and client_c in row_agg.index:
@@ -2832,11 +2834,30 @@ def build_emp_list(receipt_df):
     return emp.reset_index(drop=True)
 
 
-def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0):
+def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
+                     is_l2_csd=False, emp_name=""):
+    """
+    Fetch all transactions for one employee.
+    For CSD L2 (Rel Mgr): receipt filtered by Manager Id col (not EMP ID),
+    matching FSF Rel Mgr-CSD formula using AS col (L2 ID) in FSF receipt.
+    """
     # Use string comparison to handle both int and string EMP IDs across files
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
-    rec       = receipt_df[receipt_df["Sales Exec ID"] == eid]
+
+    # For CSD L2 Rel Mgr: use Manager Id to get team receipts (FSF AS col = L2 ID)
+    if is_l2_csd:
+        _mgr_col  = find_col(receipt_df, ["Manager Id", "Old Sales HOD-3 ID"])
+        _vert_col = find_col(receipt_df, ["Vertical.1", "Vertical"])
+        if _mgr_col:
+            _mask = receipt_df[_mgr_col].astype(str).str.split(".").str[0].str.strip() == eid_str
+            if _vert_col:
+                _mask = _mask & receipt_df[_vert_col].astype(str).str.upper().str.strip().str.contains("CSD", na=False)
+            rec = receipt_df[_mask]
+        else:
+            rec = receipt_df[receipt_df["Sales Exec ID"] == eid]
+    else:
+        rec = receipt_df[receipt_df["Sales Exec ID"] == eid]
     total_dv  = rec["WT AMT"].fillna(0).sum()               # collection (WT AMT)
     txn_count = len(rec)
 
@@ -3823,8 +3844,24 @@ mdc_client_counts_map = {
 }
 # Current month CMR% (all renewals) - for CSD L1 slab multiplier (FSF AW column)
 all_cmr_map  = calc_all_cmr_per_employee(renewal_df)
-# MDC-1 CMR% (current month, MDC-1 tagged only) - NOT the main slab mult but kept for reference
+# For CSD L2 Rel Mgr: renewal uses L2 name col (not EMP ID) - FSF AX col = L2 ID
+_l2_name_col_rnl = find_col(renewal_df, ["L2", "L2 Name", "L2Name", "RM Name"]) if renewal_df is not None else None
+if _l2_name_col_rnl:
+    _l2_name_cmr = calc_all_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
+    for _eid2, _sdata2 in struct_data.items():
+        if str(_sdata2.get("Designation","")).upper() == "L2" and "CSD" in str(_sdata2.get("Vertical","")).upper():
+            _l2name2 = str(_sdata2.get("Employee Name","")).strip()
+            if _l2name2 in _l2_name_cmr:
+                all_cmr_map[_eid2] = _l2_name_cmr[_l2name2]
+
 mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None)
+if _l2_name_col_rnl:
+    _l2_name_mdc1 = calc_mdc1_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
+    for _eid2, _sdata2 in struct_data.items():
+        if str(_sdata2.get("Designation","")).upper() == "L2" and "CSD" in str(_sdata2.get("Vertical","")).upper():
+            _l2name2 = str(_sdata2.get("Employee Name","")).strip()
+            if _l2name2 in _l2_name_mdc1:
+                mdc1_cmr_map[_eid2] = _l2_name_mdc1[_l2name2]
 # CMR+1 = April MDC-1 data (used in CSD RM cross-multiplier AK step)
 # For March calc: filter renewal to April; for April calc: same file contains both months
 _cmr_plus1_month = "APR'26" if sel_month and "MAR" in str(sel_month).upper() else (
@@ -3898,6 +3935,8 @@ if calc_btn:
                   "kcd_slab2_target": emp_targets["slab2"],
                   "sel_month": sel_month if sel_month else ""}
 
+        _is_l2_csd_tx = (str(s.get("Designation","")).upper().strip() == "L2"
+                         and "CSD" in str(s.get("Vertical","")).upper())
         (net_dv, txn_count, prods, rnl_prods, rnl_modes,
          rnl_count, total_ref, all_rnl_count,
          svc_tiers, insta_cnt_receipt, prod_score_receipt,
@@ -3908,7 +3947,8 @@ if calc_btn:
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
-                             client_a=float(s.get("Client Count", 0) or 0))  # s is available before cfg_row
+                             client_a=float(s.get("Client Count", 0) or 0),
+                             is_l2_csd=_is_l2_csd_tx)
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
