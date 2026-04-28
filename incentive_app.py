@@ -3431,6 +3431,11 @@ with st.sidebar:
         type=["xlsx", "xlsb", "csv"])
     st.info("Individual Slab 1 & 2 targets are loaded per employee from this file.\n\n≤3 renewals sent → auto-forced Slab 1", icon="ℹ️")
 
+    sam_ilp_file = st.file_uploader(
+        "8. SAM-ILP Targets (optional) -- Employee ID + DV_Target. "
+        "Add optional Rate_% column (0.60 or 0.65) for per-employee base rate.",
+        type=["xlsx", "csv"])
+
     st.divider()
     st.header("⚙️ Scheme Settings")
 
