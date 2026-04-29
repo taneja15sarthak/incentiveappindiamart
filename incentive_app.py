@@ -2864,6 +2864,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
 
+    # Alias so body code (is_l2_csd) matches the parameter name (is_l2)
+    is_l2_csd = is_l2
+
     # For CSD L2 Rel Mgr: use HOD-3 / L2-ID column to get ALL team receipts
     # (Manager Id misses some L1s who report via different hierarchy path)
     # FSF AS col = L2 ID; our file: 'Old Sales HOD-3 ID' is most complete
