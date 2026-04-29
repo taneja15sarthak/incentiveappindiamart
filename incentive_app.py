@@ -2082,41 +2082,27 @@ def get_cmr_plus1_2d_mult(cmr_pct, mdc1_pct, cmr_slab1, cmr_slab2):
     return table[cmr_tier][mdc1_band]
 
 
-def calc_csd_rel_mgr(pcr, prod_raw, cmr_pct, mdc1_cmr_pct,
+def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
                      cmr_plus1_pct, ext_tat, d60, is_sps, S):
     """
     CSD Relationship Manager (L2) incentive -- exact FSF Rel Mgr-CSD formula.
 
-    FSF columns mapped:
-      V  = pcr           (Net Collection / Client-C)
-      Y  = cmr_pct       (March CMR% = CMR Received / CMR Sent)
-      AE = mdc1_cmr_pct  (March MDC-1 CMR%)
-      AB = cmr_plus1_pct (April MDC-1 CMR% -- next month's renewals)
-      AG = prod_raw      (RAW productivity -- total receipt rows, not per-client)
-      AO = is_sps        (SPS / Others group)
-      AL = ext_tat       (External Ticket TAT < 1)
-      AM = d60           (60D Not Met < 10%)
+    April scheme uses PCDV (deal value) for per-txn slab lookup,
+    and PCR (collection) for display only.
 
-    Formula chain:
-      AF = per-txn  = 2D(PCR, CMR%)  slabs from CSD_RM config
-      AH = AF * AG  (base before cross mult)
-      AI = cross_mult = 2D(CMR%, MDC-1 CMR%)
-      AJ = AH * AI
-      AK = IF(AJ>=1, IF(CMR+1%>35%, AJ*120%, IF(>=25%, AJ*100%, AJ*50%)), 0)
-      AN = IF(SPS AND ext_tat<1 AND 60D<10% AND AK>=1): AK*120% else AK
-      AP = IF(AN>=1, AN, 0)
+    Slab lookup: PCDV thresholds × CMR% (individual Slab1/Slab2 targets)
+    Cross multiplier: CMR% × MDC-1 CMR%
+    CMR+1 multiplier: May MDC-1 CMR%
+    SPS booster: IF(SPS AND ext_tat<1 AND 60D<10%)
     """
-    # ── AF: Per-txn from CSD_RM slab (PCR x CMR%) ──────────────────────────
-    # Config: CSD_RM rows with PCDV_Threshold (actually PCR threshold) + Slab1/Slab2
-    slabs = S.get("csd_rm_slabs", [])  # list of (pcr_thresh, slab1_per_txn, slab2_per_txn)
-    # CMR slab: Slab1 = lower CMR target, Slab2 = higher CMR target
-    # From FSF: Slab1=55%, Slab2=60% (Mar); April PPT thresholds differ
-    _cmr_slab1 = S.get("rm_cmr_slab1", 55)   # configurable
-    _cmr_slab2 = S.get("rm_cmr_slab2", 60)   # configurable
-    cmr_pct_v  = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct  # normalise to 0-100
+    # ── AF: Per-txn from CSD_RM slab (PCDV x CMR%) ─────────────────────────
+    slabs = S.get("csd_rm_slabs", [])
+    _cmr_slab1 = S.get("rm_cmr_slab1", 55)
+    _cmr_slab2 = S.get("rm_cmr_slab2", 60)
+    cmr_pct_v  = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
     per_txn = 0
     for (thresh, r1, r2) in sorted(slabs, reverse=True):
-        if pcr >= thresh:
+        if pcdv >= thresh:   # April: use PCDV threshold
             per_txn = r2 if cmr_pct_v >= _cmr_slab2 else (r1 if cmr_pct_v >= _cmr_slab1 else 0)
             break
 
@@ -2868,7 +2854,7 @@ def build_emp_list(receipt_df):
 
 
 def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
-                     is_l2_csd=False, emp_name=""):
+                     is_l2=False, emp_name=""):
     """
     Fetch all transactions for one employee.
     For CSD L2 (Rel Mgr): receipt filtered by Manager Id col (not EMP ID),
@@ -2926,7 +2912,17 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         prod_score_receipt  = txn_count
         weekly_prod_counts  = {}
     ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
-    ref       = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
+    if is_l2:
+        # For ALL L2 employees: sum L1 refunds via L2 NAME column in refund file
+        _ref_l2_name_col = find_col(refund_df, ["L2 NAME", "L2 Name", "L2Name"])
+        if _ref_l2_name_col and emp_name:
+            ref = refund_df[refund_df[_ref_l2_name_col].astype(str).str.strip() == emp_name.strip()]
+        elif ref_id_col:
+            ref = refund_df[refund_df[ref_id_col].astype(str).str.split('.').str[0].str.strip() == eid_str]
+        else:
+            ref = refund_df.iloc[0:0]
+    else:
+        ref = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     total_ref = ref["WT Amount"].fillna(0).sum()
     # Deal Loss is always 0 -- it is a separate manual entry and not derived from the refund file.
     # Net Deal Value = Deal Value - 0 = Deal Value (before refund).
@@ -3313,7 +3309,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _cmr_plus1 = (100.0 if cmr_plus1_sent == 0
                               else cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct)
                 base_inc, notes = calc_csd_rel_mgr(
-                    pcr=pcr_val, prod_raw=prod_score_receipt or 0,
+                    pcr=pcr_val, pcdv=pcdv, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
                     cmr_plus1_pct=_cmr_plus1,
                     ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
@@ -3326,7 +3322,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     mdc1_cmr_plus1=(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1
                                     else cmr_plus1_pct) if cmr_plus1_sent > 0 else None)
             # Spot: config-driven -- April config has "CSD_Spot_Apr"; March has "CSD_Spot"
-            if S.get("has_apr_spot"):
+            # FSF Rel Mgr-CSD: no spot columns → L2 employees get spot=0
+            if _desig_str == "L2":
+                spot_inc = 0
+            elif S.get("has_apr_spot"):
                 spot_inc = calc_spot_april_csd(
                     nr_upsell_count, S,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count)
@@ -3412,7 +3411,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     emp_rate_95=_ilp_rate, S=S)
                 kcd_base_only   = base_inc
                 kcd_incremental = 0
-                spot_inc        = _kcd_spot()
+                spot_inc        = 0  # FSF KCD-SAM ILP: no spot incentive for L2
             else:
                 # L2 SAM scheme -- lower per-txn rates, 0.65%/0.45% incremental
                 base_inc, notes = calc_kcd_sam(
@@ -3428,7 +3427,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 l1_count=int(sb.get("L1 Count", 4) or 4))
             kcd_base_only   = base_inc
             kcd_incremental = 0  # already inside calc_kcd_sam
-            spot_inc        = _kcd_spot()
+            spot_inc        = 0  # FSF KCD-SAM: no spot incentive for L2 SAM
         elif "LISTING" in team_up:
             # Use structure file Listing Clients; fall back to (total-1) if absent
             _list_c = listing_c if listing_c > 0 else max(1, client_cnt - 1)
@@ -3878,7 +3877,7 @@ if _rnl_l2_col and struct_map:
     try:
         _l2_cmr_by_name = calc_cmr_per_employee_by_col(renewal_df, _rnl_l2_col)
         for _eid3, _sd3 in struct_map.items():
-            if str(_sd3.get("Designation","")).upper() == "L2" and "CSD" in str(_sd3.get("Vertical","")).upper():
+            if str(_sd3.get("Designation","")).upper() == "L2":
                 _nm3 = str(_sd3.get("Employee Name","")).strip()
                 if _nm3 and _nm3 in _l2_cmr_by_name:
                     cmr_map[_eid3] = _l2_cmr_by_name[_nm3]
@@ -3900,7 +3899,7 @@ if _l2_name_col_rnl and struct_map:
     try:
         _l2_name_cmr = calc_all_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
         for _eid2, _sdata2 in struct_map.items():
-            if str(_sdata2.get("Designation","")).upper() == "L2" and "CSD" in str(_sdata2.get("Vertical","")).upper():
+            if str(_sdata2.get("Designation","")).upper() == "L2":
                 _l2name2 = str(_sdata2.get("Employee Name","")).strip()
                 if _l2name2 and _l2name2 in _l2_name_cmr:
                     all_cmr_map[_eid2] = _l2_name_cmr[_l2name2]
@@ -3912,7 +3911,7 @@ if _l2_name_col_rnl and struct_map:
     try:
         _l2_name_mdc1 = calc_mdc1_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
         for _eid2, _sdata2 in struct_map.items():
-            if str(_sdata2.get("Designation","")).upper() == "L2" and "CSD" in str(_sdata2.get("Vertical","")).upper():
+            if str(_sdata2.get("Designation","")).upper() == "L2":
                 _l2name2 = str(_sdata2.get("Employee Name","")).strip()
                 if _l2name2 and _l2name2 in _l2_name_mdc1:
                     mdc1_cmr_map[_eid2] = _l2_name_mdc1[_l2name2]
@@ -3930,6 +3929,17 @@ if _cmr_plus1_month and renewal_df_raw is not None and len(renewal_df_raw) > 0:
             "APR" if "MAR" in str(sel_month or "").upper() else "MAY", na=False)
     ] if find_col(renewal_df_raw, ["Month","MONTH"]) else pd.DataFrame()
     cmr_plus1_map = calc_mdc1_cmr_per_employee(_rnl_plus1, mdc_client_counts_map or None) if len(_rnl_plus1) > 0 else {}
+    # Also add L2 RM May MDC-1 via L2 name col
+    if _l2_name_col_rnl and struct_map and len(_rnl_plus1) > 0:
+        try:
+            _l2_plus1_mdc1 = calc_mdc1_cmr_per_employee(_rnl_plus1, emp_col_override=_l2_name_col_rnl)
+            for _eid3, _sd3 in struct_map.items():
+                if str(_sd3.get("Designation","")).upper() == "L2":
+                    _n3 = str(_sd3.get("Employee Name","")).strip()
+                    if _n3 and _n3 in _l2_plus1_mdc1:
+                        cmr_plus1_map[_eid3] = _l2_plus1_mdc1[_n3]
+        except Exception:
+            pass
 else:
     cmr_plus1_map = {}
 
@@ -3991,8 +4001,7 @@ if calc_btn:
                   "kcd_slab2_target": emp_targets["slab2"],
                   "sel_month": sel_month if sel_month else ""}
 
-        _is_l2_csd_tx = (str(s.get("Designation","")).upper().strip() == "L2"
-                         and "CSD" in str(s.get("Vertical","")).upper())
+        _is_l2_tx = str(s.get("Designation","")).upper().strip() == "L2"
         (net_dv, txn_count, prods, rnl_prods, rnl_modes,
          rnl_count, total_ref, all_rnl_count,
          svc_tiers, insta_cnt_receipt, prod_score_receipt,
@@ -4004,7 +4013,8 @@ if calc_btn:
             weekly_prod_counts) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
-                             is_l2_csd=_is_l2_csd_tx)
+                             is_l2=_is_l2_tx,
+                             emp_name=str(s.get("Employee Name", "")))
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
