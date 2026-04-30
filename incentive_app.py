@@ -2976,8 +2976,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         _vert_col = find_col(receipt_df, ["Vertical.1", "Vertical"])
         if _mgr_col:
             _mask = receipt_df[_mgr_col].astype(str).str.split(".").str[0].str.strip() == eid_str
-            if _vert_col:
-                _mask = _mask & receipt_df[_vert_col].astype(str).str.upper().str.strip().str.contains("CSD", na=False)
+            # No vertical filter — HOD-3 ID already correctly identifies the team
+            rec = receipt_df[_mask]
             rec = receipt_df[_mask]
         else:
             rec = receipt_df[receipt_df["Sales Exec ID"] == eid]
@@ -3288,10 +3288,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # KCD-SAM  (L2): AA = L * 17000
         _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
         _hc_mult = 17000 if _is_kcd_sam else 21000
+        # Highest Collection = Client-A × multiplier (fixed per April FSF, no pcr_target_v override)
         highest_coll = client_cnt * _hc_mult
-        # Recompute with actual PCR target if set (overrides default)
-        if pcr_target_v > 0:
-            highest_coll = pcr_target_v * client_cnt
 
     # Derive Collection Target from standard PCR Target if still 0
     if collection_target == 0 and pcr_target_v > 0 and "KCD" in vertical:
