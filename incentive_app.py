@@ -3167,7 +3167,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
-            weekly_prod_counts)
+            weekly_prod_counts, im_star_pro_count)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
