@@ -2938,7 +2938,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # For CSD L2 Rel Mgr: use HOD-3 / L2-ID column to get ALL team receipts
     # (Manager Id misses some L1s who report via different hierarchy path)
     # FSF AS col = L2 ID; our file: 'Old Sales HOD-3 ID' is most complete
-    if is_l2_csd:
+    if is_l2:
         _mgr_col  = find_col(receipt_df, ["Old Sales HOD-3 ID", "Manager Id"])
         _vert_col = find_col(receipt_df, ["Vertical.1", "Vertical"])
         if _mgr_col:
