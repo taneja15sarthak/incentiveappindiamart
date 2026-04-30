@@ -611,11 +611,12 @@ def parse_slabs(cfg):
         "kcd_nagpur_slabs":    kcd_nagpur_slabs,
         "kcd_incr":            kcd_incr,
         # KCD ROI (lower PCDV thresholds, same per-txn rates as Regular)
-        "kcd_roi_270_slabs":   list(cfg["KCD_ROI"].itertuples(index=False))
-                               if "KCD_ROI" in cfg else kcd_270_slabs,
-        "kcd_roi_91_270_slabs": [(r.PCDV_Threshold, r.Slab1_Per_Txn, r.Slab2_Per_Txn)
-                                  for r in cfg["KCD_ROI"].itertuples()]
-                                if "KCD_ROI" in cfg else kcd_91_270_slabs,
+        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
+                               if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
+                               else kcd_270_slabs,
+        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
+                                if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
+                                else kcd_91_270_slabs,
         # KCD Listing/Catalog
         "kcd_listing_slabs":   kcd_listing_slabs,
         "kcd_listing_rates":   kcd_listing_rates,
@@ -4389,9 +4390,8 @@ if calc_btn:
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not csd_res.empty:
-            # L1 only on Exec-CSD sheet
-            csd_l1 = csd_res[csd_res.get("Designation", pd.Series(dtype=str)).ne("L2") if "Designation" in csd_res.columns else csd_res.index]
-            csd_l1 = csd_res[csd_res["Designation"].astype(str) != "L2"] if "Designation" in csd_res.columns else csd_res
+            # Exec-CSD: L1 ONLY (L3/L4/L5/L6 managers excluded)
+            csd_l1 = csd_res[csd_res["Designation"].astype(str).str.strip() == "L1"] if "Designation" in csd_res.columns else csd_res
             write_sheet(csd_l1[csd_cols], "Exec-CSD", header_fmt=grn)
             # L2 on separate Rel Mgr-CSD sheet (mirrors FSF KCD-SAM structure)
             csd_l2 = csd_res[csd_res["Designation"].astype(str) == "L2"] if "Designation" in csd_res.columns else csd_res.iloc[0:0]
@@ -4434,7 +4434,7 @@ if calc_btn:
         ] if c in res.columns]
         if not kcd_res.empty:
             # L1 on KCD-Exec sheet
-            kcd_l1 = kcd_res[kcd_res["Designation"].astype(str) != "L2"] if "Designation" in kcd_res.columns else kcd_res
+            kcd_l1 = kcd_res[kcd_res["Designation"].astype(str).str.strip() == "L1"] if "Designation" in kcd_res.columns else kcd_res
             write_sheet(kcd_l1[kcd_cols], "KCD-Exec", header_fmt=org)
             # L2 SAM on separate KCD-SAM sheet
             kcd_l2 = kcd_res[kcd_res["Designation"].astype(str) == "L2"] if "Designation" in kcd_res.columns else kcd_res.iloc[0:0]
