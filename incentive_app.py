@@ -610,6 +610,12 @@ def parse_slabs(cfg):
         "kcd_hvri_slabs":      kcd_hvri_slabs,
         "kcd_nagpur_slabs":    kcd_nagpur_slabs,
         "kcd_incr":            kcd_incr,
+        # KCD ROI (lower PCDV thresholds, same per-txn rates as Regular)
+        "kcd_roi_270_slabs":   list(cfg["KCD_ROI"].itertuples(index=False))
+                               if "KCD_ROI" in cfg else kcd_270_slabs,
+        "kcd_roi_91_270_slabs": [(r.PCDV_Threshold, r.Slab1_Per_Txn, r.Slab2_Per_Txn)
+                                  for r in cfg["KCD_ROI"].itertuples()]
+                                if "KCD_ROI" in cfg else kcd_91_270_slabs,
         # KCD Listing/Catalog
         "kcd_listing_slabs":   kcd_listing_slabs,
         "kcd_listing_rates":   kcd_listing_rates,
@@ -2398,6 +2404,18 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
     return round(base + incr, 0), notes
 
 
+def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
+                 ss_cmr_pct, ss_sent, S, collection_target=0, metric_label="PCDV"):
+    """KCD ROI incentive — same rates as Regular but lower PCDV thresholds (8K/11K/14K)."""
+    slabs = {"270D+":   S.get("kcd_roi_270_slabs",    S["kcd_270_slabs"]),
+             "91-270D": S.get("kcd_roi_91_270_slabs", S["kcd_91_270_slabs"])}.get(
+        vintage, S["kcd_0_90_slabs"])
+    _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
+    ss_mult = 0.5 if (ss_sent >= 3 and ss_cmr_pct < 72) else 1.0
+    base = per_txn * txn_count * ss_mult
+    return round(base, 0),            f"KCD ROI {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}"
+
+
 def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
                     ss_cmr_pct, ss_sent, S, collection_target=0, metric_label="PCDV"):
     """
@@ -3498,7 +3516,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 # L2 SAM scheme -- lower per-txn rates, 0.65%/0.45% incremental
                 base_inc, notes = calc_kcd_sam(
                 pcr_val=pcr_val, pcdv_val=pcdv,
-                net_dv=kcd_net_dv, net_coll=net_coll,
+                net_dv=kcd_net_dv, net_coll=net_dv,
                 txn_prod_raw=prod_score_receipt or txn_count,
                 cmr_pct=cmr_pct,
                 ss_cmr_pct=ss_cmr_pct, ss_sent=ss_sent_count,
@@ -3542,8 +3560,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
                 sb.get("spot_met", False), S)
         elif "ROI" in team_up:
-            kcd_base_only, notes = calc_kcd_regular(
-                pcdv, kcd_txn, kcd_col, vintage, location,
+            # Force ROI slabs by appending a fake location marker
+            kcd_base_only, notes = calc_kcd_roi(
+                pcdv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
@@ -4111,7 +4130,7 @@ if calc_btn:
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
-            weekly_prod_counts) = \
+            weekly_prod_counts, im_star_pro_count) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
