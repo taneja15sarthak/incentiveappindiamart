@@ -1579,26 +1579,41 @@ def load_structure_dump(uploaded_file):
     # L2 employees' own rows have Client-A=0; we must build it from L1 subordinates.
     l2_id_col = find_col(df, ["L2 ID", "L2ID", "Manager ID", "ManagerID"])
     if l2_id_col:
+        # Include ALL designation rows (not just L1) so that RM's own clients are counted
+        # Sir's FSF: SUMIFS(Client-C, L2_ID=RM_ID) — no designation filter!
+        all_rows = df.copy() if desig_col else pd.DataFrame()
+        # BUT for L1 count and team size, we need only L1 rows
         l1_rows = df[df[desig_col].astype(str).str.upper().str.strip() == "L1"].copy() if desig_col else pd.DataFrame()
-        if len(l1_rows) > 0:
+        if len(all_rows) > 0:
             for col in [client_a, client_c, "Base", "Listing"]:
-                if col and col in l1_rows.columns:
-                    l1_rows[col] = pd.to_numeric(l1_rows[col], errors='coerce').fillna(0)
-            l1_rows["_l2_id"] = l1_rows[l2_id_col].astype(str).str.split('.').str[0].str.strip()
+                if col and col in all_rows.columns:
+                    all_rows[col] = pd.to_numeric(all_rows[col], errors='coerce').fillna(0)
+            all_rows["_l2_id"] = all_rows[l2_id_col].astype(str).str.split('.').str[0].str.strip()
 
-            # Build aggregation per L2 ID and vertical
+            # Build aggregation per L2 ID and vertical (ALL rows for Client-A/C sums)
             vert_col_name = find_col(df, ["IIL Vertical Name", "Vertical", "vertical"])
             if vert_col_name:
-                l1_rows["_vert"] = l1_rows[vert_col_name].astype(str).str.upper().str.strip()
+                all_rows["_vert"] = all_rows[vert_col_name].astype(str).str.upper().str.strip()
             else:
-                l1_rows["_vert"] = ""
+                all_rows["_vert"] = ""
 
-            _agg_cols = {c: 'sum' for c in ([client_a, client_c] + (["Base","Listing"] if "Base" in l1_rows.columns else []))
-                         if c and c in l1_rows.columns}
-            _agg_cols["Employee ID" if "Employee ID" in l1_rows.columns else l1_rows.columns[0]] = 'count'
-            _cnt_col = list(_agg_cols.keys())[-1]
-            l2_agg = l1_rows.groupby(["_l2_id", "_vert"]).agg(_agg_cols).reset_index()
-            l2_agg.columns = ["_l2_id", "_vert"] + list(_agg_cols.keys())
+            # L1 count aggregation (separate, uses only L1 rows)
+            if len(l1_rows) > 0:
+                l1_rows["_l2_id"] = l1_rows[l2_id_col].astype(str).str.split('.').str[0].str.strip()
+                l1_rows["_vert"]  = all_rows.loc[l1_rows.index, "_vert"] if "_vert" in all_rows.columns else ""
+                _id_col = "Employee ID" if "Employee ID" in l1_rows.columns else l1_rows.columns[0]
+                l1_cnt_agg = l1_rows.groupby(["_l2_id", "_vert"])[_id_col].count().reset_index()
+                l1_cnt_agg.columns = ["_l2_id", "_vert", "_l1_count"]
+            else:
+                l1_cnt_agg = pd.DataFrame(columns=["_l2_id","_vert","_l1_count"])
+
+            _sum_cols = {c: 'sum' for c in ([client_a, client_c] + (["Base","Listing"] if "Base" in all_rows.columns else []))
+                         if c and c in all_rows.columns}
+            _cnt_col = "_l1_count"
+            l2_agg = all_rows.groupby(["_l2_id", "_vert"]).agg(_sum_cols).reset_index()
+            l2_agg.columns = ["_l2_id", "_vert"] + list(_sum_cols.keys())
+            l2_agg = l2_agg.merge(l1_cnt_agg, on=["_l2_id","_vert"], how="left")
+            l2_agg["_l1_count"] = l2_agg["_l1_count"].fillna(0).astype(int)
 
             # Patch L2 employees in result dict
             for eid, emp_data in result.items():
@@ -3247,7 +3262,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                      and "CSD" in str(sb.get("Vertical","")).upper())
     _pcr_denom    = _client_c_val if (_is_l2_csd and _client_c_val > 0) else client_cnt
     pcr_val  = (net_dv       / _pcr_denom) if _pcr_denom > 0 else 0
-    pcdv_val = (dv_for_pcdv  / client_cnt) if client_cnt > 0 else 0
+    # For CSD RM: PCDV also uses Client-C denominator (FSF formula Z = Net_DV / L = Client-C)
+    _pcdv_denom = _pcr_denom if _is_l2_csd else client_cnt
+    pcdv_val = (dv_for_pcdv  / _pcdv_denom) if _pcdv_denom > 0 else 0
 
     # slab_metric = the metric used for incentive slab lookup (sidebar-controlled)
     slab_metric  = pcr_val if use_pcr else pcdv_val
