@@ -75,6 +75,13 @@ PROD_TIER3 = {"TS3Renewal","SS Renewal","IM SS Renewal","LS Renewal","IM LS Rene
 
 TIER_REWARD = {1: 500, 2: 1000, 3: 1500}
 
+# IM Star Pro+ products for 28-30 Apr spot (BX="Yes" flag in sir's FSF receipt)
+# Applicable: Relationship Manager (CSD) / Sr. Account Manager (KCD) - ₹1000/sale
+IM_STAR_PRO_PRODUCTS = {
+    "IM Star Pro", "IM Leader Pro", "Preferred Leader Pro", "Preferred Star Pro",
+    "IM Star Pro+", "Preferred Star Pro+",
+}
+
 # IM Insta products (0.5 productivity)
 INSTA_PRODUCTS = {"IM InstaDiamond","IM InstaGold","IM InstaPlatinum",
                   "IM insta Diamond","IM Insta Renewal"}
@@ -2199,8 +2206,8 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
     # ── Type B: Listing / Catalog ─────────────────────────────────────────────
     if is_listing or is_catalog:
-        # Highest Collection = Client-A * 18000 (FSF row7: AA = L*18000)
-        highest_coll = float(client_a or 0) * 18000
+        # Highest Collection = Client-A * 17000 (April FSF: AA = L*17000)
+        highest_coll = float(client_a or 0) * 17000
         # Collection Target from structure file or slab config rates (not hardcoded)
         if not collection_target or collection_target <= 0:
             _lv3 = str(vintage)
@@ -2261,8 +2268,8 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         return total, notes
 
     # ── Type A: Regular / HVRI / ROI / Nagpur ────────────────────────────────
-    # Highest Collection = Client-A * 32000 (FSF: AA = L*32000)
-    highest_coll = float(client_a or 0) * 32000
+    # Highest Collection = Client-A * 17000 (April FSF KCD-SAM: AA = L*17000)
+    highest_coll = float(client_a or 0) * 17000
 
     # Per-txn: threshold is PCR (collection per client) and CMR%
     # Get SAM slabs for this team
@@ -2579,20 +2586,35 @@ def calc_spot_march_kcd(weekly_dv, client_a, team, location, vintage):
     return int(total)
 
 
-def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0):
+def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
+                        is_rm=False, monthly_base_inc=0, team_size=1):
     """
     CSD April spot: NR Upsell/AMR productivity based.
     FNT-1 (Apr 1-16): ≥3 prods → ₹1500 + ₹750/txn above 3
     FNT-2 (Apr 20-30): ≥3 prods → ₹2500 + ₹1000/txn above 3
     Uses exact FNT counts when available (from FNT column in receipt).
     """
-    fnt1_cfg = S.get("csd_spot_apr", {}).get("FNT1", {"min_prod": 3, "base": 1500, "per_txn": 750})
-    fnt2_cfg = S.get("csd_spot_apr", {}).get("FNT2", {"min_prod": 3, "base": 2500, "per_txn": 1000})
+    _csd_spot_apr = S.get("csd_spot_apr", {})
+    if is_rm:
+        fnt1_cfg = _csd_spot_apr.get("RM_FNT1", {"min_prod": 3, "base": 2000, "per_txn": 500, "min_val": 2.5})
+        fnt2_cfg = _csd_spot_apr.get("RM_FNT2", {"min_prod": 3, "base": 3500, "per_txn": 500, "min_val": 2.5})
+    else:
+        fnt1_cfg = _csd_spot_apr.get("FNT1", {"min_prod": 3, "base": 1500, "per_txn": 750})
+        fnt2_cfg = _csd_spot_apr.get("FNT2", {"min_prod": 3, "base": 2500, "per_txn": 1000})
     spot = 0
-    if fnt1_count >= fnt1_cfg["min_prod"]:
-        spot += fnt1_cfg["base"] + (fnt1_count - fnt1_cfg["min_prod"]) * fnt1_cfg["per_txn"]
-    if fnt2_count >= fnt2_cfg["min_prod"]:
-        spot += fnt2_cfg["base"] + (fnt2_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
+    # For RM: threshold is per-team-member (count / team_size >= 2.5)
+    # Sir's formula: AX = count/team_size, trigger if AX >= 2.5
+    _ts = max(1, int(team_size)) if is_rm else 1
+    _fnt1_thresh = fnt1_cfg.get("min_val", 2.5) * _ts if is_rm else fnt1_cfg["min_prod"]
+    _fnt2_thresh = fnt2_cfg.get("min_val", 2.5) * _ts if is_rm else fnt2_cfg["min_prod"]
+    if fnt1_count >= _fnt1_thresh:
+        spot += fnt1_cfg["base"] + int(fnt1_count - (_ts * fnt1_cfg.get("min_val", 2.5))) * fnt1_cfg["per_txn"]
+    if fnt2_count >= _fnt2_thresh:
+        _fnt2_excess = int(fnt2_count - (_ts * fnt2_cfg.get("min_val", 2.5))) if is_rm else (fnt2_count - fnt2_cfg["min_prod"])
+        _fnt2_raw = fnt2_cfg["base"] + _fnt2_excess * fnt2_cfg["per_txn"]
+        # FNT-2 Monthly Base Incentive Multiplier: qualified (base>0)=100%, not=50%
+        _fnt2_mult = 1.0 if monthly_base_inc > 0 else 0.5
+        spot += int(_fnt2_raw * _fnt2_mult)
     # Fallback: if no FNT split available, use total count with FNT-2 rates
     if spot == 0 and nr_upsell_count >= fnt2_cfg["min_prod"]:
         spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
@@ -2601,24 +2623,33 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0):
 
 def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
                         fnt1_pcdv=0, fnt2_pcdv=0,
-                        pref_ss_count=0, btl_count=0, im_var_count=0):
+                        pref_ss_count=0, btl_count=0, im_var_count=0,
+                        is_l2_sam=False, monthly_base_inc=0):
     """
     KCD April spot: PCDV-based with FNT periods + SS/LS multiplier.
-    FNT-1 (Apr 1-16): base ₹2500 + ₹1000/1K PCDV after threshold
-    FNT-2 (Apr 20-30): base ₹4000 + ₹1000/1K (Listing: ₹1000/2K)
-    SS/LS Upsell Multiplier: ≥2 → 125%, <2 → 50% (applied to total spot)
-    Uses FNT-split PCDV when available; falls back to monthly_pcdv/2.
+
+    FNT-1 (Apr 1-16): base + per_1K PCDV after threshold; SS/BTL/Pref mult ≥2→125% (<2→50%)
+      L2 SAM FNT-1: higher base (3500 vs 2500), higher per1K (1500), mult ≥1→125%
+    FNT-2 (Apr 20-30): higher base + Monthly Base Incentive Multiplier (qualified=100%, not=50%)
+      L2 SAM FNT-2: base 6000 vs L1 4000
+
+    PPT thresholds by team (L1 / L2):
+      Regular/ROI 0-90D: 4000 / same
+      Regular/ROI 90+:   6000 / 4000 (ROI SAM uses 4000 threshold)
+      Catalog 0-90D:     2500 / same
+      Catalog 90+:       3500 / 3500
+      Listing 0-90D:     7500 / same
+      Listing 90+:       11000 / 11000
     """
     if not client_a or client_a <= 0 or monthly_pcdv <= 0:
         return 0
     team_up = str(team).upper()
     loc_up  = str(location).upper()
-    is_0_90 = vintage in ("0-30D", "31-90D")
-    is_listing  = "LISTING" in team_up
-    is_catalog  = "CATALOG" in team_up
-    is_roi      = "ROI" in team_up or any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"])
+    is_0_90    = vintage in ("0-30D", "31-90D")
+    is_listing = "LISTING" in team_up
+    is_catalog = "CATALOG" in team_up
+    is_roi     = "ROI" in team_up or any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"])
 
-    # FNT-1 and FNT-2 config: look up from S["kcd_spot_apr"] first, then fall back to hardcoded
     _apr_rows = S.get("kcd_spot_apr", {})
     def _get_cfg(key_0_90, key_90p):
         k = key_0_90 if is_0_90 else key_90p
@@ -2626,22 +2657,53 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
             return _apr_rows[k]["fnt1"], _apr_rows[k]["fnt2"]
         return None, None
 
+    # L1 and L2 SAM FNT configs (thresh, base, per_unit, unit_size)
     if is_listing:
         fnt1_c, fnt2_c = _get_cfg("LIST_0_90", "LIST_90p")
-        fnt1 = fnt1_c or (7500,  2500, 1000, 1000) if is_0_90 else fnt1_c or (11000, 2500, 1000, 1000)
-        fnt2 = fnt2_c or (7500,  4000, 1000, 2000) if is_0_90 else fnt2_c or (11000, 4000, 1000, 2000)
+        if is_0_90:
+            fnt1 = fnt1_c or (7500, 2500, 1000, 1000)
+            fnt2 = fnt2_c or (7500, 4000, 1000, 2000)
+            fnt1_l2 = fnt1;  fnt2_l2 = fnt2  # 0-90D: no SAM slide, use L1 rates
+        else:
+            fnt1 = fnt1_c or (11000, 2500, 1000, 1000)
+            fnt2 = fnt2_c or (11000, 4000, 1000, 2000)
+            fnt1_l2 = (11000, 3500, 1500, 1000)   # SAM FNT-1 slide 12
+            fnt2_l2 = (11000, 6000, 1500, 2000)   # SAM FNT-2 slide 8
+        _mult_count = pref_ss_count
+        _l2_mult_threshold = 1
     elif is_catalog:
         fnt1_c, fnt2_c = _get_cfg("CAT_0_90", "CAT_90p")
-        fnt1 = fnt1_c or (2500,  2500, 1000, 1000) if is_0_90 else fnt1_c or (3500, 2500, 1000, 1000)
-        fnt2 = fnt2_c or (2500,  4000, 1000, 1000) if is_0_90 else fnt2_c or (3500, 4000, 1000, 1000)
+        if is_0_90:
+            fnt1 = fnt1_c or (2500, 2500, 1000, 1000)
+            fnt2 = fnt2_c or (2500, 4000, 1000, 1000)
+            fnt1_l2 = fnt1;  fnt2_l2 = fnt2
+        else:
+            fnt1 = fnt1_c or (3500, 2500, 1000, 1000)
+            fnt2 = fnt2_c or (3500, 4000, 1000, 1000)
+            fnt1_l2 = (3500, 3500, 1500, 1000)    # SAM FNT-1 slide 9
+            fnt2_l2 = (3500, 6000, 1500, 1000)    # SAM FNT-2 slide 6
+        _mult_count = btl_count
+        _l2_mult_threshold = 1
     elif is_roi:
         fnt1_c, fnt2_c = _get_cfg("ROI_0_90", "ROI_90p")
-        fnt1 = fnt1_c or (4000, 2500, 1000, 1000) if is_0_90 else fnt1_c or (6000, 2500, 1000, 1000)
-        fnt2 = fnt2_c or (4000, 4000, 1000, 1000) if is_0_90 else fnt2_c or (6000, 4000, 1000, 1000)
-    else:   # Regular (same key as ROI in table)
+        fnt1 = fnt1_c or ((4000, 2500, 1000, 1000) if is_0_90 else (4000, 2500, 1000, 1000))
+        fnt2 = fnt2_c or ((4000, 4000, 1000, 1000) if is_0_90 else (4000, 4000, 1000, 1000))
+        fnt1_l2 = (4000, 3500, 1500, 1000)        # SAM FNT-1 slide 6
+        fnt2_l2 = (4000, 6000, 1500, 1000)        # SAM FNT-2 slide 3
+        _mult_count = im_var_count
+        _l2_mult_threshold = 1
+    else:   # Regular KCD
         fnt1_c, fnt2_c = _get_cfg("ROI_0_90", "ROI_90p")
-        fnt1 = fnt1_c or (4000, 2500, 1000, 1000) if is_0_90 else fnt1_c or (6000, 2500, 1000, 1000)
-        fnt2 = fnt2_c or (4000, 4000, 1000, 1000) if is_0_90 else fnt2_c or (6000, 4000, 1000, 1000)
+        fnt1 = fnt1_c or ((4000, 2500, 1000, 1000) if is_0_90 else (6000, 2500, 1000, 1000))
+        fnt2 = fnt2_c or ((4000, 4000, 1000, 1000) if is_0_90 else (6000, 4000, 1000, 1000))
+        fnt1_l2 = ((4000, 3500, 1500, 1000) if is_0_90 else (6000, 3500, 1500, 1000))  # slide 5
+        fnt2_l2 = ((4000, 6000, 1500, 1000) if is_0_90 else (6000, 6000, 1500, 1000))  # slide 4
+        _mult_count = im_var_count
+        _l2_mult_threshold = 1
+
+    # Choose config based on L1 vs L2
+    _fnt1 = fnt1_l2 if is_l2_sam else fnt1
+    _fnt2 = fnt2_l2 if is_l2_sam else fnt2
 
     def _bullet(pcdv, cfg):
         thresh, base, per_unit, unit_size = cfg
@@ -2649,24 +2711,32 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
             return 0
         return base + int((pcdv - thresh) / unit_size) * per_unit
 
-    # Use exact FNT PCDV if available; fall back to monthly/2 proxy
     _pcdv1 = fnt1_pcdv if fnt1_pcdv > 0 else monthly_pcdv / 2
     _pcdv2 = fnt2_pcdv if fnt2_pcdv > 0 else monthly_pcdv / 2
-    fnt1_spot = _bullet(_pcdv1, fnt1)
-    fnt2_spot = _bullet(_pcdv2, fnt2)
-    raw_spot  = int(fnt1_spot + fnt2_spot)
+    fnt1_spot = _bullet(_pcdv1, _fnt1)
+    fnt2_spot = _bullet(_pcdv2, _fnt2)
+
+    # FNT-2 Monthly Base Incentive Multiplier (qualified=100%, not qualified=50%)
+    if fnt2_spot > 0:
+        _monthly_qual = monthly_base_inc > 0
+        fnt2_spot = int(fnt2_spot * (1.0 if _monthly_qual else 0.5))
+
+    raw_spot = int(fnt1_spot + fnt2_spot)
     if raw_spot == 0:
         return 0
-    # SS/LS Upsell Multiplier (applies to the combined spot amount)
-    # Regular/ROI: Pref SS+ count; Catalog: Base-to-List count; Listing: IM Variant count
-    if is_listing:
-        _mult_count = im_var_count
-    elif is_catalog:
-        _mult_count = btl_count
-    else:
-        _mult_count = pref_ss_count
-    ss_mult = 1.25 if _mult_count >= 2 else 0.5
+
+    # SS/LS Upsell Multiplier
+    _threshold = _l2_mult_threshold if is_l2_sam else 2
+    ss_mult = 1.25 if _mult_count >= _threshold else 0.5
     return int(raw_spot * ss_mult)
+    """
+    KCD April spot: PCDV-based with FNT periods + SS/LS multiplier.
+    FNT-1 (Apr 1-16): base ₹2500 + ₹1000/1K PCDV after threshold
+    FNT-2 (Apr 20-30): base ₹4000 + ₹1000/1K (Listing: ₹1000/2K)
+    SS/LS Upsell Multiplier: ≥2 → 125%, <2 → 50% (applied to total spot)
+    Uses FNT-split PCDV when available; falls back to monthly_pcdv/2.
+    """
+
 
 
 def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct=0, cmr_sent=0, cmr_recd=0,
@@ -2750,16 +2820,17 @@ def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct=0, cmr_sent=0, cmr_recd=0,
     return int(ay), notes
 
 
-def calc_mcats_renewal(im_star_amr_count, S):
+def calc_mcats_renewal(im_star_amr_count, S, is_l2=False):
     """
-    KCD 'More MCATs Sell on Renewals' scheme (Apr'26).
-    IM Star/Leader AMR renewals: >= 3 MCATs -> Rs 3000 incentive.
-    Requires Monthly PCDV & CMR% qualification (passed in from route_calc).
+    KCD 'More MCATs on Renewals' scheme (Apr'26).
+    L1: ₹1000/MCAT from 3rd onwards. L2 SAM: ₹500/MCAT from 3rd onwards.
+    Applicable on renewals where >2 MCATs renewal is generated in client ledger.
+    Requires Monthly PCDV & CMR% qualification.
     """
-    # If >= 3 IM Star/Leader AMR renewals in the month
-    if im_star_amr_count >= 3:
-        return 3000
-    return 0
+    if im_star_amr_count < 3:
+        return 0
+    rate = 500 if is_l2 else 1000
+    return (im_star_amr_count - 2) * rate
 
 
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
@@ -2863,9 +2934,6 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # Use string comparison to handle both int and string EMP IDs across files
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
-
-    # Alias so body code (is_l2_csd) matches the parameter name (is_l2)
-    is_l2_csd = is_l2
 
     # For CSD L2 Rel Mgr: use HOD-3 / L2-ID column to get ALL team receipts
     # (Manager Id misses some L1s who report via different hierarchy path)
@@ -3164,10 +3232,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             pcr_target_v = 30000.0
         elif vintage == "270D+":
             pcr_target_v = 32000.0
-        # KCD Highest Collection = Client-A × 32000 (fixed in FSF formula, all employees)
-        highest_coll = client_cnt * 32000
-        # Listing/Catalog/ROI: no standard rate - leave as 0 unless kcd_targets provides it
-        # Recompute highest_coll with the standard PCR target
+        # KCD Highest Collection per April FSF:
+        # KCD-Exec (L1): AE = M * 21000
+        # KCD-SAM  (L2): AA = L * 17000
+        _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
+        _hc_mult = 17000 if _is_kcd_sam else 21000
+        highest_coll = client_cnt * _hc_mult
+        # Recompute with actual PCR target if set (overrides default)
         if pcr_target_v > 0:
             highest_coll = pcr_target_v * client_cnt
 
@@ -3210,6 +3281,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     prod_score_sps, insta_cnt_sps, _ = calc_productivity(rnl_prods, rnl_modes, "csd_sps")
 
     base_inc = pop_inc = spot_inc = 0
+    _im_insta_spot        = 0   # KCD only
+    _mcats_spot           = 0   # KCD only
+    _im_star_pro_spot_kcd = 0   # KCD SAM only (28-30 Apr IM Star Pro+)
     kcd_base_only   = 0   # KCD: base incentive before incremental
     kcd_incremental = 0   # KCD: incremental DV amount
     notes = cmr_note = ""
@@ -3325,13 +3399,17 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     mdc1_cmr_plus1=(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1
                                     else cmr_plus1_pct) if cmr_plus1_sent > 0 else None)
             # Spot: config-driven -- April config has "CSD_Spot_Apr"; March has "CSD_Spot"
-            # FSF Rel Mgr-CSD: no spot columns → L2 employees get spot=0
-            if _desig_str == "L2":
-                spot_inc = 0
-            elif S.get("has_apr_spot"):
+            # CSD RM has a SEPARATE spot scheme (slides 3+): min 2.5 prod, base 2000/3500
+            if S.get("has_apr_spot"):
                 spot_inc = calc_spot_april_csd(
                     nr_upsell_count, S,
-                    fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count)
+                    fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
+                    is_rm=(_desig_str == "L2"),
+                    monthly_base_inc=base_inc,
+                    team_size=sb.get("Effective Team Size", 1) if _desig_str == "L2" else 1)
+                # IM Star Pro+ New Sale Spot (28-30 Apr): Rel Mgr only, ₹1000/sale
+                if _desig_str == "L2":
+                    spot_inc = int(spot_inc) + int(im_star_pro_count * 1000)
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
@@ -3382,13 +3460,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         kcd_base_only  = 0
         kcd_incremental = 0
 
-        def _kcd_spot():
+        def _kcd_spot(is_l2_sam=False, monthly_base_inc=0):
             """Config-driven spot: April if CSD_Spot_Apr present, else March, else legacy."""
             if S.get("has_apr_spot"):
                 return calc_spot_april_kcd(
                     pcdv_val, spot_client, team, location, vintage, S,
                     fnt1_pcdv=fnt1_pcdv, fnt2_pcdv=fnt2_pcdv,
                     pref_ss_count=pref_ss_count, btl_count=btl_count,
+                    is_l2_sam=is_l2_sam, monthly_base_inc=monthly_base_inc,
                     im_var_count=im_var_count)
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
@@ -3414,7 +3493,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     emp_rate_95=_ilp_rate, S=S)
                 kcd_base_only   = base_inc
                 kcd_incremental = 0
-                spot_inc        = 0  # FSF KCD-SAM ILP: no spot incentive for L2
+                spot_inc        = _kcd_spot(monthly_base_inc=base_inc)
             else:
                 # L2 SAM scheme -- lower per-txn rates, 0.65%/0.45% incremental
                 base_inc, notes = calc_kcd_sam(
@@ -3430,7 +3509,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 l1_count=int(sb.get("L1 Count", 4) or 4))
             kcd_base_only   = base_inc
             kcd_incremental = 0  # already inside calc_kcd_sam
-            spot_inc        = 0  # FSF KCD-SAM: no spot incentive for L2 SAM
+            spot_inc        = _kcd_spot(is_l2_sam=True, monthly_base_inc=base_inc)
         elif "LISTING" in team_up:
             # Use structure file Listing Clients; fall back to (total-1) if absent
             _list_c = listing_c if listing_c > 0 else max(1, client_cnt - 1)
@@ -3444,7 +3523,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = _kcd_spot() or calc_spot_kcd(
+            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or calc_spot_kcd(
                 pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
                 sb.get("spot_met", False), S)
         elif "CATALOG" in team_up:
@@ -3459,7 +3538,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = _kcd_spot() or calc_spot_kcd(
+            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or calc_spot_kcd(
                 pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
                 sb.get("spot_met", False), S)
         elif "ROI" in team_up:
@@ -3469,7 +3548,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = _kcd_spot() or calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
+            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
@@ -3479,7 +3558,22 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             base_inc = kcd_base_only + kcd_incremental
             _legacy_spot = (calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
                             if vintage in ("0-30D", "31-90D") else 0)
-            spot_inc = _kcd_spot() or _legacy_spot
+            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or _legacy_spot
+
+        # ── IM Star Pro+ New Sale Spot (28-30 Apr): SAM only ₹1000/sale ─────────
+        # Products: IM Star Pro / IM Leader Pro / Preferred Leader Pro / Preferred Star Pro
+        # Computed in get_transactions as im_star_pro_count (entry date day >= 28)
+        _im_star_pro_spot_kcd = int(im_star_pro_count * 1000) if _is_sam else 0
+
+        # ── KCD IM Insta Spot (L1=₹300/sale, L2 SAM=₹150/sale) ─────────────
+        # Eligibility: weekly≥2 OR monthly≥7 im_var productivity
+        _insta_elig = (any(v >= 2 for v in weekly_prod_counts.values())
+                       or (prod_score_receipt or 0) >= 7)
+        _insta_rate   = 150 if _is_sam else 300
+        _im_insta_spot = int(insta_cnt_receipt * _insta_rate) if (_insta_elig and insta_cnt_receipt) else 0
+
+        # ── KCD MCATs Renewals Spot (L1=₹1000, L2=₹500 from 3rd MCAT) ────────
+        _mcats_spot = calc_mcats_renewal(int(sb.get("btl_sales", 0)), S, is_l2=_is_sam)
 
         # ── KCD Min Productivity Gate (L1 only) ──────────────────────────────
         # Scheme: min 2 per week OR 8/month (6/month for CSD-to-KCD new joiners)
@@ -3544,6 +3638,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _inc_payout_mult = (_cmrp1_mult_val if _is_csd_rm
                         else _mdc1_mult_val if _is_sps_vintage
                         else 0.0)
+
+    # Add IM Insta and MCATs to KCD spot total
+    if "KCD" in vertical:
+        spot_inc = int(spot_inc) + _im_insta_spot + _mcats_spot + _im_star_pro_spot_kcd
 
     # KCD breakdown -- extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
