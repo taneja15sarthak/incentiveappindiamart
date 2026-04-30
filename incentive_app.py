@@ -3159,6 +3159,22 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     else:
         nr_upsell_count = 0
 
+    # IM Star Pro+ count for 28-30 Apr spot (BX="Yes" equivalent)
+    # Products: IM Star Pro, IM Leader Pro, Preferred Leader Pro, Preferred Star Pro
+    im_star_pro_count = 0
+    _unique_col_sp = find_col(receipt_df, ["Unique", "UNIQUE"])
+    _date_col_sp   = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+    if _unique_col_sp and _date_col_sp and len(rec) > 0:
+        try:
+            _days_sp = pd.to_datetime(rec[_date_col_sp], errors='coerce').dt.day
+            _is_28_30 = _days_sp >= 28
+            _is_star_pro = rec[_unique_col_sp].apply(
+                lambda v: any(p.upper() in str(v).upper() for p in IM_STAR_PRO_PRODUCTS)
+            )
+            im_star_pro_count = int((_is_28_30 & _is_star_pro).sum())
+        except Exception:
+            im_star_pro_count = 0
+
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
