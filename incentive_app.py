@@ -1056,11 +1056,8 @@ def build_excel_output(results_dict, sel_month):
                     "Gross Incentive":r.get("gross_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("gross_inc",0),
                 })
-            df_n = pd.DataFrame(rows_n)[[c for c in cols_n if c in pd.DataFrame(rows_n).columns or True]]
-            # ensure all cols exist
-            for c in cols_n:
-                if c not in df_n.columns: df_n[c]=""
-            df_n = df_n[cols_n]
+            df_n = pd.DataFrame(rows_n).reindex(columns=cols_n, fill_value="")
+
             df_n.to_excel(w, sheet_name="Nursery Scheme", index=False, startrow=1)
             ws = w.sheets["Nursery Scheme"]
             for ci,col in enumerate(cols_n): ws.write(1,ci,col,pur)
@@ -1101,7 +1098,7 @@ def build_excel_output(results_dict, sel_month):
                     "L3 ID":r.get("L3 ID",""),"L3 Name":r.get("L3 Name",""),
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Joining Date/Movement Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
@@ -1119,7 +1116,7 @@ def build_excel_output(results_dict, sel_month):
                     "Transaction.1":r.get("sp7_12_txn",0),"Gross\nIncentive.2":r.get("sp7_12_gross",0),"Paid\nIncentive.2":0,"Balance\nIncentive.2":r.get("sp7_12_gross",0),
                     "Transaction.2":r.get("sp20_30_txn",0),"Gross\nIncentive.3":r.get("sp20_30_gross",0),"Paid\nIncentive.3":0,"Balance\nIncentive.3":r.get("sp20_30_gross",0),
                 })
-            df_e = pd.DataFrame(rows_e)[cols_out]
+            df_e = pd.DataFrame(rows_e).reindex(columns=cols_out, fill_value="")
             df_e.to_excel(w, sheet_name="Exec-CSD", index=False, startrow=2)
             ws = w.sheets["Exec-CSD"]
             # Row 0: merged group headers
@@ -1134,14 +1131,14 @@ def build_excel_output(results_dict, sel_month):
         if csd_l2:
             cols_rm = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
                        "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
-                       "Joining Date","IIL Vertical Name","Group","<90 Vintage Exec","HC",
+                       "Joining Date","IIL Vertical Name","Group","<90\nVintage\nExec","HC",
                        "Client-A","Client-C","Deal Value","PCDV",
-                       "CMR Sent","CMR Recd","Ren %","Renewal Target",
-                       "CMR+1 Sent","CMR+1 Recd","CMR+1 Ren %",
-                       "Incr PCDV Amt","Incentive Grid","Incentive","Gross Incentive","Paid Incentive","Balance Incentive",
-                       "Sp2_6 Txn","Sp2_6 Prod","Sp2_6 Gross","Sp2_6 Paid","Sp2_6 Bal",
-                       "Sp7_12 Txn","Sp7_12 Prod","Sp7_12 Gross","Sp7_12 Paid","Sp7_12 Bal",
-                       "Sp20_30 Txn","Sp20_30 Prod","Sp20_30 Gross","Sp20_30 Paid","Sp20_30 Bal"]
+                       "Sent","Recd","Ren %","Renewal\nTarget",
+                       "Sent.1","Recd.1","Ren %.1",
+                       "Incremental\nPCDV\nAmt.","Incentive\nGrid","Incentive","Gross Incentive","Paid\nIncentive","Balance\nIncentive",
+                       "Transaction","Productvity","Gross\nIncentive.1","Paid\nIncentive.1","Balance\nIncentive.1",
+                       "Transaction.1","Productvity.1","Gross\nIncentive.2","Paid\nIncentive.2","Balance\nIncentive.2",
+                       "Transaction.2","Productvity.2","Gross\nIncentive.3","Paid\nIncentive.3","Balance\nIncentive.3"]
             rows_rm = []
             for r in csd_l2:
                 rows_rm.append({
@@ -1150,27 +1147,27 @@ def build_excel_output(results_dict, sel_month):
                     "L3 ID":r.get("L3 ID",""),"L3 Name":r.get("L3 Name",""),
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD","Group":"",
-                    "<90 Vintage Exec":r.get("Vintage",""),"HC":r.get("HC",0),
+                    "<90\nVintage\nExec":r.get("Vintage",""),"HC":r.get("HC",0),
                     "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
-                    "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "Renewal Target":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
-                    "CMR+1 Sent":0,"CMR+1 Recd":0,"CMR+1 Ren %":0,
-                    "Incr PCDV Amt":r.get("incr_amt",0),"Incentive Grid":r.get("incentive_grid",0),
+                    "Renewal\nTarget":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
+                    "Sent.1":0,"Recd.1":0,"Ren %.1":0,
+                    "Incremental\nPCDV\nAmt.":r.get("incr_amt",0),"Incentive\nGrid":r.get("incentive_grid",0),
                     "Incentive":r.get("base_inc",0),"Gross Incentive":r.get("gross_inc",0),
-                    "Paid Incentive":0,"Balance Incentive":r.get("gross_inc",0),
-                    "Sp2_6 Txn":r.get("sp2_6_txn",0),"Sp2_6 Prod":r.get("sp2_6_prod",0),
-                    "Sp2_6 Gross":r.get("sp2_6_gross",0),"Sp2_6 Paid":0,"Sp2_6 Bal":r.get("sp2_6_gross",0),
-                    "Sp7_12 Txn":r.get("sp7_12_txn",0),"Sp7_12 Prod":r.get("sp7_12_prod",0),
-                    "Sp7_12 Gross":r.get("sp7_12_gross",0),"Sp7_12 Paid":0,"Sp7_12 Bal":r.get("sp7_12_gross",0),
-                    "Sp20_30 Txn":r.get("sp20_30_txn",0),"Sp20_30 Prod":r.get("sp20_30_prod",0),
-                    "Sp20_30 Gross":r.get("sp20_30_gross",0),"Sp20_30 Paid":0,"Sp20_30 Bal":r.get("sp20_30_gross",0),
+                    "Paid\nIncentive":0,"Balance\nIncentive":r.get("gross_inc",0),
+                    "Transaction":r.get("sp2_6_txn",0),"Productvity":r.get("sp2_6_prod",0),
+                    "Gross\nIncentive.1":r.get("sp2_6_gross",0),"Paid\nIncentive.1":0,"Balance\nIncentive.1":r.get("sp2_6_gross",0),
+                    "Transaction.1":r.get("sp7_12_txn",0),"Productvity.1":r.get("sp7_12_prod",0),
+                    "Gross\nIncentive.2":r.get("sp7_12_gross",0),"Paid\nIncentive.2":0,"Balance\nIncentive.2":r.get("sp7_12_gross",0),
+                    "Transaction.2":r.get("sp20_30_txn",0),"Productvity.2":r.get("sp20_30_prod",0),
+                    "Gross\nIncentive.3":r.get("sp20_30_gross",0),"Paid\nIncentive.3":0,"Balance\nIncentive.3":r.get("sp20_30_gross",0),
                 })
-            df_rm = pd.DataFrame(rows_rm)[cols_rm]
+            df_rm = pd.DataFrame(rows_rm).reindex(columns=cols_rm, fill_value="")
             df_rm.to_excel(w, sheet_name="Rel'n Mgr-CSD", index=False, startrow=2)
             ws = w.sheets["Rel'n Mgr-CSD"]
             ws.merge_range(0,34,0,38,"Spot 2nd to 6th",hdr)
@@ -1196,7 +1193,7 @@ def build_excel_output(results_dict, sel_month):
                     "L3 ID":r.get("L3 ID",""),"L3 Name":r.get("L3 Name",""),
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "HC":r.get("HC",0),"L2":r.get("L2 Count",0),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD","Location":r.get("Location",""),
@@ -1212,7 +1209,7 @@ def build_excel_output(results_dict, sel_month):
                     "Gross Incentive":r.get("total_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("total_inc",0),
                 })
-            df_bm = pd.DataFrame(rows_bm)[cols_bm]
+            df_bm = pd.DataFrame(rows_bm).reindex(columns=cols_bm, fill_value="")
             df_bm.to_excel(w, sheet_name="BM-CSD", index=False, startrow=1)
             ws = w.sheets["BM-CSD"]
             for ci,col in enumerate(cols_bm): ws.write(1,ci,col,grn)
@@ -1235,7 +1232,7 @@ def build_excel_output(results_dict, sel_month):
                     "Employee ID":r["eid"],"Employee Name":r["name"],
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
@@ -1247,7 +1244,7 @@ def build_excel_output(results_dict, sel_month):
                     "Total":total_deals,"Eligible":r.get("bt_eligible","NO"),
                     "Gross\nIncentive":r.get("bt_inc",0),"Paid\nIncentive":0,"Balance\nIncentive":r.get("bt_inc",0),
                 })
-            df_bt = pd.DataFrame(rows_bt)[cols_bt]
+            df_bt = pd.DataFrame(rows_bt).reindex(columns=cols_bt, fill_value="")
             df_bt.to_excel(w, sheet_name="BM-CSD Big Ticket", index=False, startrow=1)
             ws = w.sheets["BM-CSD Big Ticket"]
             for ci,col in enumerate(cols_bt): ws.write(1,ci,col,grn)
@@ -1270,7 +1267,7 @@ def build_excel_output(results_dict, sel_month):
                 rows_btch.append({
                     "Employee ID":r["eid"],"Employee Name":r["name"],
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
@@ -1284,7 +1281,7 @@ def build_excel_output(results_dict, sel_month):
                     "Total":total_deals,"Eligible":r.get("bt_eligible","No"),
                     "Gross\nIncentive":r.get("bt_inc",0),"Paid\nIncentive":0,"Balance\nIncentive":r.get("bt_inc",0),
                 })
-            df_btch = pd.DataFrame(rows_btch)[cols_btch]
+            df_btch = pd.DataFrame(rows_btch).reindex(columns=cols_btch, fill_value="")
             df_btch.to_excel(w, sheet_name="CH-CSD Big Ticket", index=False, startrow=1)
             ws = w.sheets["CH-CSD Big Ticket"]
             for ci,col in enumerate(cols_btch): ws.write(1,ci,col,grn)
@@ -1313,7 +1310,7 @@ def build_excel_output(results_dict, sel_month):
                     "L3 ID":r.get("L3 ID",""),"L3 Name":r.get("L3 Name",""),
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
@@ -1337,7 +1334,7 @@ def build_excel_output(results_dict, sel_month):
                     "Spot2 Incentive":r.get("spot2_inc",0),"IM Star/Leader New Sale2":r.get("im_pro_count",0),
                     "Spot2 Gross":r.get("spot2_gross",0),"Spot2 Paid":0,"Spot2 Bal":r.get("spot2_gross",0),
                 })
-            df_kl1 = pd.DataFrame(rows_kl1)[cols_kl1]
+            df_kl1 = pd.DataFrame(rows_kl1).reindex(columns=cols_kl1, fill_value="")
             df_kl1.to_excel(w, sheet_name="Exec-KCD", index=False, startrow=2)
             ws = w.sheets["Exec-KCD"]
             ws.merge_range(0,36,0,42,"Spot 1st to 12th",org)
@@ -1367,7 +1364,7 @@ def build_excel_output(results_dict, sel_month):
                     "L3 ID":r.get("L3 ID",""),"L3 Name":r.get("L3 Name",""),
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"HC":r.get("HC",0),
@@ -1393,7 +1390,7 @@ def build_excel_output(results_dict, sel_month):
                     "IM Star Pro New Sale":r.get("im_pro_count",0),
                     "28-30 Gross":r.get("im_ss_spot",0),"28-30 Paid":0,"28-30 Bal":r.get("im_ss_spot",0),
                 })
-            df_kl2 = pd.DataFrame(rows_kl2)[cols_kl2]
+            df_kl2 = pd.DataFrame(rows_kl2).reindex(columns=cols_kl2, fill_value="")
             df_kl2.to_excel(w, sheet_name="Reln Mgr-KCD", index=False, startrow=2)
             ws = w.sheets["Reln Mgr-KCD"]
             ws.merge_range(0,35,0,41,"Spot 1st to 12th",org)
@@ -1417,7 +1414,7 @@ def build_excel_output(results_dict, sel_month):
                     "Employee ID":r["eid"],"Employee Name":r["name"],
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"HC":r.get("HC",0),
@@ -1435,7 +1432,7 @@ def build_excel_output(results_dict, sel_month):
                     "Gross\nIncentive":r.get("total_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("total_inc",0),
                 })
-            df_bk = pd.DataFrame(rows_bk)[cols_bk]
+            df_bk = pd.DataFrame(rows_bk).reindex(columns=cols_bk, fill_value="")
             df_bk.to_excel(w, sheet_name="BM-KCD", index=False, startrow=1)
             ws = w.sheets["BM-KCD"]
             for ci,col in enumerate(cols_bk): ws.write(1,ci,col,org)
@@ -1456,7 +1453,7 @@ def build_excel_output(results_dict, sel_month):
                     "Employee ID":r["eid"],"Employee Name":r["name"],
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD",
@@ -1470,7 +1467,7 @@ def build_excel_output(results_dict, sel_month):
                     "Eligible":r.get("bt_eligible","NO"),
                     "Gross\nIncentive":r.get("bt_inc",0),"Paid\nIncentive":0,"Balance\nIncentive":r.get("bt_inc",0),
                 })
-            df_btbk=pd.DataFrame(rows_btbk)[cols_btbk]
+            df_btbk=pd.DataFrame(rows_btbk).reindex(columns=cols_btbk, fill_value="")
             df_btbk.to_excel(w,sheet_name="BM-KCD Big Ticket",index=False,startrow=1)
             ws=w.sheets["BM-KCD Big Ticket"]
             for ci,col in enumerate(cols_btbk): ws.write(1,ci,col,org)
@@ -1490,7 +1487,7 @@ def build_excel_output(results_dict, sel_month):
                 rows_btck.append({
                     "Employee ID":r["eid"],"Employee Name":r["name"],
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD",
@@ -1504,7 +1501,7 @@ def build_excel_output(results_dict, sel_month):
                     "Eligible":r.get("bt_eligible","No"),
                     "Gross\nIncentive":r.get("bt_inc",0),"Paid\nIncentive":0,"Balance\nIncentive":r.get("bt_inc",0),
                 })
-            df_btck=pd.DataFrame(rows_btck)[cols_btck]
+            df_btck=pd.DataFrame(rows_btck).reindex(columns=cols_btck, fill_value="")
             df_btck.to_excel(w,sheet_name="CH-KCD Big Ticket",index=False,startrow=1)
             ws=w.sheets["CH-KCD Big Ticket"]
             for ci,col in enumerate(cols_btck): ws.write(1,ci,col,org)
