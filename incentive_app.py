@@ -1480,7 +1480,16 @@ def load_structure_dump(uploaded_file):
             elif "NAGPUR" in loc_up:
                 team = "Nagpur Pharma KCD"
             else:
-                team = "Regular KCD"
+                # Fallback: use Listing/Catalog client count ratio
+                _lc_raw  = _safe_float(row[list_c_col], 0) if list_c_col and str(row[list_c_col]).strip() not in ("nan","") else 0
+                _cat_raw = _safe_float(row[cat_c_col], 0) if cat_c_col and str(row[cat_c_col]).strip() not in ("nan","") else 0
+                _ca_raw  = _safe_float(row[client_a], 0) if client_a and str(row[client_a]).strip() not in ("nan","") else 0
+                if _ca_raw > 0 and _lc_raw / _ca_raw >= 0.60:
+                    team = "Listing (KCD)"
+                elif _ca_raw > 0 and _cat_raw / _ca_raw >= 0.60:
+                    team = "Catalog (KCD)"
+                else:
+                    team = "Regular KCD"
         else:
             team = "Regular KCD"
 
@@ -2286,7 +2295,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
         notes = (f"KCD SAM {'Listing' if is_listing else 'Catalog'} {vintage} | "
                  f"PCR%:{pcr_pct_val:.1f}% | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
-                 f"BTL:{btl_mult} | Incr:{incremental:.0f} | SS+:{ss_mult}")
+                 f"Incr:{incremental:.0f} | SS+:{ss_mult}")
         return total, notes
 
     # ── Type A: Regular / HVRI / ROI / Nagpur ────────────────────────────────
@@ -2627,6 +2636,7 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
     FNT-1 (Apr 1-16): ≥3 prods → ₹1500 + ₹750/txn above 3
     FNT-2 (Apr 20-30): ≥3 prods → ₹2500 + ₹1000/txn above 3
     Uses exact FNT counts when available (from FNT column in receipt).
+    Returns (total_spot, fnt1_spot, fnt2_spot).
     """
     _csd_spot_apr = S.get("csd_spot_apr", {})
     if is_rm:
@@ -2635,24 +2645,27 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
     else:
         fnt1_cfg = _csd_spot_apr.get("FNT1", {"min_prod": 3, "base": 1500, "per_txn": 750})
         fnt2_cfg = _csd_spot_apr.get("FNT2", {"min_prod": 3, "base": 2500, "per_txn": 1000})
-    spot = 0
+    fnt1_spot = 0
+    fnt2_spot = 0
     # For RM: threshold is per-team-member (count / team_size >= 2.5)
     # Sir's formula: AX = count/team_size, trigger if AX >= 2.5
     _ts = max(1, int(team_size)) if is_rm else 1
     _fnt1_thresh = fnt1_cfg.get("min_val", 2.5) * _ts if is_rm else fnt1_cfg["min_prod"]
     _fnt2_thresh = fnt2_cfg.get("min_val", 2.5) * _ts if is_rm else fnt2_cfg["min_prod"]
     if fnt1_count >= _fnt1_thresh:
-        spot += fnt1_cfg["base"] + int(fnt1_count - (_ts * fnt1_cfg.get("min_val", 2.5))) * fnt1_cfg["per_txn"]
+        fnt1_spot = fnt1_cfg["base"] + int(fnt1_count - (_ts * fnt1_cfg.get("min_val", 2.5))) * fnt1_cfg["per_txn"]
     if fnt2_count >= _fnt2_thresh:
         _fnt2_excess = int(fnt2_count - (_ts * fnt2_cfg.get("min_val", 2.5))) if is_rm else (fnt2_count - fnt2_cfg["min_prod"])
         _fnt2_raw = fnt2_cfg["base"] + _fnt2_excess * fnt2_cfg["per_txn"]
         # FNT-2 Monthly Base Incentive Multiplier: qualified (base>0)=100%, not=50%
         _fnt2_mult = 1.0 if monthly_base_inc > 0 else 0.5
-        spot += int(_fnt2_raw * _fnt2_mult)
+        fnt2_spot = int(_fnt2_raw * _fnt2_mult)
+    spot = fnt1_spot + fnt2_spot
     # Fallback: if no FNT split available, use total count with FNT-2 rates
     if spot == 0 and nr_upsell_count >= fnt2_cfg["min_prod"]:
         spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
-    return spot
+        fnt2_spot = spot  # attribute to FNT-2 as fallback
+    return spot, fnt1_spot, fnt2_spot
 
 
 def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
@@ -2676,7 +2689,7 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
       Listing 90+:       11000 / 11000
     """
     if not client_a or client_a <= 0 or monthly_pcdv <= 0:
-        return 0
+        return 0, 0, 0
     team_up = str(team).upper()
     loc_up  = str(location).upper()
     is_0_90    = vintage in ("0-30D", "31-90D")
@@ -2757,19 +2770,15 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
 
     raw_spot = int(fnt1_spot + fnt2_spot)
     if raw_spot == 0:
-        return 0
+        return 0, 0, 0
 
     # SS/LS Upsell Multiplier
     _threshold = _l2_mult_threshold if is_l2_sam else 2
     ss_mult = 1.25 if _mult_count >= _threshold else 0.5
-    return int(raw_spot * ss_mult)
-    """
-    KCD April spot: PCDV-based with FNT periods + SS/LS multiplier.
-    FNT-1 (Apr 1-16): base ₹2500 + ₹1000/1K PCDV after threshold
-    FNT-2 (Apr 20-30): base ₹4000 + ₹1000/1K (Listing: ₹1000/2K)
-    SS/LS Upsell Multiplier: ≥2 → 125%, <2 → 50% (applied to total spot)
-    Uses FNT-split PCDV when available; falls back to monthly_pcdv/2.
-    """
+    _total = int(raw_spot * ss_mult)
+    _fnt1_final = int(fnt1_spot * ss_mult)
+    _fnt2_final = int(fnt2_spot * ss_mult)
+    return _total, _fnt1_final, _fnt2_final
 
 
 
@@ -3258,9 +3267,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     dv_for_pcdv = net_deal_val if net_deal_val > 0 else net_dv   # prefer deal value
     # For CSD L2 (Rel Mgr): PCR denominator = Client-C (FSF V = U/L = net_coll/Client-C)
     # For all others: PCR denominator = Client-A
-    _client_c_val = float(sb.get("Client-C", 0) or 0)
-    _is_l2_csd    = (str(sb.get("Designation","")).upper().strip() == "L2"
-                     and "CSD" in str(sb.get("Vertical","")).upper())
+    # FIX: read Client-C from cfg_row (employee-specific), not sb (sidebar)
+    _client_c_val = float(cfg_row.get("Client-C", 0) or 0)
+    _is_l2_csd    = (str(designation).upper().strip() == "L2"
+                     and "CSD" in vertical)
     _pcr_denom    = _client_c_val if (_is_l2_csd and _client_c_val > 0) else client_cnt
     pcr_val  = (net_dv       / _pcr_denom) if _pcr_denom > 0 else 0
     # For CSD RM: PCDV also uses Client-C denominator (FSF formula Z = Net_DV / L = Client-C)
@@ -3331,6 +3341,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     prod_score_sps, insta_cnt_sps, _ = calc_productivity(rnl_prods, rnl_modes, "csd_sps")
 
     base_inc = pop_inc = spot_inc = 0
+    _fnt1_spot = _fnt2_spot = _im_star_spot = 0  # Spot bifurcation tracking
     _im_insta_spot        = 0   # KCD only
     _mcats_spot           = 0   # KCD only
     _im_star_pro_spot_kcd = 0   # KCD SAM only (28-30 Apr IM Star Pro+)
@@ -3390,7 +3401,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _cmr_plus1_31 = (100.0 if cmr_plus1_sent == 0
                                  else cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct)
                 base_inc, notes = calc_csd_rel_mgr(
-                    pcr=pcr_val, prod_raw=prod_score_receipt or 0,
+                    pcr=pcr_val, pcdv=pcdv, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
                     cmr_plus1_pct=_cmr_plus1_31,
                     ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
@@ -3409,6 +3420,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _cap_31 = S.get("new_joiner_cap", 20000)
                 if base_inc + pop_inc > _cap_31:
                     notes += f" | COMBINED_CAP:{_cap_31}"
+            # RM Spot applies regardless of vintage (scheme slide 3: "Applicable: RM" — no vintage restriction)
+            if _is_rel_mgr_31 and S.get("has_apr_spot"):
+                spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
+                    nr_upsell_count, S,
+                    fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
+                    is_rm=True, monthly_base_inc=base_inc,
+                    team_size=sb.get("Effective Team Size", 1))
+                _im_star_spot = int(im_star_pro_count * 1000)
+                spot_inc = int(spot_inc) + _im_star_spot
         else:
             # SPS -- no PoP; Insta = 0.5; productivity from receipt
             # all_cmr: ALL-renewals CMR% (sir's AW column) - used for MDC-1 multiplier
@@ -3451,7 +3471,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # Spot: config-driven -- April config has "CSD_Spot_Apr"; March has "CSD_Spot"
             # CSD RM has a SEPARATE spot scheme (slides 3+): min 2.5 prod, base 2000/3500
             if S.get("has_apr_spot"):
-                spot_inc = calc_spot_april_csd(
+                spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
                     nr_upsell_count, S,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
                     is_rm=(_desig_str == "L2"),
@@ -3459,7 +3479,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     team_size=sb.get("Effective Team Size", 1) if _desig_str == "L2" else 1)
                 # IM Star Pro+ New Sale Spot (28-30 Apr): Rel Mgr only, ₹1000/sale
                 if _desig_str == "L2":
-                    spot_inc = int(spot_inc) + int(im_star_pro_count * 1000)
+                    _im_star_spot = int(im_star_pro_count * 1000)
+                    spot_inc = int(spot_inc) + _im_star_spot
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
                 spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
@@ -3511,7 +3532,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         kcd_incremental = 0
 
         def _kcd_spot(is_l2_sam=False, monthly_base_inc=0):
-            """Config-driven spot: April if CSD_Spot_Apr present, else March, else legacy."""
+            """Config-driven spot: April if CSD_Spot_Apr present, else March, else legacy.
+            Returns (total, fnt1, fnt2)."""
             if S.get("has_apr_spot"):
                 return calc_spot_april_kcd(
                     pcdv_val, spot_client, team, location, vintage, S,
@@ -3521,8 +3543,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     im_var_count=im_var_count)
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
-                return calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
-            return 0
+                _s = calc_spot_march_kcd(_wdv, spot_client, team, location, vintage)
+                return _s, 0, 0
+            return 0, 0, 0
 
         if _is_sam:
             # Detect SAM-ILP vs regular SAM
@@ -3543,7 +3566,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     emp_rate_95=_ilp_rate, S=S)
                 kcd_base_only   = base_inc
                 kcd_incremental = 0
-                spot_inc        = _kcd_spot(monthly_base_inc=base_inc)
+                spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
             else:
                 # L2 SAM scheme -- lower per-txn rates, 0.65%/0.45% incremental
                 base_inc, notes = calc_kcd_sam(
@@ -3559,7 +3582,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 l1_count=int(sb.get("L1 Count", 4) or 4))
             kcd_base_only   = base_inc
             kcd_incremental = 0  # already inside calc_kcd_sam
-            spot_inc        = _kcd_spot(is_l2_sam=True, monthly_base_inc=base_inc)
+            spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(is_l2_sam=True, monthly_base_inc=base_inc)
         elif "LISTING" in team_up:
             # Use structure file Listing Clients; fall back to (total-1) if absent
             _list_c = listing_c if listing_c > 0 else max(1, client_cnt - 1)
@@ -3573,9 +3596,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or calc_spot_kcd(
-                pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
-                sb.get("spot_met", False), S)
+            spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
+            if spot_inc == 0:
+                spot_inc = calc_spot_kcd(pcdv, "Listing_270D" if vintage == "270D+" else "Listing_other",
+                    sb.get("spot_met", False), S)
         elif "CATALOG" in team_up:
             # Use structure file Catalog Clients; fall back to (total-1) if absent
             _cat_c  = catalog_c if catalog_c > 0 else max(1, client_cnt - 1)
@@ -3588,9 +3612,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or calc_spot_kcd(
-                pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
-                sb.get("spot_met", False), S)
+            spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
+            if spot_inc == 0:
+                spot_inc = calc_spot_kcd(pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
+                    sb.get("spot_met", False), S)
         elif "ROI" in team_up:
             # Force ROI slabs by appending a fake location marker
             kcd_base_only, notes = calc_kcd_roi(
@@ -3599,7 +3624,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
-            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
+            spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
+            if spot_inc == 0:
+                spot_inc = calc_spot_kcd(pcdv, "ROI_Exec", sb.get("spot_met", False), S)
         else:
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
@@ -3607,9 +3634,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
-            _legacy_spot = (calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
-                            if vintage in ("0-30D", "31-90D") else 0)
-            spot_inc = _kcd_spot(monthly_base_inc=base_inc) or _legacy_spot
+            spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
+            if spot_inc == 0:
+                _legacy_spot = (calc_spot_kcd(pcdv, "KCD_0_90D", sb.get("spot_met", False), S)
+                                if vintage in ("0-30D", "31-90D") else 0)
+                spot_inc = _legacy_spot
 
         # ── IM Star Pro+ New Sale Spot (28-30 Apr): SAM only ₹1000/sale ─────────
         # Products: IM Star Pro / IM Leader Pro / Preferred Leader Pro / Preferred Star Pro
@@ -3643,8 +3672,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # CSD breakdown: expose intermediate values to match sir's FSF column layout
     _is_csd_sps = "CSD" in vertical and "SPS" in team
-    _is_csd_rm  = "CSD" in vertical and any(k in str(designation).upper()
-                                            for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"])
+    _is_csd_rm  = "CSD" in vertical and (str(designation).upper().strip() == "L2" or
+                  any(k in str(designation).upper()
+                                            for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
     _is_csd     = "CSD" in vertical
 
     import re as _re
@@ -3656,39 +3686,45 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # SPS vintage flag: MDC1 multiplier only applies to 91D+ employees, not new joiners
     _is_sps_vintage = vintage not in ("0-30D",)
 
-    # Extract MDC1 multiplier from scheme notes string
-    # Pattern: "MDC1:1.2(60%)" or "MDC1:0.5(20%)"
-    _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
-    _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 0.0
-    # Fallback: derive from mdc1_cmr_pct -- only for SPS (91D+), not new joiners
-    if _mdc1_mult_val == 0.0 and _is_csd and _is_sps_vintage:
-        _mdc1_pct_raw = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
-        _mdc1_mult_val = (1.2 if _mdc1_pct_raw > 35 else
-                          1.0 if _mdc1_pct_raw >= 25 else 0.5)
-    elif not _is_sps_vintage:
-        _mdc1_mult_val = 0.0  # N/A for 0-30D new joiners
-
-    # For Rel Mgr, extract 2D CMR+1 multiplier
-    _cmrp1_m = _re.search(r'CMR[+]1:([0-9.]+)', notes)
-    _cmrp1_mult_val = float(_cmrp1_m.group(1)) if _cmrp1_m else _mdc1_mult_val
-
-    # Net Incentive = base before booster
-    _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
-
-    # Per-txn rate: extract directly from scheme notes "₹NNNN/txn"
-    # Only meaningful for SPS (91D+) - 0-30D uses fixed slab, not per-txn
-    _per_txn_m = _re.search(r'₹([0-9]+)/txn', notes)
-    if _per_txn_m:
-        _per_txn_rate = int(_per_txn_m.group(1))
-    elif _is_sps_vintage and _is_csd and _prod_score > 0 and _mdc1_mult_val > 0 and _boost_val > 0:
-        _per_txn_rate = round(_net_inc_before_boost / (_prod_score * _mdc1_mult_val), 0)
+    if _is_csd_rm:
+        # ── CSD Rel Mgr output values ──
+        # RM notes format: "CSD RM | ... | PerTxn:1750 | Prod:15.0 | Cross:130% | CMR+1:67% | ..."
+        # "Inc. Payout Mult" = per-txn slab rate (sir's col: Incentive Payout Multiplier)
+        _pt_m = _re.search(r'PerTxn:([0-9]+)', notes)
+        _inc_payout_mult = int(_pt_m.group(1)) if _pt_m else 0
+        # "Inc. Per Txn" = per_txn × productivity (sir's col: Inc. Per Transaction)
+        _per_txn_rate = int(_inc_payout_mult * _prod_score) if _prod_score > 0 else 0
+        # "Net Incentive" = base before booster
+        _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
+        _mdc1_mult_val = 0.0  # not applicable for RM display
     else:
-        _per_txn_rate = 0
+        # ── CSD L1 (Exec) output values ──
+        # Extract MDC1 multiplier from scheme notes string
+        # Pattern: "MDC1:1.2(60%)" or "MDC1:0.5(20%)"
+        _mdc1_m = _re.search(r'MDC1:([0-9.]+)', notes)
+        _mdc1_mult_val = float(_mdc1_m.group(1)) if _mdc1_m else 0.0
+        # Fallback: derive from mdc1_cmr_pct -- only for SPS (91D+), not new joiners
+        if _mdc1_mult_val == 0.0 and _is_csd and _is_sps_vintage:
+            _mdc1_pct_raw = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
+            _mdc1_mult_val = (1.2 if _mdc1_pct_raw > 35 else
+                              1.0 if _mdc1_pct_raw >= 25 else 0.5)
+        elif not _is_sps_vintage:
+            _mdc1_mult_val = 0.0  # N/A for 0-30D new joiners
 
-    # Incentive Payout Multiplier = MDC1 mult (only for SPS, blank for new joiners)
-    _inc_payout_mult = (_cmrp1_mult_val if _is_csd_rm
-                        else _mdc1_mult_val if _is_sps_vintage
-                        else 0.0)
+        # Net Incentive = base before booster
+        _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
+
+        # Per-txn rate: extract directly from scheme notes "₹NNNN/txn"
+        _per_txn_m = _re.search(r'₹([0-9]+)/txn', notes)
+        if _per_txn_m:
+            _per_txn_rate = int(_per_txn_m.group(1))
+        elif _is_sps_vintage and _is_csd and _prod_score > 0 and _mdc1_mult_val > 0 and _boost_val > 0:
+            _per_txn_rate = round(_net_inc_before_boost / (_prod_score * _mdc1_mult_val), 0)
+        else:
+            _per_txn_rate = 0
+
+        # Incentive Payout Multiplier = MDC1 mult (only for SPS, blank for new joiners)
+        _inc_payout_mult = (_mdc1_mult_val if _is_sps_vintage else 0.0)
 
     # Add IM Insta and MCATs to KCD spot total
     if "KCD" in vertical:
@@ -3715,7 +3751,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "CMR Slab":            cmr_note,
         "SS+ Sent":            cmr_data.get("ss_sent", 0),
         "SS+ Received":        cmr_data.get("ss_received", 0),
-        "MDC-1 CMR%":          round(all_cmr_pct, 1) if all_cmr_pct is not None else (round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else ""),
+        "MDC-1 CMR%":          round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else "",
         "PCR":                 round(pcr_val, 0),
         "PCDV":                round(pcdv_val, 0),
         "Slab Metric Used":    metric_label,   # which one drove the slab lookup
@@ -3771,8 +3807,26 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "KCD Delhi Loc Incentive":  "" if "KCD" in vertical else "",
         "KCD Rem":                  "" if "KCD" in vertical else "",
         # ── Common output columns ─────────────────────────────────
+        "Collection (₹)":      int(gross_collection) if gross_collection else 0,
+        "Refund (₹)":          int(total_ref) if total_ref else 0,
+        "Net Collection (₹)":  int(net_dv),  # net_dv = net_collection from get_transactions
+        "Deal Value (₹)":      int(gross_deal_val) if gross_deal_val else 0,
+        "Deal Loss (₹)":       int(deal_loss) if deal_loss else 0,
+        "Net Deal Value (₹)":  int(net_deal_val) if net_deal_val else 0,
+        "Client-A (aggregated)": int(client_cnt) if _is_l2_csd or (_desig_str == "L2" and "KCD" in vertical) else "",
+        "Client-C (aggregated)": int(_client_c_val) if (_is_l2_csd and _client_c_val > 0) else "",
+        "Catalog Client":      int(catalog_c) if catalog_c > 0 else "",
+        "Listing Client":      int(listing_c) if listing_c > 0 else "",
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
+        # ── Spot bifurcation ────────────────────────────────────────
+        "FNT-1 Prod Count":    fnt1_prod_count,
+        "FNT-1 Spot (₹)":     int(_fnt1_spot),
+        "FNT-2 Prod Count":    fnt2_prod_count,
+        "FNT-2 Spot (₹)":     int(_fnt2_spot),
+        "IM Star Pro+ Spot (₹)": int(_im_star_spot) if _im_star_spot > 0 else (int(_im_star_pro_spot_kcd) if _im_star_pro_spot_kcd > 0 else 0),
+        "IM Insta Spot (₹)":   int(_im_insta_spot),
+        "MCATs Spot (₹)":      int(_mcats_spot),
         "Spot Incentive (₹)":  int(spot_inc),
         "Total Incentive (₹)": int(min(base_inc + pop_inc, S.get("new_joiner_cap", 20000))
                                + spot_inc
@@ -4175,6 +4229,7 @@ if calc_btn:
             "Vintage":         s.get("Vintage", ""),
             "Team":            s.get("Team", ""),
             "Client Count":    s.get("Client Count", 1),
+            "Client-C":        s.get("Client-C", 0),
             "Joining Date":    s.get("Joining Date", None),
             "Listing Clients": s.get("Listing Clients", 0),
             "Catalog Clients": s.get("Catalog Clients", 0),
@@ -4240,6 +4295,8 @@ if calc_btn:
             "Designation":        s.get("Designation", ""),
         "Client-A (aggregated)": int(s.get("Client Count", 0) or 0),
         "Client-C (aggregated)": round(float(s.get("Client-C", 0) or 0), 0),
+        "Catalog Client":       int(float(s.get("Catalog Clients", 0) or 0)),
+        "Listing Client":       int(float(s.get("Listing Clients", 0) or 0)),
         "Effective Team Size":  int(s.get("Effective Team Size", 0) or 0),
         "L1 Count":             int(s.get("L1 Count", 0) or 0),
             "Calc Month":         sel_month if sel_month else "All",
@@ -4250,6 +4307,9 @@ if calc_btn:
             "Location":           s.get("Location", ""),
             "L2":                 s.get("L2 Name", ""),
             "L3":                 s.get("L3 Name", ""),
+            "L4":                 s.get("L4 Name", ""),
+            "L5":                 s.get("L5 Name", ""),
+            "Joining Date":       s.get("Joining Date", ""),
             # ── Financial data from receipt/refund (always correct) ───
             "Collection (₹)":     int(gross_collection),
             "Refund (₹)":         int(total_ref),
@@ -4376,60 +4436,88 @@ if calc_btn:
         ] if c in res.columns]
         write_sheet(res[fsf_cols], "FSF", header_fmt=hdr)
 
-        # ── Sheet 2: Exec-CSD -- CSD employees only ────────────────────────────
+        # ── Sheet 2: Exec-CSD -- CSD L1 employees only ────────────────────────────
         csd_res = res[res["Vertical"] == "CSD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
         csd_cols = [c for c in [
-            "Employee ID","Employee Name","Designation","Location","SPS Group","Vintage Bucket",
-            "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR","PCDV","Slab Metric Used",
-            "CMR Slab1 Target","CMR Slab2 Target","CMR% (auto)",
-            "Renewals Sent","Renewals Received",
-            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult","MDC1 Sent","MDC1 Recd",
-            "Productivity Score","Insta Txns (0.5×)","Receipt Txns",
+            # Hierarchy & identity (matches sir's first block)
+            "Employee ID","Employee Name","Location","Vintage Bucket","SPS Group",
+            "L2","L3","Client-A (aggregated)","Client-C (aggregated)",
+            "Joining Date","Days Since Joining",
+            # Financial
+            "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","Slab Metric Used",
+            # CMR
+            "CMR Slab1 Target","CMR Slab2 Target",
+            "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
+            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier",
+            "MDC1 Sent","MDC1 Recd",
+            # Base incentive (SPS 90+D section)
+            "Inc. Payout Mult","Productivity Score","Insta Txns (0.5×)","Receipt Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
-            "Base Incentive (₹)","PoP Incentive (₹)","Spot Incentive (₹)",
+            # Summary
+            "Base Incentive (₹)","PoP Incentive (₹)",
+            # Spot bifurcation (matches sir's FNT-1 / FNT-2 sections)
+            "FNT-1 Prod Count","FNT-1 Spot (₹)",
+            "FNT-2 Prod Count","FNT-2 Spot (₹)",
+            "Spot Incentive (₹)",
             "Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not csd_res.empty:
             # Exec-CSD: L1 ONLY (L3/L4/L5/L6 managers excluded)
             csd_l1 = csd_res[csd_res["Designation"].astype(str).str.strip() == "L1"] if "Designation" in csd_res.columns else csd_res
             write_sheet(csd_l1[csd_cols], "Exec-CSD", header_fmt=grn)
-            # L2 on separate Rel Mgr-CSD sheet (mirrors FSF KCD-SAM structure)
+            # L2 on separate Rel Mgr-CSD sheet
             csd_l2 = csd_res[csd_res["Designation"].astype(str) == "L2"] if "Designation" in csd_res.columns else csd_res.iloc[0:0]
             rm_cols = [c for c in [
-                "Employee ID","Employee Name","Designation","Location","SPS Group","Vintage Bucket",
-                "Client-A (aggregated)","Client-C (aggregated)","Effective Team Size","L1 Count",
-                "Collection (₹)","Refund (₹)","Net Collection (₹)","Net Deal Value (₹)",
-                "PCR","PCDV",
-                "CMR Slab1 Target","CMR Slab2 Target","CMR% (auto)",
-                "Renewals Sent","Renewals Received",
+                # Hierarchy & identity (matches sir's Rel Mgr-CSD first block)
+                "Employee ID","Employee Name","Location","SPS Group","Vintage Bucket",
+                "L3","Client-A (aggregated)","Client-C (aggregated)",
+                "Effective Team Size","L1 Count","Joining Date",
+                # Financial
+                "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR",
+                "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV",
+                # CMR (matches sir's CMR / CMR+1 / MDC-1 CMR sections)
+                "CMR Slab1 Target","CMR Slab2 Target",
+                "Renewals Sent","Renewals Received","CMR% (auto)",
                 "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","MDC1 Sent","MDC1 Recd",
-                "Productivity Score","Receipt Txns",
+                # Base incentive
+                "Inc. Payout Mult","Productivity Score","Receipt Txns",
                 "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
-                "Base Incentive (₹)","Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+                "Base Incentive (₹)",
+                # Spot bifurcation (matches sir's FNT-1 / FNT-2 / 28-30 sections)
+                "FNT-1 Prod Count","FNT-1 Spot (₹)",
+                "FNT-2 Prod Count","FNT-2 Spot (₹)",
+                "IM Star Pro+ Spot (₹)",
+                "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
             ] if c in res.columns]
             if not csd_l2.empty:
                 write_sheet(csd_l2[rm_cols], "Rel Mgr-CSD", header_fmt=grn)
 
-        # ── Sheet 3: KCD-Exec -- KCD employees only ────────────────────────────
+        # ── Sheet 3: KCD-Exec -- KCD L1 employees only ────────────────────────────
         kcd_res = res[res["Vertical"] == "KCD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
         kcd_cols = [c for c in [
+            # Hierarchy & identity
             "Employee ID","Employee Name","Location","Team","Vintage",
-            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCR","PCDV","Slab Metric Used",
-            "Collection Target (₹)",
-            "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
-            "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
+            "Client-A (aggregated)","Client-C (aggregated)","Catalog Client","Listing Client",
+            "Joining Date","Days Since Joining",
+            # Financial
+            "Collection (₹)","Refund (₹)","Net Collection (₹)","KCD Collection Target (₹)",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","PCR","Slab Metric Used",
+            "KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
+            # Weekly DV
             "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+            # CMR / SS+
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
             "Renewals Sent","Renewals Received",
             "Productivity Score","Receipt Txns",
-            "KCD Incentive Multiplier",
-            "KCD Base Incentive (₹)","KCD Incremental (₹)",
+            # Base incentive (matches sir's "Base Incentive 90+D" section)
+            "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
-            "KCD Paid Incentive (₹)","KCD Balance Incentive (₹)",
             "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
-            "Incentive Multiplier","Incentive","SS+Ren Multiplier",
-            "Total Incentive (KCD)","Gross Incentive (KCD)",
+            # Spot bifurcation (matches sir's FNT-1 / FNT-2 sections)
+            "FNT-1 Spot (₹)","FNT-2 Spot (₹)",
+            "IM Insta Spot (₹)","MCATs Spot (₹)",
             "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
         ] if c in res.columns]
         if not kcd_res.empty:
@@ -4439,14 +4527,30 @@ if calc_btn:
             # L2 SAM on separate KCD-SAM sheet
             kcd_l2 = kcd_res[kcd_res["Designation"].astype(str) == "L2"] if "Designation" in kcd_res.columns else kcd_res.iloc[0:0]
             sam_cols = [c for c in [
-                "Employee ID","Employee Name","Designation","Location","Team","Vintage",
-                "Net Deal Value (₹)","Net Collection (₹)","PCR","PCDV",
-                "Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR%",
-                "CMR% (auto)","SS+ CMR% (auto)","KCD SS+Ren Mult",
+                # Hierarchy & identity (matches sir's KCD-SAM first block)
+                "Employee ID","Employee Name","Location","Team","Vintage",
+                "Client-A (aggregated)","Client-C (aggregated)","Catalog Client","Listing Client",
+                "L1 Count","Effective Team Size","Joining Date",
+                # Financial
+                "Collection (₹)","Refund (₹)","Net Collection (₹)","KCD Collection Target (₹)",
+                "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
+                "KCD Highest Collection (₹)","KCD PCR Target","PCDV","PCR","KCD PCR%",
+                # Weekly
+                "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+                # CMR / SS+
+                "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
+                "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
                 "Renewals Sent","Renewals Received",
-                "Productivity Score","Receipt Txns","KCD BTL",
-                "KCD Base Incentive (₹)","KCD Incremental (₹)",
-                "Base Incentive (₹)","Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+                "Productivity Score","Receipt Txns",
+                # Base incentive
+                "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
+                "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
+                "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
+                # Spot bifurcation (matches sir's FNT-1 / FNT-2 / 28-30 sections)
+                "FNT-1 Spot (₹)","FNT-2 Spot (₹)",
+                "IM Insta Spot (₹)","MCATs Spot (₹)",
+                "IM Star Pro+ Spot (₹)",
+                "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
             ] if c in res.columns]
             if not kcd_l2.empty:
                 write_sheet(kcd_l2[sam_cols], "KCD-SAM", header_fmt=org)
