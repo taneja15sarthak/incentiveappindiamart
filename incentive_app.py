@@ -975,10 +975,14 @@ def make_march_slab_config_excel():
 # ═══════════════════════════════════════════════════════════════
 
 def find_col(df, candidates):
-    """Return the first column name from candidates that exists in df, or None."""
-    for c in candidates:
-        if c in df.columns:
-            return c
+    """Return the first column name from candidates that exists in df, or None.
+    Normalises column names: lower-case, collapse whitespace/newlines to single space."""
+    def norm(s): return ' '.join(str(s).lower().split())
+    normalised = {norm(c): c for c in df.columns}
+    for cand in candidates:
+        nc = norm(cand)
+        if nc in normalised:
+            return normalised[nc]
     return None
 
 
@@ -1376,8 +1380,8 @@ def load_structure_dump(uploaded_file):
     client_c    = find_col(df, ["Client-C", "Client C", "ClientC",
                                 "Calculated Client", "Total Client"])
     # Listing/Catalog client counts (for KCD)
-    list_c_col  = find_col(df, ["Listing Client", "ListingClient"])
-    cat_c_col   = find_col(df, ["Catalog Client", "CatalogClient"])
+    list_c_col  = find_col(df, ["Listing Client", "Listing\nClient", "ListingClient", "Listing Clients"])
+    cat_c_col   = find_col(df, ["Catalog Client", "Catalog\nClient", "CatalogClient", "Catalog Clients"])
     l2_col      = find_col(df, ["L2 Name", "L2Name", "L2",
                                 "level2_name", "emp_manager_name"])
     l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
@@ -2661,8 +2665,10 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
         _fnt2_mult = 1.0 if monthly_base_inc > 0 else 0.5
         fnt2_spot = int(_fnt2_raw * _fnt2_mult)
     spot = fnt1_spot + fnt2_spot
-    # Fallback: if no FNT split available, use total count with FNT-2 rates
-    if spot == 0 and nr_upsell_count >= fnt2_cfg["min_prod"]:
+    # Fallback: ONLY when no FNT-period data exists at all (both counts zero/not supplied)
+    # If we have actual FNT split counts, don't use the total count fallback
+    _has_fnt_data = (fnt1_count > 0 or fnt2_count > 0)
+    if spot == 0 and not _has_fnt_data and nr_upsell_count >= fnt2_cfg["min_prod"]:
         spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
         fnt2_spot = spot  # attribute to FNT-2 as fallback
     return spot, fnt1_spot, fnt2_spot
@@ -3294,18 +3300,38 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             pcr_target_v = 30000.0
         elif vintage == "270D+":
             pcr_target_v = 32000.0
-        # KCD Highest Collection per April FSF:
-        # KCD-Exec (L1): AE = M * 21000
-        # KCD-SAM  (L2): AA = L * 17000
+        # KCD Highest Collection per April FSF — team-specific multiplier:
+        # Regular/Listing/Catalog L1: 21K  |  ROI L1: 14K  |  HVRI L1: 17K  |  Nagpur L1: 32K
+        # SAM (L2): 17K for all team types
         _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
-        _hc_mult = 17000 if _is_kcd_sam else 21000
-        # Highest Collection = Client-A × multiplier (fixed per April FSF, no pcr_target_v override)
+        _t_up_hc = str(team).upper()
+        if _is_kcd_sam:
+            _hc_mult = 17000
+        elif "ROI" in _t_up_hc:
+            _hc_mult = 14000
+        elif any(h in _t_up_hc for h in ["HVRI","HYDERABAD","VASHI","RAIPUR","INDORE"]):
+            _hc_mult = 17000
+        elif "NAGPUR" in _t_up_hc or "PHARMA" in _t_up_hc:
+            _hc_mult = 32000
+        else:
+            _hc_mult = 21000
+        # Highest Collection = Client-A × multiplier (fixed per April FSF)
         highest_coll = client_cnt * _hc_mult
 
-    # Derive Collection Target from standard PCR Target if still 0
-    if collection_target == 0 and pcr_target_v > 0 and "KCD" in vertical:
+    # Derive Collection Target if still 0
+    if collection_target == 0 and "KCD" in vertical:
         _t_up2 = str(team).upper()
-        if not any(k in _t_up2 for k in ("LISTING","CATALOG","ROI")):
+        _lc2 = float(cfg_row.get("Listing Clients", 0) or 0)
+        _cc2 = float(cfg_row.get("Catalog Clients", 0) or 0)
+        if "LISTING" in _t_up2 or "CATALOG" in _t_up2:
+            # Base×7K + Listing/Catalog×22K (270D+/91D); Base×5K + LC×15K (0-90D)
+            _is_new_kcd = vintage in ("0-30D","31-90D")
+            _base_rate    = 5000 if _is_new_kcd else 7000
+            _listing_rate = 15000 if _is_new_kcd else 22000
+            _lc_all = _lc2 + _cc2
+            _base_c = max(0, client_cnt - _lc_all)
+            collection_target = _base_c * _base_rate + _lc_all * _listing_rate
+        elif pcr_target_v > 0 and not any(k in _t_up2 for k in ("ROI",)):
             collection_target = pcr_target_v * client_cnt
 
     # PCR% = PCR / PCR_Target (achievement % of per-client collection target)
@@ -3426,7 +3452,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     nr_upsell_count, S,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
                     is_rm=True, monthly_base_inc=base_inc,
-                    team_size=sb.get("Effective Team Size", 1))
+                    team_size=cfg_row.get("Effective Team Size", 1))
                 _im_star_spot = int(im_star_pro_count * 1000)
                 spot_inc = int(spot_inc) + _im_star_spot
         else:
@@ -3476,7 +3502,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
                     is_rm=(_desig_str == "L2"),
                     monthly_base_inc=base_inc,
-                    team_size=sb.get("Effective Team Size", 1) if _desig_str == "L2" else 1)
+                    team_size=cfg_row.get("Effective Team Size", 1) if _desig_str == "L2" else 1)
                 # IM Star Pro+ New Sale Spot (28-30 Apr): Rel Mgr only, ₹1000/sale
                 if _desig_str == "L2":
                     _im_star_spot = int(im_star_pro_count * 1000)
@@ -4224,17 +4250,18 @@ if calc_btn:
 
         # Build cfg_row and emp_row from structure map
         cfg_row = {
-            "Vertical":        s.get("Vertical", ""),
-            "Location":        s.get("Location", ""),
-            "Vintage":         s.get("Vintage", ""),
-            "Team":            s.get("Team", ""),
-            "Client Count":    s.get("Client Count", 1),
-            "Client-C":        s.get("Client-C", 0),
-            "Joining Date":    s.get("Joining Date", None),
-            "Listing Clients": s.get("Listing Clients", 0),
-            "Catalog Clients": s.get("Catalog Clients", 0),
-            "PCR Target":      s.get("PCR Target", 0),
-            "Collection Target": s.get("Collection Target", 0),
+            "Vertical":           s.get("Vertical", ""),
+            "Location":           s.get("Location", ""),
+            "Vintage":            s.get("Vintage", ""),
+            "Team":               s.get("Team", ""),
+            "Client Count":       s.get("Client Count", 1),
+            "Client-C":           s.get("Client-C", 0),
+            "Joining Date":       s.get("Joining Date", None),
+            "Listing Clients":    s.get("Listing Clients", 0),
+            "Catalog Clients":    s.get("Catalog Clients", 0),
+            "PCR Target":         s.get("PCR Target", 0),
+            "Collection Target":  s.get("Collection Target", 0),
+            "Effective Team Size": int(s.get("Effective Team Size", 1) or 1),
         }
         emp_row = {
             "Vertical":  s.get("Vertical", ""),
