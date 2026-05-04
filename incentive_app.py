@@ -658,7 +658,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
             incr = round(max(0, pcdv_total - tgt_pcdv) * client_a * S["csd_incr_rate"],0) if grid>0 else 0
             base_incentive = grid + incr
-            cmr_tgt = S["csd_cmr_tgt"]
+            cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"])
             mult_val = _cmr_mult(cmr_pct, cmr_tgt, S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
             # Spot
@@ -681,7 +681,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
             incr = round(max(0, pcdv_total - tgt_pcdv) * client_a * S["csd_incr_rate"],0) if grid>0 else 0
             base_incentive = grid + incr
-            mult_val = _cmr_mult(cmr_pct, S["csd_cmr_tgt"], S["csd_cmr_mult"])
+            mult_val = _cmr_mult(cmr_pct, emp.get("CMR_Target_Pct", S["csd_cmr_tgt"]), S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
             # Team productivity per L1 for spot
             sp2_6_prod  = spot_txn.get("2_6",0)  / hc
@@ -819,26 +819,36 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 # BIG TICKET (from deal-level data in receipt)
 # ──────────────────────────────────────────────────────────
 def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False):
+    empty = {"3L+":0,"2L+":0,"1L+":0,"10L+":0,"8L+":0,"5L+":0}
     ec  = find_col(rec,["Sales Exec ID","EMP ID"])
     mgc = find_col(rec,["Old Sales HOD-3 ID","Manager Id"])
-    dvc = find_col(rec,["Deal Val (WT)","Deal Value","Deal Val"])
     upc = find_col(rec,["Unique","Upsell"])
-    if not ec or not dvc: return 0,{"3L+":0,"2L+":0,"1L+":0,"10L+":0,"8L+":0,"5L+":0}
+    if not ec: return 0, empty
 
     if is_l2 and mgc:
         mask = rec[mgc].astype(str).str.split(".").str[0].str.strip()==eid_str
     else:
         mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
-    r = rec[mask]
+    r = rec[mask].copy()
+    if len(r) == 0: return 0, empty
 
-    # Only IM Star/Leader type deals qualify for big ticket (NR upsell with unique product)
-    if upc:
+    # Only IM Star/Leader type deals for big ticket
+    if upc and upc in r.columns:
         im_mask = r[upc].fillna("").astype(str).str.upper().apply(
             lambda x: any(k in x for k in IM_STAR_LEADER_KW))
         r = r[im_mask]
+    if len(r) == 0: return 0, empty
 
-    deal_vals_lakh = pd.to_numeric(r[dvc],errors="coerce").fillna(0) / 100000
-    counts = {"3L+":0,"2L+":0,"1L+":0,"10L+":0,"8L+":0,"5L+":0}
+    # Re-locate deal value column on the filtered subset to avoid KeyError
+    dvc = find_col(r, ["Deal Val (WT)","Deal Value","Deal Val","WT AMT","WT_AMT"])
+    if not dvc: return 0, empty
+
+    try:
+        deal_vals_lakh = pd.to_numeric(r[dvc], errors="coerce").fillna(0) / 100000
+    except (KeyError, TypeError):
+        return 0, empty
+
+    counts = dict(empty)
     total_bt = 0
     for dv in deal_vals_lakh:
         for s in slabs:
@@ -849,6 +859,100 @@ def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False):
                 break
     return total_bt, counts
 
+
+
+# ──────────────────────────────────────────────────────────
+# MILESTONE TARGET FILE LOADER
+# ──────────────────────────────────────────────────────────
+def load_ta_targets(f):
+    """
+    Load milestone targets from the uploaded target file.
+    Expected sheets:
+      L4       : L4 Name, Target (collection target in Cr)
+      L3       : Employee Name, Target (collection target in Cr)
+      L1 Renewal: IIL (Emp ID), Employee Name, TGT CMR 100% (decimal)
+      L2 Target : IIL (Emp ID), Employee Name, % TGT (decimal)
+    Returns dict with keys: l1_cmr, l2_cmr, l3_coll, l4_coll
+      l1_cmr  : {emp_id_str: cmr_target_pct (0-100)}
+      l2_cmr  : {emp_id_str: cmr_target_pct (0-100)}
+      l3_coll : {emp_name_lower: coll_target_rs}
+      l4_coll : {l4_name_lower:  coll_target_rs}
+    """
+    empty = {"l1_cmr":{}, "l2_cmr":{}, "l3_coll":{}, "l4_coll":{}}
+    if f is None: return empty
+    try:
+        xl = pd.ExcelFile(f)
+        norms = {s.strip().upper(): s for s in xl.sheet_names}
+
+        # L1 Renewal CMR targets
+        l1_cmr = {}
+        sh1 = norms.get("L1 RENEWAL") or norms.get("L1RENEWAL") or norms.get("L1")
+        if sh1:
+            df1 = pd.read_excel(f, sheet_name=sh1)
+            df1.columns = [str(c).strip() for c in df1.columns]
+            iil_c = find_col(df1, ["IIL","Employee ID","Emp ID","EmpID"])
+            tgt_c = find_col(df1, ["TGT CMR 100%","CMR Target","Target CMR","TGT CMR","CMR%","Target"])
+            if iil_c and tgt_c:
+                for _, row in df1.iterrows():
+                    eid = str(row[iil_c]).strip().split(".")[0]
+                    if not eid or eid.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    # Convert decimal (0.4) → percentage (40.0)
+                    l1_cmr[eid] = round(val * 100 if val <= 1.0 else val, 4)
+
+        # L2 CMR targets
+        l2_cmr = {}
+        sh2 = norms.get("L2 TARGET") or norms.get("L2TARGET") or norms.get("L2")
+        if sh2:
+            df2 = pd.read_excel(f, sheet_name=sh2)
+            df2.columns = [str(c).strip() for c in df2.columns]
+            iil_c = find_col(df2, ["IIL","Employee ID","Emp ID"])
+            tgt_c = find_col(df2, ["% TGT","TGT","Target","CMR Target","CMR%"])
+            if iil_c and tgt_c:
+                for _, row in df2.iterrows():
+                    eid = str(row[iil_c]).strip().split(".")[0]
+                    if not eid or eid.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    l2_cmr[eid] = round(val * 100 if val <= 1.0 else val, 4)
+
+        # L3 collection targets (in Crores → convert to Rs.)
+        l3_coll = {}
+        sh3 = norms.get("L3")
+        if sh3:
+            df3 = pd.read_excel(f, sheet_name=sh3)
+            df3.columns = [str(c).strip() for c in df3.columns]
+            name_c = find_col(df3, ["Employee Name","Name","L3 Name","L3Name"])
+            tgt_c  = find_col(df3, ["Target","Collection Target","Coll Target"])
+            if name_c and tgt_c:
+                for _, row in df3.iterrows():
+                    nm = str(row[name_c]).strip()
+                    if not nm or nm.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    # If value looks like Crores (< 10000), convert to Rs.
+                    rs = val * 1e7 if val < 10000 else val
+                    l3_coll[nm.lower()] = rs
+
+        # L4 collection targets
+        l4_coll = {}
+        sh4 = norms.get("L4")
+        if sh4:
+            df4 = pd.read_excel(f, sheet_name=sh4)
+            df4.columns = [str(c).strip() for c in df4.columns]
+            name_c = find_col(df4, ["L4 Name","Name","Employee Name"])
+            tgt_c  = find_col(df4, ["Target","Collection Target","Coll Target"])
+            if name_c and tgt_c:
+                for _, row in df4.iterrows():
+                    nm = str(row[name_c]).strip()
+                    if not nm or nm.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    rs = val * 1e7 if val < 10000 else val
+                    l4_coll[nm.lower()] = rs
+
+        return {"l1_cmr": l1_cmr, "l2_cmr": l2_cmr,
+                "l3_coll": l3_coll, "l4_coll": l4_coll}
+    except Exception as e:
+        st.warning(f"⚠️ Could not load target file: {e}")
+        return empty
 
 # ──────────────────────────────────────────────────────────
 # OUTPUT SHEET BUILDER
@@ -983,7 +1087,7 @@ def build_excel_output(results_dict, sel_month):
                     "Target":r.get("target_pcdv",0),"Incr PCDV Amt":r.get("incr_amt",0),
                     "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "CMR Multiplier":r.get("cmr_mult",0),"Renewal Target":round(r.get("csd_cmr_tgt",40)/100,2),
+                    "CMR Multiplier":r.get("cmr_mult",0),"Renewal Target":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
                     "CMR+1 Sent":0,"CMR+1 Recd":0,"CMR+1 Ren %":0,
                     "Incentive Grid":r.get("incentive_grid",0),"Incentive":r.get("base_inc",0),
                     "Gross Incentive":r.get("gross_inc",0),"Paid Incentive":0,
@@ -1031,7 +1135,7 @@ def build_excel_output(results_dict, sel_month):
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "Renewal Target":round(r.get("csd_cmr_tgt",40)/100,2),
+                    "Renewal Target":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
                     "CMR+1 Sent":0,"CMR+1 Recd":0,"CMR+1 Ren %":0,
                     "Incr PCDV Amt":r.get("incr_amt",0),"Incentive Grid":r.get("incentive_grid",0),
                     "Incentive":r.get("base_inc",0),"Gross Incentive":r.get("gross_inc",0),
@@ -1426,6 +1530,8 @@ with st.sidebar:
     renewal_f   = st.file_uploader("3. Renewal file",           type=["xlsx","xlsb"])
     struct_f    = st.file_uploader("4. Employee Structure (FSF_TA sheet)", type=["xlsx","xlsb"])
     slab_f      = st.file_uploader("5. TA Slab Config (optional)", type=["xlsx"])
+    target_f    = st.file_uploader("6. Milestone Target file (optional)", type=["xlsx","xlsb"],
+                                    help="Sheets: L4, L3, L1 Renewal, L2 Target — provides per-employee CMR targets and collection targets")
     st.divider()
     st.header("⚙️ Settings")
     st.caption("Slab targets are configurable via the Slab Config file.")
@@ -1443,7 +1549,18 @@ cfg_raw = load_ta_slab_config(slab_f)
 S = parse_slabs(cfg_raw)
 if slab_f:
     st.success(f"✅ TA Slab Config loaded from: {slab_f.name}")
+
+# Load milestone targets
+ta_targets = load_ta_targets(target_f if "target_f" in dir() else None)
+if "target_f" in dir() and target_f:
+    n1 = len(ta_targets["l1_cmr"]); n2 = len(ta_targets["l2_cmr"])
+    n3 = len(ta_targets["l3_coll"]); n4 = len(ta_targets["l4_coll"])
+    st.success(f"✅ Target file loaded — L1: {n1} CMR targets | L2: {n2} CMR targets | "
+               f"L3: {n3} collection targets | L4: {n4} collection targets")
 else:
+    st.info("📋 No target file uploaded — CMR targets use slab config default (40%), "
+            "collection targets will show 0 (BM/CH achievement will be 0%).", icon="ℹ️")
+if not slab_f:
     st.info("📋 Using built-in default slabs. Download and upload a slab config to customise.", icon="ℹ️")
 
 st.subheader("Step 1 – Upload Employee Structure")
@@ -1528,6 +1645,32 @@ if calc_btn:
         else:
             cmr = calc_cmr(rnl, eid)
 
+        # Per-employee targets from target file
+        # L1 CMR renewal target
+        if desig == "L1":
+            per_emp_cmr_tgt = ta_targets["l1_cmr"].get(eid, S["csd_cmr_tgt"])
+        elif desig == "L2":
+            per_emp_cmr_tgt = ta_targets["l2_cmr"].get(eid, S["csd_cmr_tgt"])
+        else:
+            per_emp_cmr_tgt = S["csd_cmr_tgt"]
+
+        # L3/L4 collection targets (looked up by name)
+        emp_l3_name = emp.get("L3 Name","").lower()
+        emp_l4_name = emp.get("L4 Name","").lower()
+        emp_own_name = emp.get("Name","").lower()
+        if desig == "L3":
+            per_emp_coll_tgt = ta_targets["l3_coll"].get(emp_own_name, 0)
+        elif desig == "L4":
+            per_emp_coll_tgt = ta_targets["l4_coll"].get(emp_own_name, 0)
+        else:
+            per_emp_coll_tgt = 0
+
+        # Inject into emp so calc_employee can use them
+        emp = dict(emp)
+        emp["CMR_Target_Pct"] = per_emp_cmr_tgt
+        if per_emp_coll_tgt > 0:
+            emp["Coll_Target"] = per_emp_coll_tgt
+
         # Receipt data
         data = get_emp_data(rec, ref, eid, is_l2=is_l2, emp_name=name, client_a=ca)
 
@@ -1537,6 +1680,7 @@ if calc_btn:
         row = {
             "eid":eid, "name":name, "scheme":inc.get("scheme",""),
             "Vertical":vert,"Designation":desig,"Vintage":emp["Vintage"],
+            "cmr_target_pct": per_emp_cmr_tgt,
             "Ageing":ageing,"Joining Date":emp.get("Joining Date",""),
             "Client-A":emp.get("Client-A",0),"Client-C":emp.get("Client-C",0),
             "Client-A_Agg":emp.get("Client-A_Agg",emp.get("Client-A",0)),
