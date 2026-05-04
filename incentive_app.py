@@ -1374,14 +1374,19 @@ def load_structure_dump(uploaded_file):
     # -- this is the key column for SPS booster detection
     vintage_bkt = find_col(df, ["Vintage Bucket", "VintageBucket",
                                 "L2 Promoted 0-90D", "Remarks", "bucket", "emp_level"])
-    remarks_col = find_col(df, ["Group", "Team"])
+    remarks_col = find_col(df, ["Rem", "Remarks", "Group", "Team", "rem", "group", "team",
+                                "KCD Group", "Employee Group", "Product Group"])
     client_a    = find_col(df, ["Client-A", "Client A", "ClientA",
                                 "Actual Client", "Total Client"])
     client_c    = find_col(df, ["Client-C", "Client C", "ClientC",
                                 "Calculated Client", "Total Client"])
     # Listing/Catalog client counts (for KCD)
-    list_c_col  = find_col(df, ["Listing Client", "Listing\nClient", "ListingClient", "Listing Clients"])
-    cat_c_col   = find_col(df, ["Catalog Client", "Catalog\nClient", "CatalogClient", "Catalog Clients"])
+    list_c_col  = find_col(df, ["Listing Client", "Listing\nClient", "ListingClient",
+                                "Listing Clients", "listing", "Listing", "L_Client",
+                                "Pref Star Client", "Preferred Star Client"])
+    cat_c_col   = find_col(df, ["Catalog Client", "Catalog\nClient", "CatalogClient",
+                                "Catalog Clients", "catalog", "Catalog", "C_Client",
+                                "Base Client", "BaseClient"])
     l2_col      = find_col(df, ["L2 Name", "L2Name", "L2",
                                 "level2_name", "emp_manager_name"])
     l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
@@ -3383,16 +3388,43 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _is_l2_csd = _desig_str == "L2"
 
     if "CSD" in vertical:
-        # FSF hardcodes 55%/65% for new joiners (0-30D/31-90D), 
-        # and individual targets for 91D+ (from CMR targets file or sidebar)
-        if vintage in ("0-30D", "31-90D"):
-            _s1, _s2 = 55.0, 65.0   # hardcoded in FSF formula
+        # 0-30D new joiners: no individual CMR targets yet → default 55%/65%
+        # 31-90D and 91D+: individual targets from CMR file (via sb)
+        if vintage == "0-30D":
+            _s1, _s2 = 55.0, 65.0   # FSF default for brand-new employees
         else:
-            _s1 = float(sb.get("csd_slab1_target", 65))
-            _s2 = float(sb.get("csd_slab2_target", 70))
+            _s1 = float(sb.get("csd_slab1_target", 55))
+            _s2 = float(sb.get("csd_slab2_target", 65))
         cmr_slab, cmr_note = get_cmr_slab(cmr_pct, rnl_sent, _s1, _s2)
 
-        if vintage == "0-30D":
+        # ── Relationship Manager check: applies to ALL vintages ─────────────────
+        # An RM who joined <30 days ago is still an RM, not a new-joiner exec.
+        # Designation=="L2" is the canonical flag set by load_structure_dump.
+        _is_rm_any_vintage = (str(designation).upper().strip() == "L2" or
+                              any(k in str(designation).upper()
+                                  for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
+        if "CSD" in vertical and _is_rm_any_vintage:
+            emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else 0.0
+            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
+            is_sps_employee = "SPS" in str(vintage_bucket).upper() or "SPS" in str(team).upper()
+            _cmr_plus1 = (100.0 if cmr_plus1_sent == 0
+                          else cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct)
+            base_inc, notes = calc_csd_rel_mgr(
+                pcr=pcr_val, pcdv=pcdv, prod_raw=prod_score_receipt or 0,
+                cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
+                cmr_plus1_pct=_cmr_plus1,
+                ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
+                is_sps=is_sps_employee, S=S)
+            pop_inc = 0
+            if S.get("has_apr_spot"):
+                spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
+                    nr_upsell_count, S,
+                    fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
+                    is_rm=True, monthly_base_inc=base_inc,
+                    team_size=cfg_row.get("Effective Team Size", 1))
+                _im_star_spot = int(im_star_pro_count * 1000)
+                spot_inc = int(spot_inc) + _im_star_spot
+        elif vintage == "0-30D":
             # 0-30D: fixed slab base + PoP, combined cap = 20,000
             base_inc, pop_inc, notes = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
@@ -3829,9 +3861,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "SS+Ren Multiplier":        _kcd_ss_mult       if "KCD" in vertical else "",
         "Total Incentive (KCD)":    int(_kcd_base)     if "KCD" in vertical else "",
         "Gross Incentive (KCD)":    int(base_inc)      if "KCD" in vertical else "",
-        "KCD Group":                "" if "KCD" in vertical else "",
-        "KCD Delhi Loc Incentive":  "" if "KCD" in vertical else "",
-        "KCD Rem":                  "" if "KCD" in vertical else "",
+        "KCD Group":                str(team) if "KCD" in vertical else "",
+        "KCD Delhi Loc Incentive":  ("Yes" if ("DELHI" in str(location).upper() and "KCD" in vertical) else "No") if "KCD" in vertical else "",
+        "KCD Rem":                  ("Listing" if "LISTING" in str(team).upper() else
+                                     "Catalog" if "CATALOG" in str(team).upper() else
+                                     "ROI" if "ROI" in str(team).upper() else
+                                     "Pharma" if "NAGPUR" in str(team).upper() else "-") if "KCD" in vertical else "",
         # ── Common output columns ─────────────────────────────────
         "Collection (₹)":      int(gross_collection) if gross_collection else 0,
         "Refund (₹)":          int(total_ref) if total_ref else 0,
@@ -4225,6 +4260,25 @@ if calc_btn:
                     s["Listing Clients"] = _kt["listing"]
                 if _kt.get("catalog",0) > 0:
                     s["Catalog Clients"] = _kt["catalog"]
+
+        # ── KCD team re-routing after client counts are resolved ─────────────
+        # Listing/Catalog columns may not exist in structure file by name.
+        # Re-route based on client ratios if current team is Regular/ROI/default.
+        if s.get("Vertical","") == "KCD":
+            _cur_team = str(s.get("Team","")).upper()
+            _is_default_team = not any(k in _cur_team for k in ["LISTING","CATALOG","HVRI","NAGPUR","ROI"])
+            if _is_default_team:
+                _lc_rt  = float(s.get("Listing Clients", 0) or 0)
+                _cat_rt = float(s.get("Catalog Clients", 0) or 0)
+                _ca_rt  = float(s.get("Client Count", 1) or 1)
+                _lcat_total = _lc_rt + _cat_rt
+                if _ca_rt > 0 and _lc_rt / _ca_rt >= 0.55:
+                    s = dict(s); s["Team"] = "Listing (KCD)"
+                elif _ca_rt > 0 and _cat_rt / _ca_rt >= 0.55:
+                    s = dict(s); s["Team"] = "Catalog (KCD)"
+                elif _ca_rt > 0 and _lcat_total / _ca_rt >= 0.70:
+                    # Mixed Listing+Catalog majority → Listing (more common)
+                    s = dict(s); s["Team"] = "Listing (KCD)" if _lc_rt >= _cat_rt else "Catalog (KCD)"
 
         emp_sb = {**sb,
                   "csd_slab1_target": emp_targets["slab1"],
