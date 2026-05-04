@@ -290,7 +290,13 @@ def load_ta_structure(f):
             except: pass
         if ageing == 0:
             jd = _to_date(row[jc]) if jc else None
-            if jd: ageing = (CALC_DATE - jd).days
+            if jd:
+                try:
+                    import datetime as _dt
+                    jd_date = jd.date() if isinstance(jd, _dt.datetime) else jd
+                    ageing = (CALC_DATE - jd_date).days
+                except Exception:
+                    ageing = 0
 
         def sv(c): return str(row[c]).strip() if c else ""
         def nv(c): return _sf(row[c]) if c else 0.0
