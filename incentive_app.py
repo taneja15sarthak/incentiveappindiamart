@@ -263,6 +263,13 @@ def load_ta_structure(f):
     l4i = gc(["L4 ID","L4ID"]); l4n = gc(["L4 Name","L4Name"])
     l5i = gc(["L5 ID","L5ID"]); l5n = gc(["L5 Name","L5Name"])
     l6i = gc(["L6 ID","L6  ID","L6ID"]); l6n = gc(["L6 Name","L6Name"])
+    # Product portfolio columns (from structure for Nursery sheet)
+    mdc_c  = gc(["MDC"]); star_c = gc(["Star"]); ldr_c  = gc(["Leader"])
+    wsm_c  = gc(["WS-M"]); wsa_c  = gc(["WS-A"]); ive_c  = gc(["IVE"])
+    # Renewal product columns (MDC.1 etc in structure)
+    mdc1_c = gc(["MDC.1"]); star1_c= gc(["Star.1"]); ldr1_c = gc(["Leader.1"])
+    wsm1_c = gc(["WS-M.1"]); wsa1_c = gc(["WS-A.1"]); ive1_c = gc(["IVE.1"])
+    email_c= gc(["Email Id"]); loc_c  = gc(["Location","New Location/ROI Location"])
 
     result = {}
     for _, row in df.iterrows():
@@ -271,6 +278,8 @@ def load_ta_structure(f):
         if not eid or eid.lower() in ("nan","none",""): continue
 
         vraw = str(row[vc]).strip().upper() if vc else ""
+        # Only include Tele Annual employees - must have TELE in vertical name
+        if "TELE" not in vraw: continue
         if "CSD" in vraw:   vert = "CSD"
         elif "KCD" in vraw: vert = "KCD"
         else: continue
@@ -308,7 +317,12 @@ def load_ta_structure(f):
             "Ageing":   ageing,   "Joining Date":_to_date(row[jc]) if jc else None,
             "Client-A": nv(cac),  "Client-C":    nv(ccc),
             "HC":       nv(hcc),  "Group":       sv(grc),
-            "Remarks":  sv(rmc),
+            "Remarks":  sv(rmc),  "Email Id":    sv(email_c),
+            "Location": sv(loc_c),
+            "MDC":  nv(mdc_c),"Star": nv(star_c),"Leader":nv(ldr_c),
+            "WS-M": nv(wsm_c),"WS-A": nv(wsa_c), "IVE":  nv(ive_c),
+            "MDC.1":nv(mdc1_c),"Star.1":nv(star1_c),"Leader.1":nv(ldr1_c),
+            "WS-M.1":nv(wsm1_c),"WS-A.1":nv(wsa1_c),"IVE.1":nv(ive1_c),
             "L2 ID":id_sv(l2i),"L2 Name":sv(l2n),
             "L3 ID":id_sv(l3i),"L3 Name":sv(l3n),
             "L4 ID":id_sv(l4i),"L4 Name":sv(l4n),
@@ -440,6 +454,8 @@ def calc_cmr_by_name(rnl, l2_col, name):
 # RECEIPT EXTRACTION
 # ──────────────────────────────────────────────────────────
 def clean_receipt(df):
+    """Keep only CLEARED rows with no B/C flag. Do NOT filter by Vertical -
+    TA employees are identified by EMP ID matching against struct_map."""
     df = df.copy()
     bc = find_col(df,["B/C"])
     if bc: df = df[df[bc].isna()|(df[bc].astype(str).str.strip()=="")]
@@ -447,10 +463,6 @@ def clean_receipt(df):
     if sc:
         cl = df[df[sc].astype(str).str.upper().str.strip()=="CLEARED"]
         if len(cl)>0: df=cl
-    vc = find_col(df,["Vertical","Sales Functional Area"])
-    if vc:
-        ta_mask = df[vc].astype(str).str.upper().str.contains("TELE",na=False)
-        if ta_mask.sum()>0: df = df[ta_mask]
     return df
 
 
@@ -1004,11 +1016,17 @@ def build_excel_output(results_dict, sel_month):
         nursery_rows = results_dict.get("nursery",[])
         if nursery_rows:
             cols_n = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
-                      "L4 ID","L4 Name","L5 ID","L5 Name","L6 ID","L6 Name",
+                      "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                       "Location","Client-A","Client-C",
-                      "Joining Date/Movement Date","IIL Vertical Name","CSD to KCD/New Joining <=90D",
-                      "60D/90D","Productivity","Eligible","CMR Sent","CMR Recd","Ren %",
-                      "Renewal\nMultiplier","Incentive","Gross Incentive","Paid\nIncentive","Balance\nIncentive"]
+                      "MDC","Star","Leader","WS-M","WS-A","IVE",
+                      "MDC.1","Star.1","Leader.1","WS-M.1","WS-A.1","IVE.1",
+                      "Email Id","Joining Date",
+                      "IIL Vertical Name",
+                      "CSD to KCD\nMovement/New Joining\n<=90D",
+                      "60D/90D","Productvity","Eligible",
+                      "Sent","Recd","Ren %",
+                      "Renewal\nMultiplier","Incentive","Gross Incentive",
+                      "Paid\nIncentive","Balance\nIncentive"]
             rows_n = []
             for r in nursery_rows:
                 rows_n.append({
@@ -1017,16 +1035,21 @@ def build_excel_output(results_dict, sel_month):
                     "L3 ID":r.get("L3 ID",""),"L3 Name":r.get("L3 Name",""),
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
-                    "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
+                    "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Location":r.get("Location",""),"Client-A":r.get("Client-A",0),
                     "Client-C":r.get("Client-C",0),
-                    "Joining Date/Movement Date":r.get("Joining Date",""),
+                    "MDC":r.get("MDC",0),"Star":r.get("Star",0),"Leader":r.get("Leader",0),
+                    "WS-M":r.get("WS-M",0),"WS-A":r.get("WS-A",0),"IVE":r.get("IVE",0),
+                    "MDC.1":r.get("MDC.1",0),"Star.1":r.get("Star.1",0),"Leader.1":r.get("Leader.1",0),
+                    "WS-M.1":r.get("WS-M.1",0),"WS-A.1":r.get("WS-A.1",0),"IVE.1":r.get("IVE.1",0),
+                    "Email Id":r.get("Email Id",""),
+                    "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual "+r.get("Vertical","CSD"),
-                    "CSD to KCD/New Joining <=90D":r.get("Designation",""),
-                    "60D/90D":r.get("vintage_label",""),
-                    "Productivity":r.get("productivity",0),
+                    "CSD to KCD\nMovement/New Joining\n<=90D":"L1",
+                    "60D/90D":r.get("vintage_label","60-90"),
+                    "Productvity":r.get("productivity",0),
                     "Eligible":r.get("eligible","No"),
-                    "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "Renewal\nMultiplier":r.get("renewal_mult",0),
                     "Incentive":r.get("base_inc",0),
@@ -1061,15 +1084,15 @@ def build_excel_output(results_dict, sel_month):
                       ]
             # Use unique column names for the repeated spot cols
             cols_out = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
-                        "L4 ID","L4 Name","L5 ID","L5 Name","L6 ID","L6 Name",
-                        "Joining Date","IIL Vertical Name","Aeging","Vintage",
+                        "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
+                        "Joining Date/Movement Date","IIL Vertical Name","Aeging","Vintage",
                         "Client-A","Client-C","Deal Value","PCDV","Target","Incr PCDV Amt",
-                        "CMR Sent","CMR Recd","Ren %","CMR Multiplier","Renewal Target",
-                        "CMR+1 Sent","CMR+1 Recd","CMR+1 Ren %",
-                        "Incentive Grid","Incentive","Gross Incentive","Paid Incentive","Balance Incentive",
-                        "Sp2_6 Txn","Sp2_6 Gross","Sp2_6 Paid","Sp2_6 Bal",
-                        "Sp7_12 Txn","Sp7_12 Gross","Sp7_12 Paid","Sp7_12 Bal",
-                        "Sp20_30 Txn","Sp20_30 Gross","Sp20_30 Paid","Sp20_30 Bal"]
+                        "Sent","Recd","Ren %","Multiplier","Renewal\nTarget",
+                        "Sent.1","Recd.1","Ren %.1",
+                        "Incentive Grid","Incentive","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",
+                        "Transaction","Gross\nIncentive.1","Paid\nIncentive.1","Balance\nIncentive.1",
+                        "Transaction.1","Gross\nIncentive.2","Paid\nIncentive.2","Balance\nIncentive.2",
+                        "Transaction.2","Gross\nIncentive.3","Paid\nIncentive.3","Balance\nIncentive.3"]
             rows_e = []
             for r in csd_l1:
                 rows_e.append({
@@ -1079,22 +1102,22 @@ def build_excel_output(results_dict, sel_month):
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
                     "L6 ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
-                    "Joining Date":str(r.get("Joining Date",""))[:10],
+                    "Joining Date/Movement Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
                     "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Target":r.get("target_pcdv",0),"Incr PCDV Amt":r.get("incr_amt",0),
-                    "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "CMR Multiplier":r.get("cmr_mult",0),"Renewal Target":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
-                    "CMR+1 Sent":0,"CMR+1 Recd":0,"CMR+1 Ren %":0,
+                    "Multiplier":r.get("cmr_mult",0),"Renewal\nTarget":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
+                    "Sent.1":0,"Recd.1":0,"Ren %.1":0,
                     "Incentive Grid":r.get("incentive_grid",0),"Incentive":r.get("base_inc",0),
-                    "Gross Incentive":r.get("gross_inc",0),"Paid Incentive":0,
-                    "Balance Incentive":r.get("gross_inc",0),
-                    "Sp2_6 Txn":r.get("sp2_6_txn",0),"Sp2_6 Gross":r.get("sp2_6_gross",0),"Sp2_6 Paid":0,"Sp2_6 Bal":r.get("sp2_6_gross",0),
-                    "Sp7_12 Txn":r.get("sp7_12_txn",0),"Sp7_12 Gross":r.get("sp7_12_gross",0),"Sp7_12 Paid":0,"Sp7_12 Bal":r.get("sp7_12_gross",0),
-                    "Sp20_30 Txn":r.get("sp20_30_txn",0),"Sp20_30 Gross":r.get("sp20_30_gross",0),"Sp20_30 Paid":0,"Sp20_30 Bal":r.get("sp20_30_gross",0),
+                    "Gross\nIncentive":r.get("gross_inc",0),"Paid\nIncentive":0,
+                    "Balance\nIncentive":r.get("gross_inc",0),
+                    "Transaction":r.get("sp2_6_txn",0),"Gross\nIncentive.1":r.get("sp2_6_gross",0),"Paid\nIncentive.1":0,"Balance\nIncentive.1":r.get("sp2_6_gross",0),
+                    "Transaction.1":r.get("sp7_12_txn",0),"Gross\nIncentive.2":r.get("sp7_12_gross",0),"Paid\nIncentive.2":0,"Balance\nIncentive.2":r.get("sp7_12_gross",0),
+                    "Transaction.2":r.get("sp20_30_txn",0),"Gross\nIncentive.3":r.get("sp20_30_gross",0),"Paid\nIncentive.3":0,"Balance\nIncentive.3":r.get("sp20_30_gross",0),
                 })
             df_e = pd.DataFrame(rows_e)[cols_out]
             df_e.to_excel(w, sheet_name="Exec-CSD", index=False, startrow=2)
@@ -1110,7 +1133,7 @@ def build_excel_output(results_dict, sel_month):
         csd_l2 = results_dict.get("rm_csd",[])
         if csd_l2:
             cols_rm = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
-                       "L4 ID","L4 Name","L5 ID","L5 Name","L6 ID","L6 Name",
+                       "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                        "Joining Date","IIL Vertical Name","Group","<90 Vintage Exec","HC",
                        "Client-A","Client-C","Deal Value","PCDV",
                        "CMR Sent","CMR Recd","Ren %","Renewal Target",
@@ -1160,7 +1183,7 @@ def build_excel_output(results_dict, sel_month):
         bm_csd_rows = results_dict.get("bm_csd",[])
         if bm_csd_rows:
             cols_bm = ["Employee ID","Employee Name","L3 ID","L3 Name","L4 ID","L4 Name",
-                       "L5 ID","L5 Name","L6 ID","L6 Name","HC","L2",
+                       "L5 ID","L5 Name","L6  ID","L6 Name","HC","L2",
                        "Joining Date","IIL Vertical Name","Location",
                        "Client-A","Client-C","Deal Value","PCDV","Collection","Refund","Net Collection",
                        "Target","Ach\n%","CMR\nSent","CMR\nReceived","Ren %",
@@ -1199,7 +1222,7 @@ def build_excel_output(results_dict, sel_month):
         bt_bm_csd_rows = results_dict.get("bt_bm_csd",[])
         if bt_bm_csd_rows:
             cols_bt = ["Employee ID","Employee Name","L4 ID","L4 Name","L5 ID","L5 Name",
-                       "L6 ID","L6 Name","Location","Joining Date","IIL Vertical Name",
+                       "L6  ID","L6 Name","Location","Joining Date","IIL Vertical Name",
                        "Net Collection","AOP","%",
                        "CMR\nSent","CMR\nRecd","Ren %",
                        "3L+","2L+","1L+","Total","Eligible",
@@ -1233,7 +1256,7 @@ def build_excel_output(results_dict, sel_month):
         # ── CH-CSD Big Ticket ──────────────────────────────
         bt_ch_csd_rows = results_dict.get("bt_ch_csd",[])
         if bt_ch_csd_rows:
-            cols_btch = ["Employee ID","Employee Name","L5 ID","L5 Name","L6 ID","L6 Name",
+            cols_btch = ["Employee ID","Employee Name","L5 ID","L5 Name","L6  ID","L6 Name",
                          "Location","Joining Date","IIL Vertical Name",
                          "Client-A","Client-C","Target Of 1L+ Deal",
                          "Net Collection","AOP","AOP%",
@@ -1271,7 +1294,7 @@ def build_excel_output(results_dict, sel_month):
         kcd_l1 = results_dict.get("exec_kcd",[])
         if kcd_l1:
             cols_kl1 = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
-                        "L4 ID","L4 Name","L5 ID","L5 Name","L6 ID","L6 Name",
+                        "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                         "Joining Date","IIL Vertical Name","Group","Aeging","Vintage",
                         "Target","Client-A","Client-C","Deal Value","PCDV",
                         "CMR Sent","CMR Recd","Ren %","SS+CMR Sent","SS+CMR Recd","SS+CMR Ren %",
@@ -1326,7 +1349,7 @@ def build_excel_output(results_dict, sel_month):
         kcd_l2 = results_dict.get("rm_kcd",[])
         if kcd_l2:
             cols_kl2 = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
-                        "L4 ID","L4 Name","L5 ID","L5 Name","L6 ID","L6 Name",
+                        "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                         "Joining Date","IIL Vertical Name","Group","Aeging","HC",
                         "Client-A","Client-C","Deal Value","PCDV",
                         "CMR Sent","CMR Recd","Ren %","SS+ CMR Sent","SS+ CMR Recd","SS+ CMR Ren %",
@@ -1383,7 +1406,7 @@ def build_excel_output(results_dict, sel_month):
         bm_kcd_rows = results_dict.get("bm_kcd",[])
         if bm_kcd_rows:
             cols_bk = ["Employee ID","Employee Name","L4 ID","L4 Name","L5 ID","L5 Name",
-                       "L6 ID","L6 Name","Joining Date","IIL Vertical Name","Group",
+                       "L6  ID","L6 Name","Joining Date","IIL Vertical Name","Group",
                        "Aeging","HC","Client-A","Client-C",
                        "Collection","Refund","Net Collection","Deal Value","Target","Ach\n%",
                        "Incentive","CMR\nSent","CMR\nRecd","Ren %","SS+ CMR\nSent","SS+ CMR\nRecd","SS+ CMR\nRen %",
@@ -1422,7 +1445,7 @@ def build_excel_output(results_dict, sel_month):
         bt_bm_kcd_rows = results_dict.get("bt_bm_kcd",[])
         if bt_bm_kcd_rows:
             cols_btbk=["Employee ID","Employee Name","L4 ID","L4 Name","L5 ID","L5 Name",
-                       "L6 ID","L6 Name","Location","Joining Date","IIL Vertical Name",
+                       "L6  ID","L6 Name","Location","Joining Date","IIL Vertical Name",
                        "Net Collection","AOP","%","CMR\nSent","CMR\nRecd","Ren %",
                        "Total","10L+","8L+","5L+","3L+","Eligible",
                        "Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
@@ -1456,7 +1479,7 @@ def build_excel_output(results_dict, sel_month):
         # ── CH-KCD Big Ticket ──────────────────────────────
         bt_ch_kcd_rows = results_dict.get("bt_ch_kcd",[])
         if bt_ch_kcd_rows:
-            cols_btck=["Employee ID","Employee Name","L5 ID","L5 Name","L6 ID","L6 Name",
+            cols_btck=["Employee ID","Employee Name","L5 ID","L5 Name","L6  ID","L6 Name",
                        "Location","Joining Date","IIL Vertical Name",
                        "Net Collection","AOP","%","CMR\nSent","CMR\nRecd","Ren %",
                        "Total Deal","10L+","8L+","5L+","3L+","Eligible",
