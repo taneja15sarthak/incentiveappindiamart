@@ -249,7 +249,7 @@ def load_ta_structure(f):
     nc  = gc(["Employee Name"])
     dc  = gc(["Designation"])
     vc  = gc(["IIL Vertical Name","Vertical","IIL Vertical"])
-    jc  = gc(["Move/Join Date","Joining Date","DOJ"])
+    jc  = gc(["Joining Date","DOJ"])  # Move/Join Date is NaT for TA employees
     fgc = gc(["Final Group","FinalGroup","Vintage"])
     vbc = gc(["Vintage Bucket"])
     cac = gc(["Client-A","Client A"])
@@ -466,17 +466,36 @@ def clean_receipt(df):
     return df
 
 
-def get_emp_data(rec, ref, eid_str, is_l2=False, emp_name="", client_a=1):
+def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=False):
+    """
+    Designation-aware receipt matching:
+      L1 → Sales Exec ID / EMP ID
+      L2 → Manager Id  (Rel'n Mgr - direct manager of L1)
+      L3 → HOD -2 Id   (BM level)
+      L4 → HOD - 1 Id  (CH level)
+      L5+ → HOD Id     (Regional)
+    """
     ec  = find_col(rec,["Sales Exec ID","EMP ID","Emp ID"])
     dvc = find_col(rec,["Deal Val (WT)","Deal Value","Deal Val"])
     wtc = find_col(rec,["WT AMT","WT_AMT"])
     dtc = find_col(rec,["Entry Date","Clear Date","Receipt Date"])
     upc = find_col(rec,["Unique","Upsell","UNIQUE"])
-    mgc = find_col(rec,["Old Sales HOD-3 ID","Manager Id"])
     if not ec: return {}
 
-    if is_l2 and mgc:
-        mask = rec[mgc].astype(str).str.split(".").str[0].str.strip()==eid_str
+    # Pick hierarchy column based on designation
+    if desig == "L2" or is_l2:
+        hc = find_col(rec, ["Manager Id","Old Sales HOD-3 ID"])
+    elif desig == "L3":
+        hc = find_col(rec, ["HOD -2 Id","HOD-2 Id","Old Sales HOD-2 ID"])
+    elif desig == "L4":
+        hc = find_col(rec, ["HOD - 1 Id","HOD-1 Id"])
+    elif desig in ("L5","L6"):
+        hc = find_col(rec, ["HOD Id","HOD ID"])
+    else:
+        hc = None
+
+    if hc:
+        mask = rec[hc].astype(str).str.split(".").str[0].str.strip()==eid_str
     else:
         mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
     r = rec[mask]
@@ -489,12 +508,8 @@ def get_emp_data(rec, ref, eid_str, is_l2=False, emp_name="", client_a=1):
     refund = 0.0
     if rfc:
         wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
-        if is_l2:
-            l2nc = find_col(ref,["L2 NAME","L2 Name"])
-            if l2nc and emp_name:
-                rr = ref[ref[l2nc].astype(str).str.strip()==emp_name.strip()]
-            else:
-                rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
+        if desig in ("L2","L3","L4","L5","L6") or is_l2:
+            rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
         else:
             rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
         if wac: refund = _sf(rr[wac].fillna(0).sum())
@@ -1019,7 +1034,7 @@ def build_excel_output(results_dict, sel_month):
                       "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                       "Location","Client-A","Client-C",
                       "MDC","Star","Leader","WS-M","WS-A","IVE",
-                      "MDC.1","Star.1","Leader.1","WS-M.1","WS-A.1","IVE.1",
+                      "MDC","Star","Leader","WS-M","WS-A","IVE",
                       "Email Id","Joining Date",
                       "IIL Vertical Name",
                       "CSD to KCD\nMovement/New Joining\n<=90D",
@@ -1040,8 +1055,8 @@ def build_excel_output(results_dict, sel_month):
                     "Client-C":r.get("Client-C",0),
                     "MDC":r.get("MDC",0),"Star":r.get("Star",0),"Leader":r.get("Leader",0),
                     "WS-M":r.get("WS-M",0),"WS-A":r.get("WS-A",0),"IVE":r.get("IVE",0),
-                    "MDC.1":r.get("MDC.1",0),"Star.1":r.get("Star.1",0),"Leader.1":r.get("Leader.1",0),
-                    "WS-M.1":r.get("WS-M.1",0),"WS-A.1":r.get("WS-A.1",0),"IVE.1":r.get("IVE.1",0),
+                    "MDC":r.get("MDC.1",0),"Star":r.get("Star.1",0),"Leader":r.get("Leader.1",0),
+                    "WS-M":r.get("WS-M.1",0),"WS-A":r.get("WS-A.1",0),"IVE":r.get("IVE.1",0),
                     "Email Id":r.get("Email Id",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual "+r.get("Vertical","CSD"),
@@ -1072,7 +1087,7 @@ def build_excel_output(results_dict, sel_month):
                       "Joining Date/Movement Date","IIL Vertical Name",
                       "Aeging","Vintage","Client-A","Client-C",
                       "Deal Value","PCDV","Target","Incremental\nPCDV\nAmt.",
-                      "CMR\nSent","CMR\nRecd","Ren %","Multiplier","Renewal\nTarget",
+                      "Sent","Recd","Ren %","Multiplier","Renewal\nTarget",
                       "CMR+1\nSent","CMR+1\nRecd","CMR+1\nRen %",
                       "Incentive Grid","Incentive","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",
                       "Transaction","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",  # Spot 2-6
@@ -1183,7 +1198,7 @@ def build_excel_output(results_dict, sel_month):
                        "L5 ID","L5 Name","L6  ID","L6 Name","HC","L2",
                        "Joining Date","IIL Vertical Name","Location",
                        "Client-A","Client-C","Deal Value","PCDV","Collection","Refund","Net Collection",
-                       "Target","Ach\n%","CMR\nSent","CMR\nReceived","Ren %",
+                       "Target","Ach\n%","Sent","CMR\nReceived","Ren %",
                        "Payout\nEligibile","Incentive","Total Incentive","Gross Incentive",
                        "Paid\nIncentive","Balance\nIncentive"]
             rows_bm = []
@@ -1202,7 +1217,7 @@ def build_excel_output(results_dict, sel_month):
                     "Collection":round(r.get("gross_coll",0),2),"Refund":round(r.get("refund",0),2),
                     "Net Collection":round(r.get("net_coll",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
-                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "Payout\nEligibile":r.get("payout_eligible","No"),
                     "Incentive":r.get("base_inc",0),"Total Incentive":r.get("total_inc",0),
@@ -1221,7 +1236,7 @@ def build_excel_output(results_dict, sel_month):
             cols_bt = ["Employee ID","Employee Name","L4 ID","L4 Name","L5 ID","L5 Name",
                        "L6  ID","L6 Name","Location","Joining Date","IIL Vertical Name",
                        "Net Collection","AOP","%",
-                       "CMR\nSent","CMR\nRecd","Ren %",
+                       "Sent","Recd","Ren %",
                        "3L+","2L+","1L+","Total","Eligible",
                        "Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
             rows_bt = []
@@ -1238,7 +1253,7 @@ def build_excel_output(results_dict, sel_month):
                     "IIL Vertical Name":"Tele Annual CSD",
                     "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
-                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nRecd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "3L+":cnt.get("3L+",0),"2L+":cnt.get("2L+",0),"1L+":cnt.get("1L+",0),
                     "Total":total_deals,"Eligible":r.get("bt_eligible","NO"),
@@ -1255,9 +1270,9 @@ def build_excel_output(results_dict, sel_month):
         if bt_ch_csd_rows:
             cols_btch = ["Employee ID","Employee Name","L5 ID","L5 Name","L6  ID","L6 Name",
                          "Location","Joining Date","IIL Vertical Name",
-                         "Client-A","Client-C","Target Of 1L+ Deal",
+                         "Client-A","Client-C","Target\nOf 1L+ Deal",
                          "Net Collection","AOP","AOP%",
-                         "CMR\nSent","CMR\nRecd","Ren %",
+                         "Sent","Recd","Ren %",
                          "3L+","2L+","1L+","Total","Eligible",
                          "Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
             rows_btch = []
@@ -1272,10 +1287,10 @@ def build_excel_output(results_dict, sel_month):
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
                     "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
-                    "Target Of 1L+ Deal":r.get("deal_target",0),
+                    "Target\nOf 1L+ Deal":r.get("deal_target",0),
                     "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"AOP%":round(r.get("aop_pct",0),2),
-                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nRecd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "3L+":cnt.get("3L+",0),"2L+":cnt.get("2L+",0),"1L+":cnt.get("1L+",0),
                     "Total":total_deals,"Eligible":r.get("bt_eligible","No"),
@@ -1294,11 +1309,11 @@ def build_excel_output(results_dict, sel_month):
                         "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                         "Joining Date","IIL Vertical Name","Group","Aeging","Vintage",
                         "Target","Client-A","Client-C","Deal Value","PCDV",
-                        "CMR Sent","CMR Recd","Ren %","SS+CMR Sent","SS+CMR Recd","SS+CMR Ren %",
-                        "SS+ Multiplier","Target PCDV%","Incentive","Multiplier Payout","Final Incentive",
-                        "Gross Incentive","Paid Incentive","Balance Incentive",
-                        "Spot1 Deal Value","Spot1 PCDV","Spot1 Incentive","IM Star/Leader New Sale","Spot1 Gross","Spot1 Paid","Spot1 Bal",
-                        "Spot2 Deal Value","Spot2 PCDV","Spot2 Incentive","IM Star/Leader New Sale2","Spot2 Gross","Spot2 Paid","Spot2 Bal"]
+                        "Sent","Recd","Ren %","Sent.1","Recd.1","Ren %.1",
+                        "SS+\nMultiplier","Target\nPCDV%","Incentive","Mulitipler\nPayout","Final\nIncentive",
+                        "Gross Incentive","Paid\nIncentive","Balance\nIncentive",
+                        "Deal Value.1","PCDV.1","Incentive.1","IM Star/Leader\nNew Sale","Gross Incentive.1","Paid\nIncentive.1","Balance\nIncentive.1",
+                        "Deal Value.2","PCDV.2","Incentive.2","IM Star/Leader\nNew Sale.1","Gross Incentive.2","Paid\nIncentive.2","Balance\nIncentive.2"]
             rows_kl1=[]
             for r in kcd_l1:
                 tgt = r.get("target_pcdv",0)
@@ -1316,23 +1331,23 @@ def build_excel_output(results_dict, sel_month):
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
                     "Target":tgt,"Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(pcdv,2),
-                    "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "SS+CMR Sent":r.get("ss_sent",0),"SS+CMR Recd":r.get("ss_recd",0),
-                    "SS+CMR Ren %":round(r.get("ss_pct",0)/100,4),
-                    "SS+ Multiplier":r.get("ss_mult",1),"Target PCDV%":tgt_pct,
+                    "Sent.1":r.get("ss_sent",0),"Recd.1":r.get("ss_recd",0),
+                    "Ren %.1":round(r.get("ss_pct",0)/100,4),
+                    "SS+\nMultiplier":r.get("ss_mult",1),"Target\nPCDV%":tgt_pct,
                     "Incentive":r.get("incentive_grid",0),
-                    "Multiplier Payout":round(r.get("incentive_grid",0)*r.get("ss_mult",1),0),
-                    "Final Incentive":r.get("gross_inc",0),
-                    "Gross Incentive":r.get("gross_inc",0),"Paid Incentive":0,"Balance Incentive":r.get("gross_inc",0),
-                    "Spot1 Deal Value":round(r.get("fnt_dv",{}).get("1_12",0),2),
-                    "Spot1 PCDV":round(r.get("pcdv_1_12",0),2),
-                    "Spot1 Incentive":r.get("spot1_inc",0),"IM Star/Leader New Sale":r.get("im_count",0),
-                    "Spot1 Gross":r.get("spot1_gross",0),"Spot1 Paid":0,"Spot1 Bal":r.get("spot1_gross",0),
-                    "Spot2 Deal Value":round(r.get("fnt_dv",{}).get("20_30",0),2),
-                    "Spot2 PCDV":round(r.get("pcdv_20_30",0),2),
-                    "Spot2 Incentive":r.get("spot2_inc",0),"IM Star/Leader New Sale2":r.get("im_pro_count",0),
-                    "Spot2 Gross":r.get("spot2_gross",0),"Spot2 Paid":0,"Spot2 Bal":r.get("spot2_gross",0),
+                    "Mulitipler\nPayout":round(r.get("incentive_grid",0)*r.get("ss_mult",1),0),
+                    "Final\nIncentive":r.get("gross_inc",0),
+                    "Gross Incentive":r.get("gross_inc",0),"Paid\nIncentive":0,"Balance\nIncentive":r.get("gross_inc",0),
+                    "Deal Value.1":round(r.get("fnt_dv",{}).get("1_12",0),2),
+                    "PCDV.1":round(r.get("pcdv_1_12",0),2),
+                    "Incentive.1":r.get("spot1_inc",0),"IM Star/Leader\nNew Sale":r.get("im_count",0),
+                    "Gross Incentive.1":r.get("spot1_gross",0),"Paid\nIncentive.1":0,"Balance\nIncentive.1":r.get("spot1_gross",0),
+                    "Deal Value.2":round(r.get("fnt_dv",{}).get("20_30",0),2),
+                    "PCDV.2":round(r.get("pcdv_20_30",0),2),
+                    "Incentive.2":r.get("spot2_inc",0),"IM Star/Leader\nNew Sale.1":r.get("im_pro_count",0),
+                    "Gross Incentive.2":r.get("spot2_gross",0),"Paid\nIncentive.2":0,"Balance\nIncentive.2":r.get("spot2_gross",0),
                 })
             df_kl1 = pd.DataFrame(rows_kl1).reindex(columns=cols_kl1, fill_value="")
             df_kl1.to_excel(w, sheet_name="Exec-KCD", index=False, startrow=2)
@@ -1349,12 +1364,12 @@ def build_excel_output(results_dict, sel_month):
                         "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                         "Joining Date","IIL Vertical Name","Group","Aeging","HC",
                         "Client-A","Client-C","Deal Value","PCDV",
-                        "CMR Sent","CMR Recd","Ren %","SS+ CMR Sent","SS+ CMR Recd","SS+ CMR Ren %",
-                        "SS+ Multiplier","Payout Eligible","Incentive","Booster Payout","Final Incentive",
-                        "Gross Incentive","Paid Incentive","Balance Incentive",
-                        "Sp1 Deal Value","Sp1 PCDV","Sp1 Incentive","IM Star/Leader","Sp1 Gross","Sp1 Paid","Sp1 Bal",
-                        "Sp2 Deal Value","Sp2 PCDV","Sp2 Incentive","IM Star/Leader2","Sp2 Gross","Sp2 Paid","Sp2 Bal",
-                        "IM Star Pro New Sale","28-30 Gross","28-30 Paid","28-30 Bal"]
+                        "Sent","Recd","Ren %","Sent.1","Recd.1","Ren %.1",
+                        "SS+\nMultiplier","Payout\nEligibile","Incentive","Booster\nPayout","Final Incentive",
+                        "Gross\nIncentive ","Paid\nIncentive","Balance\nIncentive",
+                        "Deal Value","PCDV","Incentive.1","IM Star/Leader\nNew Sale","Gross Incentive","Paid\nIncentive.1","Balance\nIncentive.1",
+                        "Deal Value.1","PCDV.1","Incentive.2","IM Star/Leader\nNew Sale.1","Gross Incentive.1","Paid\nIncentive.2","Balance\nIncentive.2",
+                        "IM Star Pro/Leader Pro+\nNew Sale","Gross Incentive.2","Paid\nIncentive.3","Balance\nIncentive.3"]
             rows_kl2=[]
             for r in kcd_l2:
                 tgt = r.get("target_pcdv",0)
@@ -1370,25 +1385,25 @@ def build_excel_output(results_dict, sel_month):
                     "Aeging":r.get("Ageing",0),"HC":r.get("HC",0),
                     "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
-                    "CMR Sent":r.get("cmr_sent",0),"CMR Recd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "SS+ CMR Sent":r.get("ss_sent",0),"SS+ CMR Recd":r.get("ss_recd",0),
-                    "SS+ CMR Ren %":round(r.get("ss_pct",0)/100,4),
-                    "SS+ Multiplier":r.get("ss_mult",1),
-                    "Payout Eligible":r.get("payout_eligible","No"),
+                    "Sent.1":r.get("ss_sent",0),"Recd.1":r.get("ss_recd",0),
+                    "Ren %.1":round(r.get("ss_pct",0)/100,4),
+                    "SS+\nMultiplier":r.get("ss_mult",1),
+                    "Payout\nEligibile":r.get("payout_eligible","No"),
                     "Incentive":r.get("incentive_grid",0),
-                    "Booster Payout":r.get("booster",0),"Final Incentive":r.get("final_inc",0),
-                    "Gross Incentive":r.get("final_inc",0),"Paid Incentive":0,"Balance Incentive":r.get("final_inc",0),
-                    "Sp1 Deal Value":round(r.get("fnt_dv",{}).get("1_12",0),2),
-                    "Sp1 PCDV":round(r.get("pcdv_1_12",0),2),
-                    "Sp1 Incentive":r.get("spot1_inc",0),"IM Star/Leader":r.get("im_count",0),
-                    "Sp1 Gross":r.get("spot1_gross",0),"Sp1 Paid":0,"Sp1 Bal":r.get("spot1_gross",0),
-                    "Sp2 Deal Value":round(r.get("fnt_dv",{}).get("20_30",0),2),
-                    "Sp2 PCDV":round(r.get("pcdv_20_30",0),2),
-                    "Sp2 Incentive":r.get("spot2_inc",0),"IM Star/Leader2":r.get("im_count",0),
-                    "Sp2 Gross":r.get("spot2_gross",0),"Sp2 Paid":0,"Sp2 Bal":r.get("spot2_gross",0),
-                    "IM Star Pro New Sale":r.get("im_pro_count",0),
-                    "28-30 Gross":r.get("im_ss_spot",0),"28-30 Paid":0,"28-30 Bal":r.get("im_ss_spot",0),
+                    "Booster\nPayout":r.get("booster",0),"Final Incentive":r.get("final_inc",0),
+                    "Gross\nIncentive ":r.get("final_inc",0),"Paid\nIncentive":0,"Balance\nIncentive":r.get("final_inc",0),
+                    "Deal Value":round(r.get("fnt_dv",{}).get("1_12",0),2),
+                    "PCDV":round(r.get("pcdv_1_12",0),2),
+                    "Incentive.1":r.get("spot1_inc",0),"IM Star/Leader\nNew Sale":r.get("im_count",0),
+                    "Gross Incentive":r.get("spot1_gross",0),"Paid\nIncentive.1":0,"Balance\nIncentive.1":r.get("spot1_gross",0),
+                    "Deal Value.1":round(r.get("fnt_dv",{}).get("20_30",0),2),
+                    "PCDV.1":round(r.get("pcdv_20_30",0),2),
+                    "Incentive.2":r.get("spot2_inc",0),"IM Star/Leader\nNew Sale.1":r.get("im_count",0),
+                    "Gross Incentive.1":r.get("spot2_gross",0),"Paid\nIncentive.2":0,"Balance\nIncentive.2":r.get("spot2_gross",0),
+                    "IM Star Pro/Leader Pro+\nNew Sale":r.get("im_pro_count",0),
+                    "Gross Incentive.2":r.get("im_ss_spot",0),"Paid\nIncentive.3":0,"Balance\nIncentive.3":r.get("im_ss_spot",0),
                 })
             df_kl2 = pd.DataFrame(rows_kl2).reindex(columns=cols_kl2, fill_value="")
             df_kl2.to_excel(w, sheet_name="Reln Mgr-KCD", index=False, startrow=2)
@@ -1406,7 +1421,7 @@ def build_excel_output(results_dict, sel_month):
                        "L6  ID","L6 Name","Joining Date","IIL Vertical Name","Group",
                        "Aeging","HC","Client-A","Client-C",
                        "Collection","Refund","Net Collection","Deal Value","Target","Ach\n%",
-                       "Incentive","CMR\nSent","CMR\nRecd","Ren %","SS+ CMR\nSent","SS+ CMR\nRecd","SS+ CMR\nRen %",
+                       "Incentive","Sent","Recd","Ren %","Sent.1","Recd.1","Ren %.1",
                        "Total\nIncentive","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
             rows_bk=[]
             for r in bm_kcd_rows:
@@ -1424,10 +1439,10 @@ def build_excel_output(results_dict, sel_month):
                     "Deal Value":round(r.get("deal_val",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "Incentive":r.get("base_inc",0),
-                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nRecd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "SS+ CMR\nSent":r.get("ss_sent",0),"SS+ CMR\nRecd":r.get("ss_recd",0),
-                    "SS+ CMR\nRen %":round(r.get("ss_pct",0)/100,4),
+                    "Sent.1":r.get("ss_sent",0),"Recd.1":r.get("ss_recd",0),
+                    "Ren %.1":round(r.get("ss_pct",0)/100,4),
                     "Total\nIncentive":r.get("total_inc",0),
                     "Gross\nIncentive":r.get("total_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("total_inc",0),
@@ -1443,7 +1458,7 @@ def build_excel_output(results_dict, sel_month):
         if bt_bm_kcd_rows:
             cols_btbk=["Employee ID","Employee Name","L4 ID","L4 Name","L5 ID","L5 Name",
                        "L6  ID","L6 Name","Location","Joining Date","IIL Vertical Name",
-                       "Net Collection","AOP","%","CMR\nSent","CMR\nRecd","Ren %",
+                       "Net Collection","AOP","%","Sent","Recd","Ren %",
                        "Total","10L+","8L+","5L+","3L+","Eligible",
                        "Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
             rows_btbk=[]
@@ -1459,7 +1474,7 @@ def build_excel_output(results_dict, sel_month):
                     "IIL Vertical Name":"Tele Annual KCD",
                     "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
-                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nRecd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "Total":sum(cnt.get(k,0) for k in ["10L+","8L+","5L+","3L+"]),
                     "10L+":cnt.get("10L+",0),"8L+":cnt.get("8L+",0),
@@ -1478,7 +1493,7 @@ def build_excel_output(results_dict, sel_month):
         if bt_ch_kcd_rows:
             cols_btck=["Employee ID","Employee Name","L5 ID","L5 Name","L6  ID","L6 Name",
                        "Location","Joining Date","IIL Vertical Name",
-                       "Net Collection","AOP","%","CMR\nSent","CMR\nRecd","Ren %",
+                       "Net Collection","AOP","%","Sent","Recd","Ren %",
                        "Total Deal","10L+","8L+","5L+","3L+","Eligible",
                        "Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
             rows_btck=[]
@@ -1493,7 +1508,7 @@ def build_excel_output(results_dict, sel_month):
                     "IIL Vertical Name":"Tele Annual KCD",
                     "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
-                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nRecd":r.get("cmr_recd",0),
+                    "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "Total Deal":sum(cnt.get(k,0) for k in ["10L+","8L+","5L+","3L+"]),
                     "10L+":cnt.get("10L+",0),"8L+":cnt.get("8L+",0),
@@ -1692,7 +1707,7 @@ if calc_btn:
             emp["Coll_Target"] = per_emp_coll_tgt
 
         # Receipt data
-        data = get_emp_data(rec, ref, eid, is_l2=is_l2, emp_name=name, client_a=ca)
+        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=ca)
 
         # Calculate incentive
         inc = calc_employee(emp, data, cmr, S, is_25cr=is_25cr)
