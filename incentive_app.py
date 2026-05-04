@@ -2152,6 +2152,14 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
         if pcdv >= thresh:   # April: use PCDV threshold
             per_txn = r2 if cmr_pct_v >= _cmr_slab2 else (r1 if cmr_pct_v >= _cmr_slab1 else 0)
             break
+    # Fallback: if slab config gives per_txn=0 but PCDV is above minimum eligible threshold,
+    # use hardcoded April scheme rates (2500→1000/1200, 2700→1250/1500, 2900→1500/1750)
+    _DEFAULT_RM_SLABS = [(2900, 1500, 1750), (2700, 1250, 1500), (2500, 1000, 1200)]
+    if per_txn == 0 and pcdv >= 2500:
+        for (thresh, r1, r2) in _DEFAULT_RM_SLABS:
+            if pcdv >= thresh:
+                per_txn = r2 if cmr_pct_v >= 60 else (r1 if cmr_pct_v >= 55 else 0)
+                break
 
     # ── AH: Base = per_txn * RAW productivity ───────────────────────────────
     ah = per_txn * float(prod_raw or 0)
@@ -3265,6 +3273,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                      50)   # both CSD and KCD use 50 as minimum client count
     listing_c    = float(cfg_row.get("Listing Clients", 0) or 0)
     catalog_c    = float(cfg_row.get("Catalog Clients",  0) or 0)
+    # If listing/catalog client counts not in structure file but team is identified as Listing/Catalog,
+    # estimate from team type and client_cnt (all clients treated as listing/catalog type)
+    _team_up_lc = str(team).upper()
+    if listing_c == 0 and catalog_c == 0:
+        if "LISTING" in _team_up_lc:
+            listing_c = client_cnt
+        elif "CATALOG" in _team_up_lc:
+            catalog_c = client_cnt
     pcr_target_v = float(cfg_row.get("PCR Target",       0) or 0)
     # Highest Collection = PCR_Target × Client-A (from structure)
     highest_coll = pcr_target_v * client_cnt if pcr_target_v > 0 else 0
@@ -3334,6 +3350,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _base_rate    = 5000 if _is_new_kcd else 7000
             _listing_rate = 15000 if _is_new_kcd else 22000
             _lc_all = _lc2 + _cc2
+            # If listing/catalog client counts are 0 (not in structure file) but team IS
+            # Listing/Catalog (from Remarks), treat ALL clients as listing clients
+            if _lc_all == 0 and any(k in str(team).upper() for k in ("LISTING","CATALOG")):
+                _lc_all = client_cnt
             _base_c = max(0, client_cnt - _lc_all)
             collection_target = _base_c * _base_rate + _lc_all * _listing_rate
         elif pcr_target_v > 0 and not any(k in _t_up2 for k in ("ROI",)):
@@ -3404,8 +3424,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                               any(k in str(designation).upper()
                                   for k in ["REL MGR","RELATIONSHIP MANAGER","RM-"]))
         if "CSD" in vertical and _is_rm_any_vintage:
+            # Sir's formula: cross-mult uses CURRENT month all-renewals CMR%
+            # mdc1_cmr_pct is MDC-1 specific CMR% (used for MDC-1 multiplier display)
+            # If mdc1_cmr_pct=None (no MDC-1 renewal data), treat as 100% (no MDC-1 clients → no penalty)
             emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else 0.0
-            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
+            emp_mdc1_cmr = (mdc1_cmr_pct if mdc1_cmr_pct is not None
+                            else (100.0 if all_cmr_sent == 0 else 0.0))
             is_sps_employee = "SPS" in str(vintage_bucket).upper() or "SPS" in str(team).upper()
             _cmr_plus1 = (100.0 if cmr_plus1_sent == 0
                           else cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct)
@@ -3446,7 +3470,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # mdc1_cmr: MDC-1 only CMR% (not used in L1 slab mult - only for reference)
             emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else (mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0)
             emp_all_cmr  = all_cmr_pct if all_cmr_pct is not None else (mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0)
-            emp_mdc1_cmr = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
+            emp_mdc1_cmr = (mdc1_cmr_pct if mdc1_cmr_pct is not None
+                            else (100.0 if all_cmr_sent == 0 else 0.0))
             is_sps_by_bucket = str(vintage_bucket).upper().strip() == "SPS"
             is_sps_by_team   = "SPS" in str(team).upper()
             is_sps_employee  = is_sps_by_bucket or is_sps_by_team
