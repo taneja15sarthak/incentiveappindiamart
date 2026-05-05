@@ -2177,3 +2177,4 @@ if calc_btn:
             } for r in zero]), use_container_width=True, hide_index=True)
         else:
             st.success("All employees earned an incentive! 🎉")
+ 
