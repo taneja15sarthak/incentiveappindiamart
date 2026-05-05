@@ -188,17 +188,6 @@ def make_slab_excel():
             for ci,col in enumerate(df.columns): ws.write(1,ci,col,hf)
             ws.write(0,0,f"TA Slab Config | {sh} | Edit values below, do NOT rename columns.",nf)
 
-        # ── Supporting data sheets ──────────────────────────────
-        for _sh, _dk in [(" Receipt Data","rec_df_full"),(" Renewal","rnl_df_full"),(" Refund","ref_df_full")]:
-            _df_s = results_dict.get(_dk)
-            if _df_s is not None and len(_df_s) > 0:
-                try:
-                    _df_s.to_excel(w, sheet_name=_sh, index=False, startrow=0)
-                    _ws2 = w.sheets[_sh]
-                    for _ci, _col in enumerate(_df_s.columns):
-                        _ws2.write(0, _ci, str(_col), gry)
-                    _ws2.set_column(0, len(_df_s.columns)-1, 12)
-                except Exception: pass
 
     return buf.getvalue()
 
@@ -1812,6 +1801,18 @@ def build_excel_output(results_dict, sel_month):
             ws = w.sheets["Summary"]
             for ci,col in enumerate(df_sum.columns): ws.write(1,ci,col,hdr)
             ws.set_column(0,len(df_sum.columns)-1,16); ws.freeze_panes(2,0)
+
+        # ── Supporting: Receipt / Renewal / Refund ──────────────
+        for _sh, _dk in [(" Receipt Data","rec_df_full"),(" Renewal","rnl_df_full"),(" Refund","ref_df_full")]:
+            _df_s = results_dict.get(_dk)
+            if _df_s is not None and len(_df_s) > 0:
+                try:
+                    _df_s.to_excel(w, sheet_name=_sh, index=False, startrow=0)
+                    _ws2 = w.sheets[_sh]
+                    for _ci, _col in enumerate(_df_s.columns):
+                        _ws2.write(0, _ci, str(_col), gry)
+                    _ws2.set_column(0, len(_df_s.columns)-1, 12)
+                except Exception: pass
 
     return buf.getvalue()
 
