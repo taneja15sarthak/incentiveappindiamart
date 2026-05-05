@@ -51,7 +51,14 @@ def build_ta_slab_config():
     csd_spot_20_30= pd.DataFrame([{"Txn":6,"Inc":4250},{"Txn":5,"Inc":3500},{"Txn":4,"Inc":1375},{"Txn":3,"Inc":1000}])
 
     kcd_milestones= csd_milestones.copy()
-    kcd_targets   = csd_targets.copy()
+    kcd_targets = pd.DataFrame([
+        {"Vintage":"0-270","Group":"KCD","Target_PCDV":5680},
+        {"Vintage":"270-2Yr","Group":"KCD","Target_PCDV":8100},
+        {"Vintage":"2Yr+","Group":"KCD","Target_PCDV":9100},
+        {"Vintage":"0-270","Group":"KCD-25cr","Target_PCDV":6480},
+        {"Vintage":"270-2Yr","Group":"KCD-25cr","Target_PCDV":9100},
+        {"Vintage":"2Yr+","Group":"KCD-25cr","Target_PCDV":10000},
+    ])
     kcd_spot_1_12 = pd.DataFrame([
         {"PCDV":9000,"Inc":8000},{"PCDV":7000,"Inc":5500},
         {"PCDV":6000,"Inc":4500},{"PCDV":5500,"Inc":4000},{"PCDV":4500,"Inc":3000},
@@ -180,6 +187,18 @@ def make_slab_excel():
             ws.set_column(0, len(df.columns)-1, 22)
             for ci,col in enumerate(df.columns): ws.write(1,ci,col,hf)
             ws.write(0,0,f"TA Slab Config | {sh} | Edit values below, do NOT rename columns.",nf)
+
+        # ── Supporting data sheets ──────────────────────────────
+        for _sh, _dk in [(" Receipt Data","rec_df_full"),(" Renewal","rnl_df_full"),(" Refund","ref_df_full")]:
+            _df_s = results_dict.get(_dk)
+            if _df_s is not None and len(_df_s) > 0:
+                try:
+                    _df_s.to_excel(w, sheet_name=_sh, index=False, startrow=0)
+                    _ws2 = w.sheets[_sh]
+                    for _ci, _col in enumerate(_df_s.columns):
+                        _ws2.write(0, _ci, str(_col), gry)
+                    _ws2.set_column(0, len(_df_s.columns)-1, 12)
+                except Exception: pass
 
     return buf.getvalue()
 
@@ -325,10 +344,10 @@ def load_ta_structure(f):
             "Department": sv(dept_c),
             "Client_Status_Eligible": (str(row[cstat_c]).strip().upper()=="YES") if cstat_c else True,
             "Location": sv(loc_c),
-            "MDC":  nv(mdc_c),"Star": nv(star_c),"Leader":nv(ldr_c),
-            "WS-M": nv(wsm_c),"WS-A": nv(wsa_c), "IVE":  nv(ive_c),
-            "MDC.1":nv(mdc1_c),"Star.1":nv(star1_c),"Leader.1":nv(ldr1_c),
-            "WS-M.1":nv(wsm1_c),"WS-A.1":nv(wsa1_c),"IVE.1":nv(ive1_c),
+            "MDC":int(nv(mdc_c)),"Star":int(nv(star_c)),"Leader":int(nv(ldr_c)),
+            "WS-M":int(nv(wsm_c)),"WS-A":int(nv(wsa_c)),"IVE":int(nv(ive_c)),
+            "MDC.1":int(nv(mdc1_c)),"Star.1":int(nv(star1_c)),"Leader.1":int(nv(ldr1_c)),
+            "WS-M.1":int(nv(wsm1_c)),"WS-A.1":int(nv(wsa1_c)),"IVE.1":int(nv(ive1_c)),
             "L2 ID":id_sv(l2i),"L2 Name":sv(l2n),
             "L3 ID":id_sv(l3i),"L3 Name":sv(l3n),
             "L4 ID":id_sv(l4i),"L4 Name":sv(l4n),
@@ -918,18 +937,18 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             })
 
         elif desig == "L3":  # BM-CSD
-            net_coll = data.get("net_coll",0)
-            coll_target = emp.get("Coll_Target",0)
-            ach_pct = (net_coll/coll_target*100) if coll_target>0 else 0
-            incentive = _bm_milestone(ach_pct, S["bm_csd"])
-            eligible  = ach_pct >= S["bm_csd"][-1]["Min_Ach_Pct"] if S["bm_csd"] else False
-            total = int(incentive)
+            _gc=data.get("gross",0); _rv=data.get("refund",0); _nr=_gc-_rv
+            # BM-CSD stores in Crores (matching sir's file)
+            _net_cr=round(_nr/1e7,6); _coll_cr=round(_gc/1e7,6); _ref_cr=round(_rv/1e7,6)
+            coll_target=emp.get("Coll_Target",0)  # in Crores from target file
+            ach_pct=(_net_cr/coll_target*100) if coll_target>0 else 0
+            incentive=_bm_milestone(ach_pct,S["bm_csd"]); total=int(incentive)
             out.update({
-                "scheme":"BM CSD", "net_coll":net_coll,
+                "scheme":"BM CSD","gross_coll":_gc,"refund":_rv,"net_coll":_nr,
+                "gross_coll_cr":_coll_cr,"refund_cr":_ref_cr,"net_coll_cr":_net_cr,
                 "coll_target":coll_target,"ach_pct":round(ach_pct,2),
-                "payout_eligible":"Yes" if eligible else "No",
-                "base_inc":incentive,"total_inc":total,
-                "paid_inc":0,"bal_inc":total,
+                "payout_eligible":"Yes" if incentive>0 else "No",
+                "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
                 "sp2_6_gross":0,"sp7_12_gross":0,"sp20_30_gross":0,
             })
 
@@ -1001,16 +1020,17 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             })
 
         elif desig == "L3":  # BM-KCD
-            net_coll = data.get("net_coll",0)
-            coll_target = emp.get("Coll_Target",0)
-            ach_pct = (net_coll/coll_target*100) if coll_target>0 else 0
-            incentive = _bm_milestone(ach_pct, S["bm_kcd"])
-            total = int(incentive)
+            _gc=data.get("gross",0); _rv=data.get("refund",0); _nr=_gc-_rv
+            _net_cr=round(_nr/1e7,6); _coll_cr=round(_gc/1e7,6); _ref_cr=round(_rv/1e7,6)
+            coll_target=emp.get("Coll_Target",0)
+            ach_pct=(_net_cr/coll_target*100) if coll_target>0 else 0
+            incentive=_bm_milestone(ach_pct,S["bm_kcd"]); total=int(incentive)
             out.update({
-                "scheme":"BM KCD","net_coll":net_coll,
+                "scheme":"BM KCD","gross_coll":_gc,"refund":_rv,"net_coll":_nr,
+                "gross_coll_cr":_coll_cr,"refund_cr":_ref_cr,"net_coll_cr":_net_cr,
                 "coll_target":coll_target,"ach_pct":round(ach_pct,2),
-                "base_inc":incentive,"total_inc":total,
-                "paid_inc":0,"bal_inc":total,
+                "payout_eligible":"Yes" if incentive>0 else "No",
+                "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
                 "sp2_6_gross":0,"sp7_12_gross":0,"sp20_30_gross":0,
             })
 
@@ -1305,7 +1325,8 @@ def build_excel_output(results_dict, sel_month):
                     "Joining Date/Movement Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
-                    "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
+                    "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                    "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Target":r.get("target_pcdv",0),"Incremental\nPCDV\nAmt.":r.get("incr_amt",0),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
@@ -1442,7 +1463,7 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
-                    "Net Collection":round(r.get("net_coll",0),2),
+                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),4),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1520,7 +1541,9 @@ def build_excel_output(results_dict, sel_month):
                     "Joining Date/Movement Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
-                    "Target":tgt,"Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
+                    "Target":tgt,
+                    "Client-A":r.get("Client-A",0),
+                    "Client-C":r.get("Client-C",0),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(pcdv,2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1624,9 +1647,11 @@ def build_excel_output(results_dict, sel_month):
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"HC":r.get("HC",0),
-                    "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
-                    "Collection":round(r.get("gross_coll",0),2),"Refund":round(r.get("refund",0),2),
-                    "Net Collection":round(r.get("net_coll",0),2),
+                    "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                    "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
+                    "Collection":round(r.get("gross_coll_cr",r.get("gross_coll",0)/1e7),6),
+                    "Refund":round(r.get("refund_cr",r.get("refund",0)/1e7),6),
+                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
                     "Deal Value":round(r.get("deal_val",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "Incentive":r.get("base_inc",0),
@@ -1663,7 +1688,7 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD",
-                    "Net Collection":round(r.get("net_coll",0),2),
+                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),4),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1697,7 +1722,7 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD",
-                    "Net Collection":round(r.get("net_coll",0),2),
+                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),4),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1939,8 +1964,11 @@ if calc_btn:
         l1_eids = emp.get("l1_eids", []) if desig == "L2" else []
 
         # CMR (current month) — O(1) via pre-built EID index
+        team_eids = emp.get("all_l1_eids", []) if desig in ("L3","L4","L5") else []
         if desig == "L2" and l1_eids:
             cmr = calc_cmr_fast_eids_idx(_rnl_eid_idx, l1_eids, _sc_rnl, _pc_rnl)
+        elif desig in ("L3","L4","L5") and team_eids:
+            cmr = calc_cmr_fast_eids_idx(_rnl_eid_idx, team_eids, _sc_rnl, _pc_rnl)
         elif is_l2 and l2_rnl_col and name:
             cmr = calc_cmr_by_name(rnl, l2_rnl_col, name)
             if cmr["sent"] == 0:
@@ -1952,6 +1980,8 @@ if calc_btn:
         if _prev_sel:
             if desig == "L2" and l1_eids:
                 cmr_prev = calc_cmr_fast_eids_idx(_rnl_prev_eid_idx, l1_eids, _sc_prev, _pc_prev)
+            elif desig in ("L3","L4","L5") and team_eids:
+                cmr_prev = calc_cmr_fast_eids_idx(_rnl_prev_eid_idx, team_eids, _sc_prev, _pc_prev)
             elif is_l2 and l2_rnl_col and name:
                 cmr_prev = calc_cmr_by_name(_rnl_prev, l2_rnl_col, name)
                 if cmr_prev["sent"] == 0:
