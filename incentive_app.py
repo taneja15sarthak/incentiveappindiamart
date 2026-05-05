@@ -478,12 +478,12 @@ def filter_month(rec, ref, rnl, sel):
     if rn is not None:
         mc = find_col(rn, ["Month","MONTH"])
         if mc:
-            def _m(v):
-                try:
-                    p = pd.to_datetime(str(v).strip(), format="%b'%y", errors="coerce")
-                    return pd.notna(p) and p.month==tm and p.year==ty
-                except: return False
-            rn = rn[rn[mc].apply(_m)]
+            # Vectorised parse: "Apr'26" → replace ' with space → "Apr 26"
+            _parsed = pd.to_datetime(
+                rn[mc].astype(str).str.strip().str.replace("'", " ", regex=False),
+                format="%b %y", errors="coerce"
+            )
+            rn = rn[(_parsed.dt.month == tm) & (_parsed.dt.year == ty)]
     return r, rf, rn
 
 
@@ -533,6 +533,51 @@ def calc_cmr_from_eids(rnl, l1_eids):
     ss_s,ss_r = int(ss2.sum()),int((ss2&rm2).sum())
     return {"sent":sent,"recd":recd,"pct":pct,"ss_sent":ss_s,"ss_recd":ss_r,
             "ss_pct":round(ss_r/ss_s*100,2) if ss_s>0 else 0.0}
+
+def build_rnl_eid_idx(rnl):
+    """Build {eid_str: sub_df} index from an already-month-filtered renewal DF."""
+    idx = {}
+    if rnl is None or len(rnl) == 0:
+        return idx
+    ec = find_col(rnl, ["EMP ID","Emp ID","EmpID","Employee ID"])
+    if not ec:
+        return idx
+    normed = rnl[ec].astype(str).str.split(".").str[0].str.strip()
+    rnl2 = rnl.copy()
+    rnl2["_eid_norm"] = normed
+    for eid_val, grp in rnl2.groupby("_eid_norm"):
+        idx[str(eid_val)] = grp
+    return idx
+
+
+def _cmr_from_grp(grp, sc, pc):
+    """Compute CMR stats dict from an already-filtered sub-DataFrame."""
+    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    if grp is None or len(grp) == 0:
+        return zero
+    rm = grp[sc].astype(str).str.upper().str.contains("RECEIVED", na=False) if sc else pd.Series(False, index=grp.index)
+    sent, recd = len(grp), int(rm.sum())
+    pct = round(recd / sent * 100, 2) if sent > 0 else 0.0
+    ss = grp[pc].astype(str).str.upper().apply(lambda x: any(k in x for k in SS_PLUS_KW)) if pc else pd.Series(False, index=grp.index)
+    ss_s = int(ss.sum()); ss_r = int((ss & rm).sum())
+    return {"sent":sent,"recd":recd,"pct":pct,
+            "ss_sent":ss_s,"ss_recd":ss_r,
+            "ss_pct":round(ss_r/ss_s*100,2) if ss_s > 0 else 0.0}
+
+
+def calc_cmr_fast_eid(eid_idx, eid_str, sc, pc):
+    """O(1) CMR lookup using pre-built EID index."""
+    return _cmr_from_grp(eid_idx.get(eid_str), sc, pc)
+
+
+def calc_cmr_fast_eids_idx(eid_idx, l1_eids, sc, pc):
+    """O(k) CMR aggregation for L2 using pre-built EID index (k = team size)."""
+    frames = [eid_idx[e] for e in l1_eids if e in eid_idx]
+    if not frames:
+        return {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    merged = pd.concat(frames, ignore_index=True)
+    return _cmr_from_grp(merged, sc, pc)
+
 
 # ── PERFORMANCE INDICES ──────────────────────────────────────
 def build_renewal_index(rnl):
@@ -1858,7 +1903,24 @@ if calc_btn:
         build_receipt_indices(rec, ref)   # O(N) once → O(1) per employee
         _rnl_idx = build_renewal_index(rnl)
         _rnl_full_idx = build_renewal_index(rnl_raw)
-        _nxt_sel = get_prev_month_str(sel_month, months)
+
+        # Pre-build simple EID index for fast O(1) CMR lookups
+        _rnl_eid_idx = build_rnl_eid_idx(rnl)
+        _sc_rnl = find_col(rnl, ["Status","STATUS"]) if rnl is not None else None
+        _pc_rnl = find_col(rnl, ["WS/MDC Main","Product","Service"]) if rnl is not None else None
+
+        # Previous month data — computed ONCE here, not per employee
+        _prev_sel = get_prev_month_str(sel_month, months)
+        if _prev_sel:
+            _, _, _rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
+            _rnl_prev_eid_idx = build_rnl_eid_idx(_rnl_prev)
+            _sc_prev = find_col(_rnl_prev, ["Status","STATUS"]) if _rnl_prev is not None else None
+            _pc_prev = find_col(_rnl_prev, ["WS/MDC Main","Product","Service"]) if _rnl_prev is not None else None
+        else:
+            _rnl_prev = None
+            _rnl_prev_eid_idx = {}
+            _sc_prev = _pc_prev = None
+        _nxt_sel = _prev_sel  # keep for compatibility
 
     prog = st.progress(0, "Calculating…")
     eids = list(struct_map.keys())
@@ -1876,27 +1938,26 @@ if calc_btn:
         # Get L1 subordinates for this L2 RM
         l1_eids = emp.get("l1_eids", []) if desig == "L2" else []
 
-        # CMR (current month)
+        # CMR (current month) — O(1) via pre-built EID index
         if desig == "L2" and l1_eids:
-            cmr = calc_cmr_from_eids(rnl, l1_eids)
+            cmr = calc_cmr_fast_eids_idx(_rnl_eid_idx, l1_eids, _sc_rnl, _pc_rnl)
         elif is_l2 and l2_rnl_col and name:
             cmr = calc_cmr_by_name(rnl, l2_rnl_col, name)
             if cmr["sent"] == 0:
-                cmr = calc_cmr(rnl, eid)
+                cmr = calc_cmr_fast_eid(_rnl_eid_idx, eid, _sc_rnl, _pc_rnl)
         else:
-            cmr = calc_cmr(rnl, eid)
+            cmr = calc_cmr_fast_eid(_rnl_eid_idx, eid, _sc_rnl, _pc_rnl)
 
-        # CMR+1 — previous month renewal data (Sent.1 / Recd.1 / Ren%.1 columns)
-        _prev_sel = get_prev_month_str(sel_month, months)
+        # CMR+1 — previous month, pre-computed once before loop
         if _prev_sel:
-            _, _, _rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
             if desig == "L2" and l1_eids:
-                cmr_prev = calc_cmr_from_eids(_rnl_prev, l1_eids)
+                cmr_prev = calc_cmr_fast_eids_idx(_rnl_prev_eid_idx, l1_eids, _sc_prev, _pc_prev)
             elif is_l2 and l2_rnl_col and name:
                 cmr_prev = calc_cmr_by_name(_rnl_prev, l2_rnl_col, name)
-                if cmr_prev["sent"] == 0: cmr_prev = calc_cmr(_rnl_prev, eid)
+                if cmr_prev["sent"] == 0:
+                    cmr_prev = calc_cmr_fast_eid(_rnl_prev_eid_idx, eid, _sc_prev, _pc_prev)
             else:
-                cmr_prev = calc_cmr(_rnl_prev, eid)
+                cmr_prev = calc_cmr_fast_eid(_rnl_prev_eid_idx, eid, _sc_prev, _pc_prev)
         else:
             cmr_prev = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
 
