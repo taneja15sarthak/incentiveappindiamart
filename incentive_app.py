@@ -180,15 +180,6 @@ def make_slab_excel():
             ws.set_column(0, len(df.columns)-1, 22)
             for ci,col in enumerate(df.columns): ws.write(1,ci,col,hf)
             ws.write(0,0,f"TA Slab Config | {sh} | Edit values below, do NOT rename columns.",nf)
-        for sh,dk in [(" Receipt Data","rec_df_full"),(" Renewal","rnl_df_full"),(" Refund","ref_df_full")]:
-            df_s=results_dict.get(dk)
-            if df_s is not None and len(df_s)>0:
-                try:
-                    df_s.to_excel(w,sheet_name=sh,index=False,startrow=0)
-                    ws=w.sheets[sh]
-                    for ci,col in enumerate(df_s.columns): ws.write(0,ci,str(col),gry)
-                    ws.set_column(0,len(df_s.columns)-1,12)
-                except: pass
 
     return buf.getvalue()
 
