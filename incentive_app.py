@@ -32,10 +32,10 @@ def build_ta_slab_config():
         {"Min_Ach_Pct":100,"Grid":4000},
     ])
     csd_targets = pd.DataFrame([
-        {"Vintage":"0-30D","Target_PCDV":1300},
-        {"Vintage":"31-90D","Target_PCDV":1300},
-        {"Vintage":"91-270D","Target_PCDV":1800},
-        {"Vintage":"270D+","Target_PCDV":2000},
+        {"Vintage":"0-90","Target_PCDV":1300},
+        
+        {"Vintage":"90-270","Target_PCDV":1800},
+        {"Vintage":"270+","Target_PCDV":2000},
     ])
     csd_cmr_mult = pd.DataFrame([
         {"Min_CMR_Ach_Pct":120,"Multiplier":1.2},
@@ -286,12 +286,7 @@ def load_ta_structure(f):
 
         desig  = str(row[dc]).strip().upper() if dc else "L1"
         vint   = str(row[fgc]).strip() if fgc else "91-270D"
-        vu = vint.upper()
-        if   "0-30"  in vu or ("0-90" in vu and "31" not in vu): vint = "0-30D"
-        elif "31-90" in vu:  vint = "31-90D"
-        elif "91-270" in vu or "90-270" in vu: vint = "91-270D"
-        elif "270"   in vu:  vint = "270D+"
-        else:                vint = "91-270D"
+        vint = "90-270"  # placeholder; overridden by ageing in calc loop
 
         ageing = 0
         if agc and str(row[agc]).strip() not in ("nan","None",""):
@@ -388,6 +383,14 @@ def get_months(rec_df, rnl_df):
                 except: pass
     return sorted(months, key=lambda x: pd.to_datetime(x, format="%b-%y"))
 
+
+def get_prev_month_str(sel, available_months):
+    """Return previous month string for CMR+1, or None if unavailable."""
+    try:
+        import pandas as _pd2
+        prev = (_pd2.to_datetime(sel, format="%b-%y") - _pd2.DateOffset(months=1)).strftime("%b-%y")
+        return prev if prev in available_months else None
+    except: return None
 
 def filter_month(rec, ref, rnl, sel):
     tgt = pd.to_datetime(sel, format="%b-%y")
@@ -678,7 +681,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
     # ── NURSERY (L1, ageing ≤ 90 days) ────────────────────
     productivity = data.get("txns",0)  # total txns as proxy for productivity
-    is_nursery = desig in ("L1","") and emp.get("Ageing",999) <= 90
+    is_nursery = desig in ("L1","") and emp.get("FY_Ageing", emp.get("Ageing",999)) <= 90
 
     if is_nursery:
         min_prod = S["nursery_min_prod"]
@@ -701,7 +704,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         if desig == "L1":
             tgt_pcdv = S["csd_targets"].get(vint, 1800)
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
-            incr = round(max(0, pcdv_total - tgt_pcdv) * client_a * S["csd_incr_rate"],0) if grid>0 else 0
+            incr = round(max(0,pcdv_total-tgt_pcdv)*client_a*S["csd_incr_rate"]/1000)*1000 if grid>0 else 0
             base_incentive = grid + incr
             cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"])
             mult_val = _cmr_mult(cmr_pct, cmr_tgt, S["csd_cmr_mult"])
@@ -724,7 +727,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             # Rel'n Mgr CSD: team aggregate / HC
             tgt_pcdv = S["csd_targets"].get(vint, 1800)
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
-            incr = round(max(0, pcdv_total - tgt_pcdv) * client_a * S["csd_incr_rate"],0) if grid>0 else 0
+            incr = round(max(0,pcdv_total-tgt_pcdv)*client_a*S["csd_incr_rate"]/1000)*1000 if grid>0 else 0
             base_incentive = grid + incr
             mult_val = _cmr_mult(cmr_pct, emp.get("CMR_Target_Pct", S["csd_cmr_tgt"]), S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
@@ -787,7 +790,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         if desig == "L1":
             tgt_pcdv = S["kcd_targets"].get(vint,1800)
             grid   = _milestone(pcdv_total, tgt_pcdv, S["kcd_milestones"])
-            incr   = round(max(0,pcdv_total-tgt_pcdv)*client_a*S.get("csd_incr_rate",0.03),0) if grid>0 else 0
+            incr   = round(max(0,pcdv_total-tgt_pcdv)*client_a*S.get("csd_incr_rate",0.03)/1000)*1000 if grid>0 else 0
             gross_inc = round((grid+incr)*ss_m,0)
 
             sp1_inc = _pcdv_spot(pcdv_1_12,  spot1_slabs)
@@ -1052,7 +1055,7 @@ def build_excel_output(results_dict, sel_month):
                       "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                       "Location","Client-A","Client-C",
                       "MDC","Star","Leader","WS-M","WS-A","IVE",
-                      "MDC","Star","Leader","WS-M","WS-A","IVE",
+                      "MDC.1","Star.1","Leader.1","WS-M.1","WS-A.1","IVE.1",
                       "Email Id","Joining Date",
                       "IIL Vertical Name",
                       "CSD to KCD\nMovement/New Joining\n<=90D",
@@ -1073,8 +1076,8 @@ def build_excel_output(results_dict, sel_month):
                     "Client-C":r.get("Client-C",0),
                     "MDC":r.get("MDC",0),"Star":r.get("Star",0),"Leader":r.get("Leader",0),
                     "WS-M":r.get("WS-M",0),"WS-A":r.get("WS-A",0),"IVE":r.get("IVE",0),
-                    "MDC":r.get("MDC.1",0),"Star":r.get("Star.1",0),"Leader":r.get("Leader.1",0),
-                    "WS-M":r.get("WS-M.1",0),"WS-A":r.get("WS-A.1",0),"IVE":r.get("IVE.1",0),
+                    "MDC.1":r.get("MDC.1",0),"Star.1":r.get("Star.1",0),"Leader.1":r.get("Leader.1",0),
+                    "WS-M.1":r.get("WS-M.1",0),"WS-A.1":r.get("WS-A.1",0),"IVE.1":r.get("IVE.1",0),
                     "Email Id":r.get("Email Id",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual "+r.get("Vertical","CSD"),
@@ -1106,7 +1109,7 @@ def build_excel_output(results_dict, sel_month):
                       "Aeging","Vintage","Client-A","Client-C",
                       "Deal Value","PCDV","Target","Incremental\nPCDV\nAmt.",
                       "Sent","Recd","Ren %","Multiplier","Renewal\nTarget",
-                      "CMR+1\nSent","CMR+1\nRecd","CMR+1\nRen %",
+                      "Sent.1","Recd.1","Ren %.1",
                       "Incentive Grid","Incentive","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",
                       "Transaction","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",  # Spot 2-6
                       "Transaction","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",  # Spot 7-12
@@ -1116,7 +1119,7 @@ def build_excel_output(results_dict, sel_month):
             cols_out = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
                         "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
                         "Joining Date/Movement Date","IIL Vertical Name","Aeging","Vintage",
-                        "Client-A","Client-C","Deal Value","PCDV","Target","Incr PCDV Amt",
+                        "Client-A","Client-C","Deal Value","PCDV","Target","Incremental\nPCDV\nAmt.",
                         "Sent","Recd","Ren %","Multiplier","Renewal\nTarget",
                         "Sent.1","Recd.1","Ren %.1",
                         "Incentive Grid","Incentive","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive",
@@ -1137,11 +1140,11 @@ def build_excel_output(results_dict, sel_month):
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
                     "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
-                    "Target":r.get("target_pcdv",0),"Incr PCDV Amt":r.get("incr_amt",0),
+                    "Target":r.get("target_pcdv",0),"Incremental\nPCDV\nAmt.":r.get("incr_amt",0),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "Multiplier":r.get("cmr_mult",0),"Renewal\nTarget":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
-                    "Sent.1":0,"Recd.1":0,"Ren %.1":0,
+                    "Multiplier":r.get("cmr_mult",0),"Renewal\nTarget":(__import__("math").ceil(r.get("cmr_sent",0) * r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100) / max(r.get("cmr_sent",0),1) if r.get("cmr_sent",0)>0 else r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100),
+                    "Sent.1":r.get("cmr1_sent",0),"Recd.1":r.get("cmr1_recd",0),"Ren %.1":round(r.get("cmr1_pct",0)/100,4),
                     "Incentive Grid":r.get("incentive_grid",0),"Incentive":r.get("base_inc",0),
                     "Gross\nIncentive":r.get("gross_inc",0),"Paid\nIncentive":0,
                     "Balance\nIncentive":r.get("gross_inc",0),
@@ -1188,8 +1191,8 @@ def build_excel_output(results_dict, sel_month):
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "Renewal\nTarget":round(r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,4),
-                    "Sent.1":0,"Recd.1":0,"Ren %.1":0,
+                    "Renewal\nTarget":(__import__("math").ceil(r.get("cmr_sent",0) * r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100) / max(r.get("cmr_sent",0),1) if r.get("cmr_sent",0)>0 else r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100),
+                    "Sent.1":r.get("cmr1_sent",0),"Recd.1":r.get("cmr1_recd",0),"Ren %.1":round(r.get("cmr1_pct",0)/100,4),
                     "Incremental\nPCDV\nAmt.":r.get("incr_amt",0),"Incentive\nGrid":r.get("incentive_grid",0),
                     "Incentive":r.get("base_inc",0),"Gross Incentive":r.get("gross_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("gross_inc",0),
@@ -1690,13 +1693,25 @@ if calc_btn:
         is_l2  = desig in ("L2","L3","L4","L5")
         is_25cr= "25" in str(emp.get("Group",""))
 
-        # CMR
+        # CMR (current month)
         if is_l2 and l2_rnl_col and name:
             cmr = calc_cmr_by_name(rnl, l2_rnl_col, name)
             if cmr["sent"] == 0:
                 cmr = calc_cmr(rnl, eid)
         else:
             cmr = calc_cmr(rnl, eid)
+
+        # CMR+1 — previous month renewal data (Sent.1 / Recd.1 / Ren%.1 columns)
+        _prev_sel = get_prev_month_str(sel_month, months)
+        if _prev_sel:
+            _, _, _rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
+            if is_l2 and l2_rnl_col and name:
+                cmr_prev = calc_cmr_by_name(_rnl_prev, l2_rnl_col, name)
+                if cmr_prev["sent"] == 0: cmr_prev = calc_cmr(_rnl_prev, eid)
+            else:
+                cmr_prev = calc_cmr(_rnl_prev, eid)
+        else:
+            cmr_prev = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
 
         # Per-employee targets from target file
         # L1 CMR renewal target
@@ -1724,8 +1739,17 @@ if calc_btn:
         if per_emp_coll_tgt > 0:
             emp["Coll_Target"] = per_emp_coll_tgt
 
+        # Recalculate vintage from Ageing using sir's exact labels
+        _age = emp.get("Ageing", 0)
+        if _age <= 90:    emp["Vintage"] = "0-90"
+        elif _age <= 270: emp["Vintage"] = "90-270"
+        else:             emp["Vintage"] = "270+"
+
+        # Sir uses Client-C as PCDV denominator
+        cc = max(float(emp.get("Client-C", ca) or ca), 1)
+
         # Receipt data
-        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=ca)
+        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=cc)
 
         # Calculate incentive
         inc = calc_employee(emp, data, cmr, S, is_25cr=is_25cr)
@@ -1735,6 +1759,7 @@ if calc_btn:
             "Vertical":vert,"Designation":desig,"Vintage":emp["Vintage"],
             "cmr_target_pct": per_emp_cmr_tgt,
             "Ageing":ageing,"Joining Date":emp.get("Joining Date",""),
+            "cmr1_sent":cmr_prev["sent"],"cmr1_recd":cmr_prev["recd"],"cmr1_pct":cmr_prev["pct"],
             "Client-A":emp.get("Client-A",0),"Client-C":emp.get("Client-C",0),
             "Client-A_Agg":emp.get("Client-A_Agg",emp.get("Client-A",0)),
             "HC":emp.get("HC",0),"Group":emp.get("Group",""),
@@ -1755,9 +1780,12 @@ if calc_btn:
         row["csd_cmr_tgt"] = S["csd_cmr_tgt"]
 
         if vert == "CSD":
-            is_nursery = desig == "L1" and ageing <= 90
+            fy_age = emp.get("FY_Ageing", ageing)
+            is_nursery = desig == "L1" and fy_age <= 90
             if is_nursery:
-                row["vintage_label"] = "60-90" if ageing > 60 else "60D"
+                vl = "60-90" if fy_age > 60 else "60D"
+                row["vintage_label"] = vl
+                emp["vintage_label"] = vl
                 results["nursery"].append(row)
             elif desig == "L1":
                 results["exec_csd"].append(row)
@@ -1779,9 +1807,12 @@ if calc_btn:
                 results["bt_ch_csd"].append(row)
 
         elif vert == "KCD":
-            is_nursery = desig == "L1" and ageing <= 90
+            fy_age = emp.get("FY_Ageing", ageing)
+            is_nursery = desig == "L1" and fy_age <= 90
             if is_nursery:
-                row["vintage_label"] = "60-90" if ageing > 60 else "60D"
+                vl = "60-90" if fy_age > 60 else "60D"
+                row["vintage_label"] = vl
+                emp["vintage_label"] = vl
                 results["nursery"].append(row)
             elif desig == "L1":
                 results["exec_kcd"].append(row)
