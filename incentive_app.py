@@ -187,12 +187,18 @@ def make_slab_excel():
 # ──────────────────────────────────────────────────────────
 # UTILITY
 # ──────────────────────────────────────────────────────────
+_FIND_COL_CACHE = {}
 def find_col(df, candidates):
+    """Cached column finder — memoises per (col_tuple, candidates_tuple)."""
+    key = (tuple(df.columns), tuple(candidates))
+    if key in _FIND_COL_CACHE: return _FIND_COL_CACHE[key]
     def n(s): return " ".join(str(s).lower().split())
     nm = {n(c):c for c in df.columns}
+    result = None
     for c in candidates:
-        if n(c) in nm: return nm[n(c)]
-    return None
+        if n(c) in nm: result = nm[n(c)]; break
+    _FIND_COL_CACHE[key] = result
+    return result
 
 @st.cache_data(show_spinner=False)
 def load_excel(bts:bytes, fname:str)->pd.DataFrame:
@@ -599,15 +605,31 @@ def clean_receipt(df):
     return df
 
 
+# ── RECEIPT INDEX (built once, used for all employees) ──────────────────
+_REC_IDX   = {}   # {eid_str: sub-DataFrame}  keyed by Sales Exec ID
+_HOD_IDX   = {}   # {eid_str: sub-DataFrame}  keyed by HOD Id
+_REF_IDX   = {}   # {eid_str: sub-DataFrame}  keyed by Sales Exec ID (refund)
+
+def build_receipt_indices(rec, ref):
+    """Pre-build all receipt/refund indices. Call once after filtering by month."""
+    global _REC_IDX, _HOD_IDX, _REF_IDX
+    _REC_IDX = {}; _HOD_IDX = {}; _REF_IDX = {}
+    ec  = find_col(rec, ["Sales Exec ID","EMP ID","Emp ID"])
+    hc  = find_col(rec, ["HOD Id","Old Sales Hod ID"])
+    rfc = find_col(ref, ["Sales Ex. ID","Sales Exec ID","EMP ID"])
+    if ec:
+        norm = rec[ec].astype(str).str.split(".").str[0].str.strip()
+        for eid, grp in rec.groupby(norm): _REC_IDX[str(eid)] = grp
+    if hc:
+        norm_h = rec[hc].astype(str).str.split(".").str[0].str.strip()
+        for eid, grp in rec.groupby(norm_h): _HOD_IDX[str(eid)] = grp
+    if rfc:
+        norm_r = ref[rfc].astype(str).str.split(".").str[0].str.strip()
+        for eid, grp in ref.groupby(norm_r): _REF_IDX[str(eid)] = grp
+
+
 def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=False, l1_eids=None):
-    """
-    Designation-aware receipt matching:
-      L1 → Sales Exec ID / EMP ID
-      L2 → Manager Id  (Rel'n Mgr - direct manager of L1)
-      L3 → HOD -2 Id   (BM level)
-      L4 → HOD - 1 Id  (CH level)
-      L5+ → HOD Id     (Regional)
-    """
+    """Fast receipt lookup using pre-built indices."""
     ec  = find_col(rec,["Sales Exec ID","EMP ID","Emp ID"])
     dvc = find_col(rec,["Deal Value","Deal Val (WT)","Deal Val"])
     wtc = find_col(rec,["WT AMT","WT_AMT"])
@@ -615,34 +637,25 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
     upc = find_col(rec,["Unique","Upsell","UNIQUE"])
     if not ec: return {}
 
-    # Pick hierarchy column based on designation
+    # Use pre-built index for O(1) lookup
     if (desig == "L2" or is_l2) and l1_eids:
-        mask = rec[ec].astype(str).str.split(".").str[0].str.strip().isin(l1_eids)
-    elif desig == "L2" or is_l2:
-        hc = find_col(rec, ["Manager Id","Old Sales HOD-3 ID"])
-        mask = (rec[hc].astype(str).str.split(".").str[0].str.strip()==eid_str
-                if hc else rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str)
+        # Aggregate L1 subordinates from index
+        frames = [_REC_IDX[e] for e in l1_eids if e in _REC_IDX]
+        r = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=rec.columns)
     elif desig in ("L3","L4","L5","L6"):
-        hc = find_col(rec, ["HOD Id","Old Sales Hod ID"])
-        mask = (rec[hc].astype(str).str.split(".").str[0].str.strip()==eid_str
-                if hc else rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str)
+        r = _HOD_IDX.get(eid_str, pd.DataFrame(columns=rec.columns))
     else:
-        mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
-    r = rec[mask]
+        r = _REC_IDX.get(eid_str, pd.DataFrame(columns=rec.columns))
 
     gross = _sf(r[wtc].fillna(0).sum()) if wtc else 0.0
     dval  = _sf(r[dvc].fillna(0).sum()) if dvc else 0.0
 
-    # Refund
-    rfc = find_col(ref,["Sales Ex. ID","Sales Exec ID","EMP ID"])
+    # Refund — fast index lookup
     refund = 0.0
-    if rfc:
-        wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
-        if desig in ("L2","L3","L4","L5","L6") or is_l2:
-            rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
-        else:
-            rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
-        if wac: refund = _sf(rr[wac].fillna(0).sum())
+    wac = find_col(ref, ["WT Amount","WT_Amount","WT AMT"])
+    if wac:
+        rr = _REF_IDX.get(eid_str, pd.DataFrame())
+        if len(rr): refund = _sf(rr[wac].fillna(0).sum())
 
     net_coll = gross - refund
     client_a_eff = max(float(client_a),1)
@@ -1840,8 +1853,9 @@ if calc_btn:
         "bm_kcd":[],"bt_bm_kcd":[],"bt_ch_kcd":[],"ch_kcd":[],
     }
 
-    # Pre-build renewal index
-    with st.spinner("Indexing data for fast mode…"):
+    # Pre-build ALL indices (receipt + renewal) — runs once
+    with st.spinner("Building fast lookup indices…"):
+        build_receipt_indices(rec, ref)   # O(N) once → O(1) per employee
         _rnl_idx = build_renewal_index(rnl)
         _rnl_full_idx = build_renewal_index(rnl_raw)
         _nxt_sel = get_prev_month_str(sel_month, months)
@@ -2018,7 +2032,8 @@ if calc_btn:
             else:
                 results["ch_kcd"].append(row)
 
-        prog.progress((i+1)/len(eids), f"Processing {i+1}/{len(eids)}…")
+        if i % 10 == 0 or i == len(eids)-1:
+            prog.progress((i+1)/len(eids), f"Processing {i+1}/{len(eids)}…")
 
     prog.empty()
 
