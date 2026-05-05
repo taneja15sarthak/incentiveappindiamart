@@ -142,7 +142,7 @@ def parse_slabs(cfg):
         "csd_spot_7_12": sorted(rows("CSD_Spot_7_12"), key=lambda r:-r.get("Txn",0)),
         "csd_spot_20_30":sorted(rows("CSD_Spot_20_30"),key=lambda r:-r.get("Txn",0)),
         "kcd_milestones":sorted(rows("KCD_Milestones"),key=lambda r:-r.get("Min_Ach_Pct",0)),
-        "kcd_targets":   {r["Vintage"]:float(r["Target_PCDV"]) for r in rows("KCD_Targets")},
+        "kcd_target_map": {(r.get("Group","KCD"),r["Vintage"]):float(r["Target_PCDV"]) for r in rows("KCD_Targets")},
         "kcd_spot_1_12": sorted(rows("KCD_Spot_1_12"), key=lambda r:-r.get("PCDV",0)),
         "kcd_spot_20_30":sorted(rows("KCD_Spot_20_30"),key=lambda r:-r.get("PCDV",0)),
         "kcd_25cr_1_12": sorted(rows("KCD_25Cr_Spot_1_12"),key=lambda r:-r.get("PCDV",0)),
@@ -180,6 +180,16 @@ def make_slab_excel():
             ws.set_column(0, len(df.columns)-1, 22)
             for ci,col in enumerate(df.columns): ws.write(1,ci,col,hf)
             ws.write(0,0,f"TA Slab Config | {sh} | Edit values below, do NOT rename columns.",nf)
+        for sh,dk in [(" Receipt Data","rec_df_full"),(" Renewal","rnl_df_full"),(" Refund","ref_df_full")]:
+            df_s=results_dict.get(dk)
+            if df_s is not None and len(df_s)>0:
+                try:
+                    df_s.to_excel(w,sheet_name=sh,index=False,startrow=0)
+                    ws=w.sheets[sh]
+                    for ci,col in enumerate(df_s.columns): ws.write(0,ci,str(col),gry)
+                    ws.set_column(0,len(df_s.columns)-1,12)
+                except: pass
+
     return buf.getvalue()
 
 
@@ -270,6 +280,8 @@ def load_ta_structure(f):
     mdc1_c = gc(["MDC.1"]); star1_c= gc(["Star.1"]); ldr1_c = gc(["Leader.1"])
     wsm1_c = gc(["WS-M.1"]); wsa1_c = gc(["WS-A.1"]); ive1_c = gc(["IVE.1"])
     email_c= gc(["Email Id"]); loc_c  = gc(["Location","New Location/ROI Location"])
+    dept_c = gc(["Department"])
+    cstat_c= gc(["Client Status","ClientStatus"])
 
     result = {}
     for _, row in df.iterrows():
@@ -313,6 +325,8 @@ def load_ta_structure(f):
             "Client-A": nv(cac),  "Client-C":    nv(ccc),
             "HC":       nv(hcc),  "Group":       sv(grc),
             "Remarks":  sv(rmc),  "Email Id":    sv(email_c),
+            "Department": sv(dept_c),
+            "Client_Status_Eligible": (str(row[cstat_c]).strip().upper()=="YES") if cstat_c else True,
             "Location": sv(loc_c),
             "MDC":  nv(mdc_c),"Star": nv(star_c),"Leader":nv(ldr_c),
             "WS-M": nv(wsm_c),"WS-A": nv(wsa_c), "IVE":  nv(ive_c),
@@ -332,12 +346,50 @@ def load_ta_structure(f):
             df[cac] = pd.to_numeric(df[cac], errors="coerce").fillna(0)
             # Only L1 rows for aggregation
             l1_df = df[df[dc].astype(str).str.strip().str.upper()=="L1"] if dc else df
+            # FY ageing for nursery count (Apr 1 reference)
+            import datetime as _dt2
+            _FY = _dt2.date(2026, 4, 1)
+            _jds = pd.to_datetime(df[jc], errors="coerce").dt.date if jc else None
+            _mjd_nm = next((c for c in df.columns if "move" in c.lower() and "join" in c.lower()), None)
+            _mjds = pd.to_datetime(df[_mjd_nm], errors="coerce").dt.date if _mjd_nm else None
+            def _calc_fy(jd, mjd):
+                try:
+                    if mjd and str(mjd) not in ("NaT","nan","None",""):
+                        d = (_FY - mjd).days
+                        if 0 <= d <= 90: return True
+                    if jd and str(jd) not in ("NaT","nan","None",""):
+                        return 0 <= (_FY - jd).days <= 90
+                except: pass
+                return False
+            df["_is_nurs"] = [_calc_fy(j, m) for j, m in zip(
+                list(_jds)  if _jds  is not None else [None]*len(df),
+                list(_mjds) if _mjds is not None else [None]*len(df))]
+            _ccc = gc(["Client-C","Client C"])
+            if _ccc and _ccc in df.columns:
+                df[_ccc] = pd.to_numeric(df[_ccc], errors="coerce").fillna(0)
+
             def _agg_for(id_col, src_df=None):
                 if not id_col: return {}
                 src = src_df if src_df is not None else l1_df
-                tmp = src.groupby(src[id_col].astype(str).str.split(".").str[0].str.strip()).agg(
-                    ca_sum=(cac,"sum"), l1_cnt=("_eid","count")).to_dict("index")
-                return tmp
+                gk = src[id_col].astype(str).str.split(".").str[0].str.strip()
+                base = src.groupby(gk).agg(ca_sum=(cac,"sum"), l1_cnt=("_eid","count"))
+                if _ccc and _ccc in src.columns:
+                    base["cc_sum"] = src.groupby(gk)[_ccc].sum()
+                if "_is_nurs" in src.columns:
+                    base["nursery_cnt"] = src.groupby(gk)["_is_nurs"].sum()
+                return base.to_dict("index")
+
+            # Build subordinates_map: {l2_eid: [l1_eid, ...]}
+            subordinates_map = {}
+            if l2i:
+                for _, _sr in l1_df.iterrows():
+                    _l2 = str(_sr[l2i]).strip().split(".")[0]
+                    _l1 = str(_sr[ec]).strip().split(".")[0]
+                    if _l2 and _l2 not in ("nan","none",""):
+                        subordinates_map.setdefault(_l2, [])
+                        if _l1 not in subordinates_map[_l2]:
+                            subordinates_map[_l2].append(_l1)
+
             # L2 count per BM: count of L2 employees where L3 ID = BM ID
             l2_df = df[df[dc].astype(str).str.strip().str.upper()=="L2"] if dc else df
             agg_l2_cnt = _agg_for(l3i, l2_df) if l3i else {}
@@ -357,10 +409,20 @@ def load_ta_structure(f):
                 elif d=="L5": a = agg_l5.get(eid)
                 if a:
                     result[eid]["Client-A_Agg"] = float(a["ca_sum"])
+                    result[eid]["Client-C_Agg"] = float(a.get("cc_sum", a["ca_sum"]))
                     result[eid]["HC"]            = int(a["l1_cnt"])
                     result[eid]["L1_Count"]      = int(a["l1_cnt"])
-        except Exception as ex:
-            pass
+                    result[eid]["lt90_count"]    = int(a.get("nursery_cnt", 0))
+                if d == "L2" and eid in subordinates_map:
+                    result[eid]["l1_eids"] = subordinates_map[eid]
+                    if d == "L3":
+                        _all=[]
+                        for _l2k,_l2e in list(result.items()):
+                            if _l2e.get("Designation")=="L2" and _l2e.get("L3 ID","")==eid:
+                                _all.extend(subordinates_map.get(_l2k,[]))
+                        result[eid]["all_l1_eids"]=list(set(_all))
+        except Exception:
+            import traceback; traceback.print_exc()
     return result
 
 
@@ -388,8 +450,8 @@ def get_prev_month_str(sel, available_months):
     """Return previous month string for CMR+1, or None if unavailable."""
     try:
         import pandas as _pd2
-        prev = (_pd2.to_datetime(sel, format="%b-%y") - _pd2.DateOffset(months=1)).strftime("%b-%y")
-        return prev if prev in available_months else None
+        nxt = (_pd2.to_datetime(sel, format="%b-%y") + _pd2.DateOffset(months=1)).strftime("%b-%y")
+        return nxt if nxt in available_months else None
     except: return None
 
 def filter_month(rec, ref, rnl, sel):
@@ -419,153 +481,115 @@ def filter_month(rec, ref, rnl, sel):
     if rn is not None:
         mc = find_col(rn, ["Month","MONTH"])
         if mc:
-            # Vectorized: parse all at once instead of row-by-row apply
-            parsed = pd.to_datetime(rn[mc].astype(str).str.strip(),
-                                    format="%b'%y", errors="coerce")
-            rn = rn[(parsed.dt.month==tm) & (parsed.dt.year==ty)]
+            def _m(v):
+                try:
+                    p = pd.to_datetime(str(v).strip(), format="%b'%y", errors="coerce")
+                    return pd.notna(p) and p.month==tm and p.year==ty
+                except: return False
+            rn = rn[rn[mc].apply(_m)]
     return r, rf, rn
 
 
 # ──────────────────────────────────────────────────────────
-# CMR  –  precompute once, look up in O(1)
+# CMR
 # ──────────────────────────────────────────────────────────
-_CMR_ZERO = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
-
-def _cmr_stats(grp, received_col="_received", ss_col="_ss_plus"):
-    """Compute CMR stats dict from an already-filtered sub-DataFrame."""
-    sent = len(grp)
-    if sent == 0: return dict(_CMR_ZERO)
-    rm   = grp[received_col]
-    recd = int(rm.sum())
-    pct  = round(recd / sent * 100, 2)
-    ss   = grp[ss_col]
-    ss_s = int(ss.sum())
-    ss_r = int((ss & rm).sum())
+def calc_cmr(rnl, eid_str):
+    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    if rnl is None or len(rnl)==0: return zero
+    ec = find_col(rnl, ["EMP ID","Emp ID","EmpID","Employee ID"])
+    sc = find_col(rnl, ["Status","STATUS"])
+    pc = find_col(rnl, ["WS/MDC Main","Product","Service"])
+    if not ec: return zero
+    df = rnl.copy()
+    df[ec] = df[ec].astype(str).str.split(".").str[0].str.strip()
+    grp = df[df[ec]==eid_str]
+    if len(grp)==0: return zero
+    rm = grp[sc].astype(str).str.upper().str.contains("RECEIVED",na=False) if sc else pd.Series(False,index=grp.index)
+    sent,recd = len(grp),int(rm.sum())
+    pct = round(recd/sent*100,2) if sent>0 else 0.0
+    if pc:
+        ss = grp[pc].astype(str).str.upper().apply(lambda x: any(k in x for k in SS_PLUS_KW))
+    else:
+        ss = pd.Series(False,index=grp.index)
+    ss_s = int(ss.sum()); ss_r = int((ss&rm).sum())
     return {"sent":sent,"recd":recd,"pct":pct,
             "ss_sent":ss_s,"ss_recd":ss_r,
             "ss_pct":round(ss_r/ss_s*100,2) if ss_s>0 else 0.0}
 
 
-def precompute_cmr_cache(rnl, l2_col=None):
-    """
-    Build two lookup dicts from the renewal DataFrame in a single pass:
-      eid_cache  : {eid_str  -> cmr_stats_dict}
-      name_cache : {l2_name  -> cmr_stats_dict}  (only when l2_col given)
-    Returns (eid_cache, name_cache).
-    """
-    if rnl is None or len(rnl) == 0:
-        return {}, {}
+def calc_cmr_from_eids(rnl, l1_eids):
+    """Aggregate CMR across all L1 EIDs for an L2 RM."""
+    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    if rnl is None or len(rnl)==0 or not l1_eids: return zero
+    ec2 = find_col(rnl, ["EMP ID","Emp ID","EmpID","Employee ID"])
+    sc2 = find_col(rnl, ["Status","STATUS"])
+    pc2 = find_col(rnl, ["WS/MDC Main","Product","Service"])
+    if not ec2: return zero
+    df2 = rnl.copy()
+    df2[ec2] = df2[ec2].astype(str).str.split(".").str[0].str.strip()
+    grp = df2[df2[ec2].isin([str(x) for x in l1_eids])]
+    if len(grp)==0: return zero
+    rm2 = grp[sc2].astype(str).str.upper().str.contains("RECEIVED",na=False) if sc2 else pd.Series(False,index=grp.index)
+    sent,recd = len(grp),int(rm2.sum())
+    pct = round(recd/sent*100,2) if sent>0 else 0.0
+    ss2 = grp[pc2].astype(str).str.upper().apply(lambda x: any(k in x for k in SS_PLUS_KW)) if pc2 else pd.Series(False,index=grp.index)
+    ss_s,ss_r = int(ss2.sum()),int((ss2&rm2).sum())
+    return {"sent":sent,"recd":recd,"pct":pct,"ss_sent":ss_s,"ss_recd":ss_r,
+            "ss_pct":round(ss_r/ss_s*100,2) if ss_s>0 else 0.0}
 
-    ec = find_col(rnl, ["EMP ID","Emp ID","EmpID","Employee ID"])
-    sc = find_col(rnl, ["Status","STATUS"])
-    pc = find_col(rnl, ["WS/MDC Main","Product","Service"])
-    if not ec:
-        return {}, {}
+# ── PERFORMANCE INDICES ──────────────────────────────────────
+def build_renewal_index(rnl):
+    if rnl is None or len(rnl)==0: return {}
+    ec=find_col(rnl,["EMP ID","Emp ID","EmpID","Employee ID"])
+    mc=find_col(rnl,["Month","MONTH"])
+    if not ec or not mc: return {}
+    rnl=rnl.copy()
+    rnl["_en"]=rnl[ec].astype(str).str.split(".").str[0].str.strip()
+    rnl["_mn"]=rnl[mc].astype(str).str.strip()
+    idx={}
+    for (e,m),g in rnl.groupby(["_en","_mn"]): idx[(str(e),str(m))]=g
+    return idx
 
-    df = rnl.copy()
-    # Normalise EMP ID once
-    df["_eid"] = df[ec].astype(str).str.split(".").str[0].str.strip()
-    # Vectorised status flag
-    df["_received"] = (df[sc].astype(str).str.upper().str.contains("RECEIVED", na=False)
-                       if sc else False)
-    # Vectorised SS+ flag  (str.upper done once; membership test via set lookup)
+def calc_cmr_fast(rnl_idx,eid_str,month_str):
+    rows_df=rnl_idx.get((eid_str,month_str),pd.DataFrame())
+    zero={"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    if len(rows_df)==0: return zero
+    sc=find_col(rows_df,["Status","STATUS"]); pc=find_col(rows_df,["WS/MDC Main","Product","Service"])
+    rm=rows_df[sc].astype(str).str.upper().str.contains("RECEIVED",na=False) if sc else pd.Series(False,index=rows_df.index)
+    sent,recd=len(rows_df),int(rm.sum())
+    pct=round(recd/sent*100,2) if sent>0 else 0.0
+    ss=rows_df[pc].astype(str).str.upper().apply(lambda x:any(k in x for k in SS_PLUS_KW)) if pc else pd.Series(False,index=rows_df.index)
+    ss_s=int(ss.sum()); ss_r=int((ss&rm).sum())
+    return {"sent":sent,"recd":recd,"pct":pct,"ss_sent":ss_s,"ss_recd":ss_r,"ss_pct":round(ss_r/ss_s*100,2) if ss_s>0 else 0.0}
+
+def calc_cmr_fast_eids(rnl_idx,eids,month_str):
+    tot={"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    for eid in eids:
+        c=calc_cmr_fast(rnl_idx,eid,month_str)
+        tot["sent"]+=c["sent"]; tot["recd"]+=c["recd"]; tot["ss_sent"]+=c["ss_sent"]; tot["ss_recd"]+=c["ss_recd"]
+    if tot["sent"]>0:
+        tot["pct"]=round(tot["recd"]/tot["sent"]*100,2)
+        tot["ss_pct"]=round(tot["ss_recd"]/tot["ss_sent"]*100,2) if tot["ss_sent"]>0 else 0.0
+    return tot
+
+def calc_cmr_by_name(rnl, l2_col, name):
+    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+    if rnl is None or not l2_col or not name or l2_col not in rnl.columns: return zero
+    grp = rnl[rnl[l2_col].astype(str).str.strip()==name.strip()]
+    if len(grp)==0: return zero
+    sc = find_col(rnl, ["Status"])
+    pc = find_col(rnl, ["WS/MDC Main","Product"])
+    rm = grp[sc].astype(str).str.upper().str.contains("RECEIVED",na=False) if sc else pd.Series(False,index=grp.index)
+    sent,recd = len(grp),int(rm.sum())
+    pct = round(recd/sent*100,2) if sent>0 else 0.0
     if pc:
-        up = df[pc].astype(str).str.upper()
-        df["_ss_plus"] = up.apply(lambda x: any(k in x for k in SS_PLUS_KW))
+        ss = grp[pc].astype(str).str.upper().apply(lambda x: any(k in x for k in SS_PLUS_KW))
     else:
-        df["_ss_plus"] = False
-
-    # Group by EMP ID
-    eid_cache = {eid: _cmr_stats(grp)
-                 for eid, grp in df.groupby("_eid", sort=False)}
-
-    # Group by L2 name (for manager-level CMR)
-    name_cache = {}
-    if l2_col and l2_col in df.columns:
-        df["_l2name"] = df[l2_col].astype(str).str.strip()
-        name_cache = {nm: _cmr_stats(grp)
-                      for nm, grp in df.groupby("_l2name", sort=False)}
-
-    return eid_cache, name_cache
-
-
-def calc_cmr(rnl, eid_str, _cache=None):
-    """Backward-compatible wrapper — uses cache when provided."""
-    if _cache is not None:
-        return _cache.get(eid_str, dict(_CMR_ZERO))
-    # Fallback: original slow path (only reached if cache not supplied)
-    if rnl is None or len(rnl) == 0: return dict(_CMR_ZERO)
-    cache, _ = precompute_cmr_cache(rnl)
-    return cache.get(eid_str, dict(_CMR_ZERO))
-
-
-def calc_cmr_by_name(rnl, l2_col, name, _name_cache=None):
-    """Backward-compatible wrapper — uses cache when provided."""
-    if _name_cache is not None:
-        return _name_cache.get(name.strip() if name else "", dict(_CMR_ZERO))
-    if rnl is None or not l2_col or not name or l2_col not in rnl.columns:
-        return dict(_CMR_ZERO)
-    _, name_cache = precompute_cmr_cache(rnl, l2_col)
-    return name_cache.get(name.strip(), dict(_CMR_ZERO))
-
-
-def precompute_receipt_cache(rec, ref):
-    """
-    Build indexed lookups so get_emp_data can find rows in O(1) per employee.
-    Returns (rec_by_exec, rec_by_mgr, rec_by_hod, ref_by_exec, col_info).
-    col_info holds all find_col results so they aren't repeated per employee.
-    """
-    col_info = {
-        "rec_ec":  find_col(rec, ["Sales Exec ID","EMP ID","Emp ID"]),
-        "rec_dvc": find_col(rec, ["Deal Val (WT)","Deal Value","Deal Val"]),
-        "rec_wtc": find_col(rec, ["WT AMT","WT_AMT"]),
-        "rec_dtc": find_col(rec, ["Entry Date","Clear Date","Receipt Date"]),
-        "rec_upc": find_col(rec, ["Unique","Upsell","UNIQUE"]),
-        "rec_mgc": find_col(rec, ["Manager Id","Old Sales HOD-3 ID"]),
-        "rec_hdc": find_col(rec, ["HOD Id","Old Sales Hod ID"]),
-        "ref_rfc": find_col(ref, ["Sales Ex. ID","Sales Exec ID","EMP ID"]),
-        "ref_wac": find_col(ref, ["WT Amount","WT_Amount","WT AMT"]),
-    }
-
-    def _norm_id(col, df):
-        if not col or col not in df.columns:
-            return pd.Series(dtype=str)
-        return df[col].astype(str).str.split(".").str[0].str.strip()
-
-    # Index receipt by exec ID
-    rec_by_exec = {}
-    if col_info["rec_ec"]:
-        rec2 = rec.copy()
-        rec2["_key"] = _norm_id(col_info["rec_ec"], rec2)
-        for k, grp in rec2.groupby("_key", sort=False):
-            rec_by_exec[k] = grp
-
-    # Index receipt by manager ID
-    rec_by_mgr = {}
-    if col_info["rec_mgc"]:
-        rec2m = rec.copy()
-        rec2m["_key"] = _norm_id(col_info["rec_mgc"], rec2m)
-        for k, grp in rec2m.groupby("_key", sort=False):
-            rec_by_mgr[k] = grp
-
-    # Index receipt by HOD ID
-    rec_by_hod = {}
-    if col_info["rec_hdc"]:
-        rec2h = rec.copy()
-        rec2h["_key"] = _norm_id(col_info["rec_hdc"], rec2h)
-        for k, grp in rec2h.groupby("_key", sort=False):
-            rec_by_hod[k] = grp
-
-    # Index refund by exec ID
-    ref_by_exec = {}
-    if col_info["ref_rfc"]:
-        ref2 = ref.copy()
-        ref2["_key"] = _norm_id(col_info["ref_rfc"], ref2)
-        for k, grp in ref2.groupby("_key", sort=False):
-            ref_by_exec[k] = grp
-
-    return rec_by_exec, rec_by_mgr, rec_by_hod, ref_by_exec, col_info
-
+        ss = pd.Series(False,index=grp.index)
+    ss_s=int(ss.sum()); ss_r=int((ss&rm).sum())
+    return {"sent":sent,"recd":recd,"pct":pct,
+            "ss_sent":ss_s,"ss_recd":ss_r,
+            "ss_pct":round(ss_r/ss_s*100,2) if ss_s>0 else 0.0}
 
 
 # ──────────────────────────────────────────────────────────
@@ -584,74 +608,50 @@ def clean_receipt(df):
     return df
 
 
-def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=False,
-                 _rec_cache=None, _ref_cache=None, _col_info=None):
+def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=False, l1_eids=None):
     """
-    Designation-aware receipt matching — uses pre-built cache when supplied.
+    Designation-aware receipt matching:
       L1 → Sales Exec ID / EMP ID
       L2 → Manager Id  (Rel'n Mgr - direct manager of L1)
       L3 → HOD -2 Id   (BM level)
       L4 → HOD - 1 Id  (CH level)
       L5+ → HOD Id     (Regional)
     """
-    # ── resolve column names ──────────────────────────────
-    if _col_info:
-        ec  = _col_info["rec_ec"]
-        dvc = _col_info["rec_dvc"]
-        wtc = _col_info["rec_wtc"]
-        dtc = _col_info["rec_dtc"]
-        upc = _col_info["rec_upc"]
-        hc_mgr = _col_info["rec_mgc"]
-        hc_hod = _col_info["rec_hdc"]
-        rfc = _col_info["ref_rfc"]
-        wac = _col_info["ref_wac"]
-    else:
-        ec  = find_col(rec,["Sales Exec ID","EMP ID","Emp ID"])
-        dvc = find_col(rec,["Deal Val (WT)","Deal Value","Deal Val"])
-        wtc = find_col(rec,["WT AMT","WT_AMT"])
-        dtc = find_col(rec,["Entry Date","Clear Date","Receipt Date"])
-        upc = find_col(rec,["Unique","Upsell","UNIQUE"])
-        hc_mgr = find_col(rec, ["Manager Id","Old Sales HOD-3 ID"])
-        hc_hod = find_col(rec, ["HOD Id","Old Sales Hod ID"])
-        rfc = find_col(ref,["Sales Ex. ID","Sales Exec ID","EMP ID"])
-        wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
-
+    ec  = find_col(rec,["Sales Exec ID","EMP ID","Emp ID"])
+    dvc = find_col(rec,["Deal Value","Deal Val (WT)","Deal Val"])
+    wtc = find_col(rec,["WT AMT","WT_AMT"])
+    dtc = find_col(rec,["Entry Date","Clear Date","Receipt Date"])
+    upc = find_col(rec,["Unique","Upsell","UNIQUE"])
     if not ec: return {}
 
-    # ── fetch matching rows from cache or full DataFrame ──
-    if _rec_cache is not None:
-        rec_by_exec, rec_by_mgr, rec_by_hod = _rec_cache
-        if desig == "L2" or is_l2:
-            r = rec_by_mgr.get(eid_str, pd.DataFrame())
-        elif desig in ("L3","L4","L5","L6"):
-            r = rec_by_hod.get(eid_str, pd.DataFrame())
-        else:
-            r = rec_by_exec.get(eid_str, pd.DataFrame())
+    # Pick hierarchy column based on designation
+    if (desig == "L2" or is_l2) and l1_eids:
+        mask = rec[ec].astype(str).str.split(".").str[0].str.strip().isin(l1_eids)
+    elif desig == "L2" or is_l2:
+        hc = find_col(rec, ["Manager Id","Old Sales HOD-3 ID"])
+        mask = (rec[hc].astype(str).str.split(".").str[0].str.strip()==eid_str
+                if hc else rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str)
+    elif desig in ("L3","L4","L5","L6"):
+        hc = find_col(rec, ["HOD Id","Old Sales Hod ID"])
+        mask = (rec[hc].astype(str).str.split(".").str[0].str.strip()==eid_str
+                if hc else rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str)
     else:
-        if desig == "L2" or is_l2:
-            hc = hc_mgr
-        elif desig in ("L3","L4","L5","L6"):
-            hc = hc_hod
-        else:
-            hc = None
-        if hc:
-            mask = rec[hc].astype(str).str.split(".").str[0].str.strip()==eid_str
-        else:
-            mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
-        r = rec[mask]
+        mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
+    r = rec[mask]
 
-    gross = _sf(r[wtc].fillna(0).sum()) if wtc and len(r)>0 else 0.0
-    dval  = _sf(r[dvc].fillna(0).sum()) if dvc and len(r)>0 else 0.0
+    gross = _sf(r[wtc].fillna(0).sum()) if wtc else 0.0
+    dval  = _sf(r[dvc].fillna(0).sum()) if dvc else 0.0
 
-    # ── refund ────────────────────────────────────────────
+    # Refund
+    rfc = find_col(ref,["Sales Ex. ID","Sales Exec ID","EMP ID"])
     refund = 0.0
     if rfc:
-        if _ref_cache is not None:
-            rr = _ref_cache.get(eid_str, pd.DataFrame())
+        wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
+        if desig in ("L2","L3","L4","L5","L6") or is_l2:
+            rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
         else:
             rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
-        if wac and len(rr)>0:
-            refund = _sf(rr[wac].fillna(0).sum())
+        if wac: refund = _sf(rr[wac].fillna(0).sum())
 
     net_coll = gross - refund
     client_a_eff = max(float(client_a),1)
@@ -906,7 +906,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         ss_m = _ss_mult(ss_pct, ss_sent, S["kcd_min_ss_sent"], S["kcd_ss_mult"])
 
         if desig == "L1":
-            tgt_pcdv = S["kcd_targets"].get(vint,1800)
+            tgt_pcdv = S.get("kcd_target_map",{}).get((emp.get("Group","KCD"),vint),1800)
             grid   = _milestone(pcdv_total, tgt_pcdv, S["kcd_milestones"])
             incr   = round(max(0,pcdv_total-tgt_pcdv)*client_a*S.get("csd_incr_rate",0.03)/1000)*1000 if grid>0 else 0
             gross_inc = round((grid+incr)*ss_m,0)
@@ -927,7 +927,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             })
 
         elif desig == "L2":
-            tgt_pcdv = S["kcd_targets"].get(vint,1800)
+            tgt_pcdv = S.get("kcd_target_map",{}).get((emp.get("Group","KCD"),vint),1800)
             grid     = _milestone(pcdv_total,tgt_pcdv,S["kcd_milestones"])
             gross_inc= round(grid*ss_m,0)
             payout_elig = gross_inc > 0
@@ -984,31 +984,18 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 # ──────────────────────────────────────────────────────────
 # BIG TICKET (from deal-level data in receipt)
 # ──────────────────────────────────────────────────────────
-def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False,
-                    _rec_cache=None, _col_info=None):
+def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False):
     empty = {"3L+":0,"2L+":0,"1L+":0,"10L+":0,"8L+":0,"5L+":0}
-    if _col_info:
-        ec  = _col_info["rec_ec"]
-        mgc = _col_info["rec_mgc"]
-        upc = _col_info["rec_upc"]
-    else:
-        ec  = find_col(rec,["Sales Exec ID","EMP ID"])
-        mgc = find_col(rec,["Old Sales HOD-3 ID","Manager Id"])
-        upc = find_col(rec,["Unique","Upsell"])
+    ec  = find_col(rec,["Sales Exec ID","EMP ID"])
+    mgc = find_col(rec,["Old Sales HOD-3 ID","Manager Id"])
+    upc = find_col(rec,["Unique","Upsell"])
     if not ec: return 0, empty
 
-    if _rec_cache is not None:
-        rec_by_exec, rec_by_mgr, _ = _rec_cache
-        if is_l2 and mgc:
-            r = rec_by_mgr.get(eid_str, pd.DataFrame()).copy()
-        else:
-            r = rec_by_exec.get(eid_str, pd.DataFrame()).copy()
+    if is_l2 and mgc:
+        mask = rec[mgc].astype(str).str.split(".").str[0].str.strip()==eid_str
     else:
-        if is_l2 and mgc:
-            mask = rec[mgc].astype(str).str.split(".").str[0].str.strip()==eid_str
-        else:
-            mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
-        r = rec[mask].copy()
+        mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
+    r = rec[mask].copy()
     if len(r) == 0: return 0, empty
 
     # Only IM Star/Leader type deals for big ticket
@@ -1317,8 +1304,8 @@ def build_excel_output(results_dict, sel_month):
                     "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD","Group":"",
-                    "<90\nVintage\nExec":r.get("Vintage",""),"HC":r.get("HC",0),
-                    "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
+                    "<90\nVintage\nExec":r.get("lt90_count",0),"HC":r.get("HC",0),
+                    "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),"Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1327,11 +1314,14 @@ def build_excel_output(results_dict, sel_month):
                     "Incremental\nPCDV\nAmt.":r.get("incr_amt",0),"Incentive\nGrid":r.get("incentive_grid",0),
                     "Incentive":r.get("base_inc",0),"Gross Incentive":r.get("gross_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("gross_inc",0),
-                    "Transaction":r.get("sp2_6_txn",0),"Productvity":r.get("sp2_6_prod",0),
+                    "Transaction":r.get("sp2_6_txn",0),
+                    "Productvity":round(r.get("sp2_6_txn",0)/max(r.get("HC",1),1),2),
                     "Gross\nIncentive.1":r.get("sp2_6_gross",0),"Paid\nIncentive.1":0,"Balance\nIncentive.1":r.get("sp2_6_gross",0),
-                    "Transaction.1":r.get("sp7_12_txn",0),"Productvity.1":r.get("sp7_12_prod",0),
+                    "Transaction.1":r.get("sp7_12_txn",0),
+                    "Productvity.1":round(r.get("sp7_12_txn",0)/max(r.get("HC",1),1),2),
                     "Gross\nIncentive.2":r.get("sp7_12_gross",0),"Paid\nIncentive.2":0,"Balance\nIncentive.2":r.get("sp7_12_gross",0),
-                    "Transaction.2":r.get("sp20_30_txn",0),"Productvity.2":r.get("sp20_30_prod",0),
+                    "Transaction.2":r.get("sp20_30_txn",0),
+                    "Productvity.2":round(r.get("sp20_30_txn",0)/max(r.get("HC",1),1),2),
                     "Gross\nIncentive.3":r.get("sp20_30_gross",0),"Paid\nIncentive.3":0,"Balance\nIncentive.3":r.get("sp20_30_gross",0),
                 })
             df_rm = pd.DataFrame(rows_rm).reindex(columns=cols_rm, fill_value="")
@@ -1364,10 +1354,10 @@ def build_excel_output(results_dict, sel_month):
                     "HC":r.get("HC",0),"L2":r.get("L2_Count",0),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD","Location":r.get("Location",""),
-                    "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
+                    "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),"Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
-                    "Collection":round(r.get("gross_coll",0),2),"Refund":round(r.get("refund",0),2),
-                    "Net Collection":round(r.get("net_coll",0),2),
+                    "Collection":round(r.get("gross_coll_cr",r.get("gross_coll",0)/1e7),6),"Refund":round(r.get("refund_cr",r.get("refund",0)/1e7),6),
+                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "CMR\nSent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1674,6 +1664,54 @@ def build_excel_output(results_dict, sel_month):
             for ci,col in enumerate(cols_btck): ws.write(1,ci,col,org)
             ws.set_column(0,len(cols_btck)-1,14); ws.freeze_panes(2,0)
 
+        # ── CH (L4 Collection Heads) ────────────────────────
+        _ch_col_names = [
+            "Employee ID","Employee Name","L5 ID","L5 Name","L6  ID","L6 Name",
+            "Joining Date","IIL Vertical Name","Client-A","Client-C",
+            "Collection","Refund","Net Collection","Target",
+            "Ach Pct","Sent","Recd","Ren Pct","Sent.1","Recd.1","Ren Pct.1",
+            "Incentive","Gross Incentive","Paid Incentive","Balance Incentive"
+        ]
+        for _chn, _chv in [("CH","csd"), ("CH-KCD","kcd")]:
+            _cr = results_dict.get(f"ch_{_chv}", [])
+            if not _cr: continue
+            _rws = []
+            for r in _cr:
+                _nc = r.get("net_coll_cr", r.get("net_coll",0)/1e7)
+                _tg = r.get("coll_target", 0)
+                _ac = (_nc / _tg * 100) if _tg > 0 else 0
+                _rws.append({
+                    "Employee ID":r["eid"], "Employee Name":r.get("name",""),
+                    "L5 ID":r.get("L5 ID",""), "L5 Name":r.get("L5 Name",""),
+                    "L6  ID":r.get("L6 ID",""), "L6 Name":r.get("L6 Name",""),
+                    "Joining Date":str(r.get("Joining Date",""))[:10],
+                    "IIL Vertical Name":"Tele Annual " + _chv.upper(),
+                    "Client-A":r.get("Client-A_Agg", r.get("Client-A",0)),
+                    "Client-C":r.get("Client-C_Agg", r.get("Client-C",0)),
+                    "Collection":round(r.get("gross_coll",0)/1e7,4),
+                    "Refund":round(r.get("refund",0)/1e7,4),
+                    "Net Collection":round(_nc,4),
+                    "Target":_tg,
+                    "Ach Pct":round(_ac/100,4),
+                    "Sent":r.get("cmr_sent",0), "Recd":r.get("cmr_recd",0),
+                    "Ren Pct":round(r.get("cmr_pct",0)/100,4),
+                    "Sent.1":r.get("cmr1_sent",0), "Recd.1":r.get("cmr1_recd",0),
+                    "Ren Pct.1":round(r.get("cmr1_pct",0)/100,4),
+                    "Incentive":r.get("base_inc",0),
+                    "Gross Incentive":r.get("total_inc",0),
+                    "Paid Incentive":0,
+                    "Balance Incentive":r.get("total_inc",0),
+                })
+            if _rws:
+                _df = pd.DataFrame(_rws).reindex(columns=_ch_col_names, fill_value="")
+                _df.to_excel(w, sheet_name=_chn, index=False, startrow=1)
+                _ws = w.sheets[_chn]
+                _hf = grn if _chv == "csd" else org
+                for ci, col in enumerate(_ch_col_names):
+                    _ws.write(1, ci, col, _hf)
+                _ws.set_column(0, len(_ch_col_names)-1, 14)
+                _ws.freeze_panes(2, 0)
+
         # ── Summary ────────────────────────────────────────
         all_rows = []
         for key, lst in results_dict.items():
@@ -1806,32 +1844,19 @@ l2_rnl_col = find_col(rnl, ["L2","L2 Name","L2Name","RM Name"]) if rnl is not No
 if calc_btn:
     results = {
         "nursery":[],"exec_csd":[],"rm_csd":[],
-        "bm_csd":[],"bt_bm_csd":[],"bt_ch_csd":[],
+        "bm_csd":[],"bt_bm_csd":[],"bt_ch_csd":[],"ch_csd":[],
         "exec_kcd":[],"rm_kcd":[],
-        "bm_kcd":[],"bt_bm_kcd":[],"bt_ch_kcd":[],
+        "bm_kcd":[],"bt_bm_kcd":[],"bt_ch_kcd":[],"ch_kcd":[],
     }
+
+    # Pre-build renewal index
+    with st.spinner("Indexing data for fast mode…"):
+        _rnl_idx = build_renewal_index(rnl)
+        _rnl_full_idx = build_renewal_index(rnl_raw)
+        _nxt_sel = get_prev_month_str(sel_month, months)
 
     prog = st.progress(0, "Calculating…")
     eids = list(struct_map.keys())
-
-    # ── Pre-compute everything ONCE before the employee loop ──────────────
-    # 1. Previous month renewal data (was being re-filtered inside loop)
-    _prev_sel = get_prev_month_str(sel_month, months)
-    if _prev_sel:
-        _, _, rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
-    else:
-        rnl_prev = None
-
-    # 2. CMR caches for current and previous month
-    cmr_eid_cache,  cmr_name_cache  = precompute_cmr_cache(rnl,      l2_rnl_col)
-    cmr_eid_cachep, cmr_name_cachep = precompute_cmr_cache(rnl_prev, l2_rnl_col)
-
-    # 3. Receipt / refund index caches
-    rec_by_exec, rec_by_mgr, rec_by_hod, ref_by_exec, col_info = \
-        precompute_receipt_cache(rec, ref)
-    _rec_cache = (rec_by_exec, rec_by_mgr, rec_by_hod)
-    _ref_cache = ref_by_exec
-    # ─────────────────────────────────────────────────────────────────────
 
     for i, eid in enumerate(eids):
         emp = struct_map[eid]
@@ -1843,24 +1868,32 @@ if calc_btn:
         is_l2  = desig in ("L2","L3","L4","L5")
         is_25cr= "25" in str(emp.get("Group",""))
 
-        # CMR (current month) — O(1) cache lookup
-        if is_l2 and l2_rnl_col and name:
-            cmr = cmr_name_cache.get(name.strip(), dict(_CMR_ZERO))
-            if cmr["sent"] == 0:
-                cmr = cmr_eid_cache.get(eid, dict(_CMR_ZERO))
-        else:
-            cmr = cmr_eid_cache.get(eid, dict(_CMR_ZERO))
+        # Get L1 subordinates for this L2 RM
+        l1_eids = emp.get("l1_eids", []) if desig == "L2" else []
 
-        # CMR+1 — previous month (O(1) cache lookup — no repeated filter_month call)
-        if _prev_sel:
-            if is_l2 and l2_rnl_col and name:
-                cmr_prev = cmr_name_cachep.get(name.strip(), dict(_CMR_ZERO))
-                if cmr_prev["sent"] == 0:
-                    cmr_prev = cmr_eid_cachep.get(eid, dict(_CMR_ZERO))
-            else:
-                cmr_prev = cmr_eid_cachep.get(eid, dict(_CMR_ZERO))
+        # CMR (current month)
+        if desig == "L2" and l1_eids:
+            cmr = calc_cmr_from_eids(rnl, l1_eids)
+        elif is_l2 and l2_rnl_col and name:
+            cmr = calc_cmr_by_name(rnl, l2_rnl_col, name)
+            if cmr["sent"] == 0:
+                cmr = calc_cmr(rnl, eid)
         else:
-            cmr_prev = dict(_CMR_ZERO)
+            cmr = calc_cmr(rnl, eid)
+
+        # CMR+1 — previous month renewal data (Sent.1 / Recd.1 / Ren%.1 columns)
+        _prev_sel = get_prev_month_str(sel_month, months)
+        if _prev_sel:
+            _, _, _rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
+            if desig == "L2" and l1_eids:
+                cmr_prev = calc_cmr_from_eids(_rnl_prev, l1_eids)
+            elif is_l2 and l2_rnl_col and name:
+                cmr_prev = calc_cmr_by_name(_rnl_prev, l2_rnl_col, name)
+                if cmr_prev["sent"] == 0: cmr_prev = calc_cmr(_rnl_prev, eid)
+            else:
+                cmr_prev = calc_cmr(_rnl_prev, eid)
+        else:
+            cmr_prev = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
 
         # Per-employee targets from target file
         # L1 CMR renewal target
@@ -1888,18 +1921,29 @@ if calc_btn:
         if per_emp_coll_tgt > 0:
             emp["Coll_Target"] = per_emp_coll_tgt
 
-        # Recalculate vintage from Ageing using sir's exact labels
+        # Recalculate vintage
         _age = emp.get("Ageing", 0)
-        if _age <= 90:    emp["Vintage"] = "0-90"
-        elif _age <= 270: emp["Vintage"] = "90-270"
-        else:             emp["Vintage"] = "270+"
+        if vert == "KCD":
+            if _age <= 270:   emp["Vintage"] = "0-270"
+            elif _age <= 730: emp["Vintage"] = "270-2Yr"
+            else:             emp["Vintage"] = "2Yr+"
+        else:
+            if _age <= 90:    emp["Vintage"] = "0-90"
+            elif _age <= 270: emp["Vintage"] = "90-270"
+            else:             emp["Vintage"] = "270+"
+        # Group from Department
+        _dept = emp.get("Department","")
+        if vert == "KCD":
+            emp["Group"] = "KCD-25cr" if any(k in str(_dept).upper() for k in ["ILP","IVE"]) else "KCD"
+        elif not emp.get("Group",""):
+            emp["Group"] = "Tele-A CSD"
 
-        # Sir uses Client-C as PCDV denominator
-        cc = max(float(emp.get("Client-C", ca) or ca), 1)
+        # Sir uses Client-C for PCDV (aggregated from L1s for L2 RMs)
+        cc_agg = emp.get("Client-C_Agg", emp.get("Client-C", ca))
+        cc = max(float(cc_agg or ca), 1)
 
-        # Receipt data — O(1) cache lookup
-        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=cc,
-                            _rec_cache=_rec_cache, _ref_cache=_ref_cache, _col_info=col_info)
+        # Receipt data
+        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=cc, l1_eids=l1_eids)
 
         # Calculate incentive
         inc = calc_employee(emp, data, cmr, S, is_25cr=is_25cr)
@@ -1910,6 +1954,8 @@ if calc_btn:
             "cmr_target_pct": per_emp_cmr_tgt,
             "Ageing":ageing,"Joining Date":emp.get("Joining Date",""),
             "cmr1_sent":cmr_prev["sent"],"cmr1_recd":cmr_prev["recd"],"cmr1_pct":cmr_prev["pct"],
+            "lt90_count":emp.get("lt90_count",0),
+            "l1_eids":l1_eids,
             "Client-A":emp.get("Client-A",0),"Client-C":emp.get("Client-C",0),
             "Client-A_Agg":emp.get("Client-A_Agg",emp.get("Client-A",0)),
             "HC":emp.get("HC",0),"Group":emp.get("Group",""),
@@ -1943,20 +1989,17 @@ if calc_btn:
                 results["rm_csd"].append(row)
             elif desig == "L3":
                 bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                                                     S["bt_bm_csd"], is_l2=False,
-                                                     _rec_cache=_rec_cache, _col_info=col_info)
+                                                     S["bt_bm_csd"], is_l2=False)
                 row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
                              "bt_eligible":"Yes" if bt_inc>0 else "No"})
                 results["bm_csd"].append(row)
                 results["bt_bm_csd"].append(row)
-            else:  # L4+
-                bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                                                     S["bt_ch_csd"], is_l2=True,
-                                                     _rec_cache=_rec_cache, _col_info=col_info)
-                row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
-                             "bt_eligible":"Yes" if bt_inc>0 else "No",
-                             "deal_target":0})
-                results["bt_ch_csd"].append(row)
+            elif desig == "L4":
+                bt_inc,bt_counts=calc_big_ticket(rec,eid,desig,vert,S["bt_ch_csd"],is_l2=True)
+                row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,"bt_eligible":"Yes" if bt_inc>0 else "No","deal_target":0,"net_coll_cr":row.get("net_coll",0)/1e7})
+                results["bt_ch_csd"].append(row); results["ch_csd"].append(row)
+            else:
+                results["ch_csd"].append(row)
 
         elif vert == "KCD":
             fy_age = emp.get("FY_Ageing", ageing)
@@ -1972,19 +2015,17 @@ if calc_btn:
                 results["rm_kcd"].append(row)
             elif desig == "L3":
                 bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                                                     S["bt_bm_kcd"], is_l2=False,
-                                                     _rec_cache=_rec_cache, _col_info=col_info)
+                                                     S["bt_bm_kcd"], is_l2=False)
                 row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
                              "bt_eligible":"Yes" if bt_inc>0 else "NO"})
                 results["bm_kcd"].append(row)
                 results["bt_bm_kcd"].append(row)
-            else:  # L4+
-                bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                                                     S["bt_ch_kcd"], is_l2=True,
-                                                     _rec_cache=_rec_cache, _col_info=col_info)
-                row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
-                             "bt_eligible":"Yes" if bt_inc>0 else "No"})
-                results["bt_ch_kcd"].append(row)
+            elif desig == "L4":
+                bt_inc,bt_counts=calc_big_ticket(rec,eid,desig,vert,S["bt_ch_kcd"],is_l2=True)
+                row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,"bt_eligible":"Yes" if bt_inc>0 else "No","net_coll_cr":row.get("net_coll",0)/1e7})
+                results["bt_ch_kcd"].append(row); results["ch_kcd"].append(row)
+            else:
+                results["ch_kcd"].append(row)
 
         prog.progress((i+1)/len(eids), f"Processing {i+1}/{len(eids)}…")
 
@@ -2020,6 +2061,7 @@ if calc_btn:
         st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
     # Export
+    results["rec_df_full"]=rec_raw; results["rnl_df_full"]=rnl_raw; results["ref_df_full"]=ref_raw
     out_bytes = build_excel_output(results, sel_month)
     st.download_button(
         "⬇️ Download Full TA Incentive Report (Excel)",
