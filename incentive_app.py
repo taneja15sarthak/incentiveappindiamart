@@ -226,23 +226,20 @@ def _to_date(v):
 
 
 # ──────────────────────────────────────────────────────────
-# STRUCTURE LOADER  (OPTIMISED: iterrows → to_dict)
+# STRUCTURE LOADER
 # ──────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def load_ta_structure(fbytes: bytes, fname: str):
-    """Cached, fast version — accepts raw bytes so st.cache_data can hash it."""
-    import io as _io
+def load_ta_structure(f):
+    if f is None: return {}
     try:
-        buf = _io.BytesIO(fbytes)
-        xl  = pd.ExcelFile(buf)
+        xl = pd.ExcelFile(f)
         norms = [s.strip().upper() for s in xl.sheet_names]
         sh = next((xl.sheet_names[i] for i,s in enumerate(norms)
                    if s in ("FSF_TA","TA","STRUCT","STRUCTURE"," FSF_TA")), None)
         if sh is None:
             st.warning("⚠️ Could not find FSF_TA/TA sheet in the structure file.")
             return {}
-        buf.seek(0)
-        df = pd.read_excel(buf, sheet_name=sh)
+        f.seek(0)
+        df = pd.read_excel(f, sheet_name=sh)
         df.columns = [str(c).strip() for c in df.columns]
     except Exception as e:
         st.error(f"Structure file error: {e}"); return {}
@@ -252,8 +249,9 @@ def load_ta_structure(fbytes: bytes, fname: str):
     nc  = gc(["Employee Name"])
     dc  = gc(["Designation"])
     vc  = gc(["IIL Vertical Name","Vertical","IIL Vertical"])
-    jc  = gc(["Joining Date","DOJ"])
+    jc  = gc(["Joining Date","DOJ"])  # Move/Join Date is NaT for TA employees
     fgc = gc(["Final Group","FinalGroup","Vintage"])
+    vbc = gc(["Vintage Bucket"])
     cac = gc(["Client-A","Client A"])
     ccc = gc(["Client-C","Client C"])
     agc = gc(["Aeging","Ageing","Aging"])
@@ -265,50 +263,53 @@ def load_ta_structure(fbytes: bytes, fname: str):
     l4i = gc(["L4 ID","L4ID"]); l4n = gc(["L4 Name","L4Name"])
     l5i = gc(["L5 ID","L5ID"]); l5n = gc(["L5 Name","L5Name"])
     l6i = gc(["L6 ID","L6  ID","L6ID"]); l6n = gc(["L6 Name","L6Name"])
+    # Product portfolio columns (from structure for Nursery sheet)
     mdc_c  = gc(["MDC"]); star_c = gc(["Star"]); ldr_c  = gc(["Leader"])
     wsm_c  = gc(["WS-M"]); wsa_c  = gc(["WS-A"]); ive_c  = gc(["IVE"])
+    # Renewal product columns (MDC.1 etc in structure)
     mdc1_c = gc(["MDC.1"]); star1_c= gc(["Star.1"]); ldr1_c = gc(["Leader.1"])
     wsm1_c = gc(["WS-M.1"]); wsa1_c = gc(["WS-A.1"]); ive1_c = gc(["IVE.1"])
     email_c= gc(["Email Id"]); loc_c  = gc(["Location","New Location/ROI Location"])
 
-    if not ec: return {}
-
-    # ── FAST: to_dict is ~10x faster than iterrows ──────────
     result = {}
-    import datetime as _dt
-    for row in df.to_dict("records"):
-        eid = str(row.get(ec,"")).strip().split(".")[0]
+    for _, row in df.iterrows():
+        if not ec: break
+        eid = str(row[ec]).strip().split(".")[0]
         if not eid or eid.lower() in ("nan","none",""): continue
 
-        vraw = str(row.get(vc,"")).strip().upper() if vc else ""
+        vraw = str(row[vc]).strip().upper() if vc else ""
+        # Only include Tele Annual employees - must have TELE in vertical name
         if "TELE" not in vraw: continue
         if "CSD" in vraw:   vert = "CSD"
         elif "KCD" in vraw: vert = "KCD"
         else: continue
 
-        desig = str(row.get(dc,"")).strip().upper() if dc else "L1"
-        vint  = "90-270"  # placeholder; overridden by ageing in calc loop
+        desig  = str(row[dc]).strip().upper() if dc else "L1"
+        vint   = str(row[fgc]).strip() if fgc else "91-270D"
+        vint = "90-270"  # placeholder; overridden by ageing in calc loop
 
         ageing = 0
-        if agc and str(row.get(agc,"")).strip() not in ("nan","None",""):
+        if agc and str(row[agc]).strip() not in ("nan","None",""):
             try: ageing = int(float(row[agc]))
             except: pass
         if ageing == 0:
-            jd = _to_date(row.get(jc)) if jc else None
+            jd = _to_date(row[jc]) if jc else None
             if jd:
                 try:
+                    import datetime as _dt
                     jd_date = jd.date() if isinstance(jd, _dt.datetime) else jd
                     ageing = (CALC_DATE - jd_date).days
-                except: ageing = 0
+                except Exception:
+                    ageing = 0
 
-        def sv(c): return str(row.get(c,"")).strip() if c else ""
-        def nv(c): return _sf(row.get(c,0)) if c else 0.0
-        def id_sv(c): return str(row.get(c,"")).strip().split(".")[0] if c else ""
+        def sv(c): return str(row[c]).strip() if c else ""
+        def nv(c): return _sf(row[c]) if c else 0.0
+        def id_sv(c): return str(row[c]).strip().split(".")[0] if c else ""
 
         result[eid] = {
             "Name":     sv(nc),   "Designation": desig,
             "Vertical": vert,     "Vintage":     vint,
-            "Ageing":   ageing,   "Joining Date":_to_date(row.get(jc)) if jc else None,
+            "Ageing":   ageing,   "Joining Date":_to_date(row[jc]) if jc else None,
             "Client-A": nv(cac),  "Client-C":    nv(ccc),
             "HC":       nv(hcc),  "Group":       sv(grc),
             "Remarks":  sv(rmc),  "Email Id":    sv(email_c),
@@ -324,23 +325,29 @@ def load_ta_structure(fbytes: bytes, fname: str):
             "L6 ID":id_sv(l6i),"L6 Name":sv(l6n),
         }
 
-    # Aggregate Client-A and HC for management levels from L1 data
+    # Aggregate Client-A and HC for all management levels from L1 data
     if ec and cac:
         try:
             df["_eid"] = df[ec].astype(str).str.split(".").str[0].str.strip()
             df[cac] = pd.to_numeric(df[cac], errors="coerce").fillna(0)
+            # Only L1 rows for aggregation
             l1_df = df[df[dc].astype(str).str.strip().str.upper()=="L1"] if dc else df
             def _agg_for(id_col, src_df=None):
                 if not id_col: return {}
                 src = src_df if src_df is not None else l1_df
-                return src.groupby(src[id_col].astype(str).str.split(".").str[0].str.strip()).agg(
+                tmp = src.groupby(src[id_col].astype(str).str.split(".").str[0].str.strip()).agg(
                     ca_sum=(cac,"sum"), l1_cnt=("_eid","count")).to_dict("index")
+                return tmp
+            # L2 count per BM: count of L2 employees where L3 ID = BM ID
             l2_df = df[df[dc].astype(str).str.strip().str.upper()=="L2"] if dc else df
             agg_l2_cnt = _agg_for(l3i, l2_df) if l3i else {}
-            agg_l2 = _agg_for(l2i); agg_l3 = _agg_for(l3i)
-            agg_l4 = _agg_for(l4i); agg_l5 = _agg_for(l5i)
+            agg_l2 = _agg_for(l2i)
+            agg_l3 = _agg_for(l3i)
+            agg_l4 = _agg_for(l4i)
+            agg_l5 = _agg_for(l5i)
             for eid, emp in result.items():
-                d = emp["Designation"]; a = None
+                d = emp["Designation"]
+                a = None
                 if d=="L2":   a = agg_l2.get(eid)
                 elif d=="L3":
                     a = agg_l3.get(eid)
@@ -352,10 +359,14 @@ def load_ta_structure(fbytes: bytes, fname: str):
                     result[eid]["Client-A_Agg"] = float(a["ca_sum"])
                     result[eid]["HC"]            = int(a["l1_cnt"])
                     result[eid]["L1_Count"]      = int(a["l1_cnt"])
-        except Exception: pass
+        except Exception as ex:
+            pass
     return result
 
 
+# ──────────────────────────────────────────────────────────
+# MONTH FILTERING
+# ──────────────────────────────────────────────────────────
 def get_months(rec_df, rnl_df):
     months = set()
     dc = find_col(rec_df, ["Entry Date","Clear Date","Receipt Date"])
@@ -408,69 +419,161 @@ def filter_month(rec, ref, rnl, sel):
     if rn is not None:
         mc = find_col(rn, ["Month","MONTH"])
         if mc:
-            def _m(v):
-                try:
-                    p = pd.to_datetime(str(v).strip(), format="%b'%y", errors="coerce")
-                    return pd.notna(p) and p.month==tm and p.year==ty
-                except: return False
-            rn = rn[rn[mc].apply(_m)]
+            # Vectorized: parse all at once instead of row-by-row apply
+            parsed = pd.to_datetime(rn[mc].astype(str).str.strip(),
+                                    format="%b'%y", errors="coerce")
+            rn = rn[(parsed.dt.month==tm) & (parsed.dt.year==ty)]
     return r, rf, rn
 
 
 # ──────────────────────────────────────────────────────────
-# CMR  (OPTIMISED: accept pre-grouped data)
+# CMR  –  precompute once, look up in O(1)
 # ──────────────────────────────────────────────────────────
-def _cmr_from_group(grp, sc, pc):
-    """Compute CMR stats from an already-filtered DataFrame slice."""
-    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
-    if grp is None or len(grp) == 0: return zero
-    rm = grp[sc].astype(str).str.upper().str.contains("RECEIVED", na=False) if sc else pd.Series(False, index=grp.index)
-    sent, recd = len(grp), int(rm.sum())
-    pct = round(recd/sent*100, 2) if sent > 0 else 0.0
-    if pc:
-        ss = grp[pc].astype(str).str.upper().apply(lambda x: any(k in x for k in SS_PLUS_KW))
-    else:
-        ss = pd.Series(False, index=grp.index)
-    ss_s = int(ss.sum()); ss_r = int((ss & rm).sum())
+_CMR_ZERO = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+
+def _cmr_stats(grp, received_col="_received", ss_col="_ss_plus"):
+    """Compute CMR stats dict from an already-filtered sub-DataFrame."""
+    sent = len(grp)
+    if sent == 0: return dict(_CMR_ZERO)
+    rm   = grp[received_col]
+    recd = int(rm.sum())
+    pct  = round(recd / sent * 100, 2)
+    ss   = grp[ss_col]
+    ss_s = int(ss.sum())
+    ss_r = int((ss & rm).sum())
     return {"sent":sent,"recd":recd,"pct":pct,
             "ss_sent":ss_s,"ss_recd":ss_r,
             "ss_pct":round(ss_r/ss_s*100,2) if ss_s>0 else 0.0}
 
-def calc_cmr(rnl, eid_str, _rnl_by_eid=None, _rnl_sc=None, _rnl_pc=None):
-    """Falls back to full-scan if pre-grouped dict not supplied (backward compat)."""
-    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
-    if rnl is None or len(rnl)==0: return zero
-    if _rnl_by_eid is not None:
-        grp = _rnl_by_eid.get(str(eid_str).strip(), pd.DataFrame())
-        return _cmr_from_group(grp, _rnl_sc, _rnl_pc)
-    # Legacy path (slow) — kept for compatibility
+
+def precompute_cmr_cache(rnl, l2_col=None):
+    """
+    Build two lookup dicts from the renewal DataFrame in a single pass:
+      eid_cache  : {eid_str  -> cmr_stats_dict}
+      name_cache : {l2_name  -> cmr_stats_dict}  (only when l2_col given)
+    Returns (eid_cache, name_cache).
+    """
+    if rnl is None or len(rnl) == 0:
+        return {}, {}
+
     ec = find_col(rnl, ["EMP ID","Emp ID","EmpID","Employee ID"])
     sc = find_col(rnl, ["Status","STATUS"])
     pc = find_col(rnl, ["WS/MDC Main","Product","Service"])
-    if not ec: return zero
-    grp = rnl[rnl[ec].astype(str).str.split(".").str[0].str.strip()==str(eid_str)]
-    return _cmr_from_group(grp, sc, pc)
+    if not ec:
+        return {}, {}
 
-def calc_cmr_by_name(rnl, l2_col, name, _rnl_by_name=None, _rnl_sc=None, _rnl_pc=None):
-    """Falls back to full-scan if pre-grouped dict not supplied (backward compat)."""
-    zero = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
-    if rnl is None or not l2_col or not name: return zero
-    if _rnl_by_name is not None:
-        grp = _rnl_by_name.get(str(name).strip(), pd.DataFrame())
-        return _cmr_from_group(grp, _rnl_sc, _rnl_pc)
-    # Legacy path (slow)
-    if l2_col not in rnl.columns: return zero
-    grp = rnl[rnl[l2_col].astype(str).str.strip()==name.strip()]
-    sc = find_col(rnl, ["Status","STATUS"])
-    pc = find_col(rnl, ["WS/MDC Main","Product","Service"])
-    return _cmr_from_group(grp, sc, pc)
+    df = rnl.copy()
+    # Normalise EMP ID once
+    df["_eid"] = df[ec].astype(str).str.split(".").str[0].str.strip()
+    # Vectorised status flag
+    df["_received"] = (df[sc].astype(str).str.upper().str.contains("RECEIVED", na=False)
+                       if sc else False)
+    # Vectorised SS+ flag  (str.upper done once; membership test via set lookup)
+    if pc:
+        up = df[pc].astype(str).str.upper()
+        df["_ss_plus"] = up.apply(lambda x: any(k in x for k in SS_PLUS_KW))
+    else:
+        df["_ss_plus"] = False
+
+    # Group by EMP ID
+    eid_cache = {eid: _cmr_stats(grp)
+                 for eid, grp in df.groupby("_eid", sort=False)}
+
+    # Group by L2 name (for manager-level CMR)
+    name_cache = {}
+    if l2_col and l2_col in df.columns:
+        df["_l2name"] = df[l2_col].astype(str).str.strip()
+        name_cache = {nm: _cmr_stats(grp)
+                      for nm, grp in df.groupby("_l2name", sort=False)}
+
+    return eid_cache, name_cache
+
+
+def calc_cmr(rnl, eid_str, _cache=None):
+    """Backward-compatible wrapper — uses cache when provided."""
+    if _cache is not None:
+        return _cache.get(eid_str, dict(_CMR_ZERO))
+    # Fallback: original slow path (only reached if cache not supplied)
+    if rnl is None or len(rnl) == 0: return dict(_CMR_ZERO)
+    cache, _ = precompute_cmr_cache(rnl)
+    return cache.get(eid_str, dict(_CMR_ZERO))
+
+
+def calc_cmr_by_name(rnl, l2_col, name, _name_cache=None):
+    """Backward-compatible wrapper — uses cache when provided."""
+    if _name_cache is not None:
+        return _name_cache.get(name.strip() if name else "", dict(_CMR_ZERO))
+    if rnl is None or not l2_col or not name or l2_col not in rnl.columns:
+        return dict(_CMR_ZERO)
+    _, name_cache = precompute_cmr_cache(rnl, l2_col)
+    return name_cache.get(name.strip(), dict(_CMR_ZERO))
+
+
+def precompute_receipt_cache(rec, ref):
+    """
+    Build indexed lookups so get_emp_data can find rows in O(1) per employee.
+    Returns (rec_by_exec, rec_by_mgr, rec_by_hod, ref_by_exec, col_info).
+    col_info holds all find_col results so they aren't repeated per employee.
+    """
+    col_info = {
+        "rec_ec":  find_col(rec, ["Sales Exec ID","EMP ID","Emp ID"]),
+        "rec_dvc": find_col(rec, ["Deal Val (WT)","Deal Value","Deal Val"]),
+        "rec_wtc": find_col(rec, ["WT AMT","WT_AMT"]),
+        "rec_dtc": find_col(rec, ["Entry Date","Clear Date","Receipt Date"]),
+        "rec_upc": find_col(rec, ["Unique","Upsell","UNIQUE"]),
+        "rec_mgc": find_col(rec, ["Manager Id","Old Sales HOD-3 ID"]),
+        "rec_hdc": find_col(rec, ["HOD Id","Old Sales Hod ID"]),
+        "ref_rfc": find_col(ref, ["Sales Ex. ID","Sales Exec ID","EMP ID"]),
+        "ref_wac": find_col(ref, ["WT Amount","WT_Amount","WT AMT"]),
+    }
+
+    def _norm_id(col, df):
+        if not col or col not in df.columns:
+            return pd.Series(dtype=str)
+        return df[col].astype(str).str.split(".").str[0].str.strip()
+
+    # Index receipt by exec ID
+    rec_by_exec = {}
+    if col_info["rec_ec"]:
+        rec2 = rec.copy()
+        rec2["_key"] = _norm_id(col_info["rec_ec"], rec2)
+        for k, grp in rec2.groupby("_key", sort=False):
+            rec_by_exec[k] = grp
+
+    # Index receipt by manager ID
+    rec_by_mgr = {}
+    if col_info["rec_mgc"]:
+        rec2m = rec.copy()
+        rec2m["_key"] = _norm_id(col_info["rec_mgc"], rec2m)
+        for k, grp in rec2m.groupby("_key", sort=False):
+            rec_by_mgr[k] = grp
+
+    # Index receipt by HOD ID
+    rec_by_hod = {}
+    if col_info["rec_hdc"]:
+        rec2h = rec.copy()
+        rec2h["_key"] = _norm_id(col_info["rec_hdc"], rec2h)
+        for k, grp in rec2h.groupby("_key", sort=False):
+            rec_by_hod[k] = grp
+
+    # Index refund by exec ID
+    ref_by_exec = {}
+    if col_info["ref_rfc"]:
+        ref2 = ref.copy()
+        ref2["_key"] = _norm_id(col_info["ref_rfc"], ref2)
+        for k, grp in ref2.groupby("_key", sort=False):
+            ref_by_exec[k] = grp
+
+    return rec_by_exec, rec_by_mgr, rec_by_hod, ref_by_exec, col_info
+
 
 
 # ──────────────────────────────────────────────────────────
-# RECEIPT EXTRACTION  (OPTIMISED: pre-grouped data)
+# RECEIPT EXTRACTION
 # ──────────────────────────────────────────────────────────
 def clean_receipt(df):
-    """Keep only CLEARED rows with no B/C flag."""
+    """Keep only CLEARED rows with no B/C flag. Do NOT filter by Vertical -
+    TA employees are identified by EMP ID matching against struct_map."""
     df = df.copy()
     bc = find_col(df,["B/C"])
     if bc: df = df[df[bc].isna()|(df[bc].astype(str).str.strip()=="")]
@@ -481,86 +584,54 @@ def clean_receipt(df):
     return df
 
 
-def _build_rec_index(rec):
-    """Pre-compute all column names and grouped sub-DataFrames for receipt.
-    Called ONCE before the employee loop — O(N) not O(N*M).
-    Returns (col_cache dict, grouped dicts).
-    """
-    cols = {
-        "ec":  find_col(rec, ["Sales Exec ID","EMP ID","Emp ID"]),
-        "dvc": find_col(rec, ["Deal Val (WT)","Deal Value","Deal Val"]),
-        "wtc": find_col(rec, ["WT AMT","WT_AMT"]),
-        "dtc": find_col(rec, ["Entry Date","Clear Date","Receipt Date"]),
-        "upc": find_col(rec, ["Unique","Upsell","UNIQUE"]),
-        "mgc": find_col(rec, ["Manager Id","Old Sales HOD-3 ID"]),
-        "hodc":find_col(rec, ["HOD Id","Old Sales Hod ID"]),
-    }
-    grp_l1 = {}; grp_mgr = {}; grp_hod = {}
-    if cols["ec"]:
-        rec = rec.copy()
-        rec["_eid"]  = rec[cols["ec"]].astype(str).str.split(".").str[0].str.strip()
-        grp_l1 = dict(tuple(rec.groupby("_eid", sort=False)))
-    if cols["mgc"]:
-        rec["_mgr"]  = rec[cols["mgc"]].astype(str).str.split(".").str[0].str.strip()
-        grp_mgr = dict(tuple(rec.groupby("_mgr", sort=False)))
-    if cols["hodc"]:
-        rec["_hod"]  = rec[cols["hodc"]].astype(str).str.split(".").str[0].str.strip()
-        grp_hod = dict(tuple(rec.groupby("_hod", sort=False)))
-    return cols, grp_l1, grp_mgr, grp_hod
-
-
-def _build_ref_index(ref):
-    """Pre-compute refund column + grouped dict."""
-    rfc = find_col(ref,["Sales Ex. ID","Sales Exec ID","EMP ID"])
-    wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
-    grp_ref = {}
-    if rfc and len(ref):
-        ref = ref.copy()
-        ref["_eid"] = ref[rfc].astype(str).str.split(".").str[0].str.strip()
-        grp_ref = dict(tuple(ref.groupby("_eid", sort=False)))
-    return rfc, wac, grp_ref
-
-
 def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=False,
-                 _rec_cols=None, _grp_l1=None, _grp_mgr=None, _grp_hod=None,
-                 _ref_wac=None, _grp_ref=None):
+                 _rec_cache=None, _ref_cache=None, _col_info=None):
     """
-    Designation-aware receipt matching.
-    Fast path: supply pre-built index dicts (_rec_cols, _grp_*).
-    Slow path (legacy): falls back to full DataFrame scans.
+    Designation-aware receipt matching — uses pre-built cache when supplied.
+      L1 → Sales Exec ID / EMP ID
+      L2 → Manager Id  (Rel'n Mgr - direct manager of L1)
+      L3 → HOD -2 Id   (BM level)
+      L4 → HOD - 1 Id  (CH level)
+      L5+ → HOD Id     (Regional)
     """
-    # ── resolve column cache ──────────────────────────────
-    if _rec_cols is not None:
-        ec  = _rec_cols["ec"];  dvc = _rec_cols["dvc"]
-        wtc = _rec_cols["wtc"]; dtc = _rec_cols["dtc"]
-        upc = _rec_cols["upc"]; mgc = _rec_cols["mgc"]
-        hodc= _rec_cols["hodc"]
+    # ── resolve column names ──────────────────────────────
+    if _col_info:
+        ec  = _col_info["rec_ec"]
+        dvc = _col_info["rec_dvc"]
+        wtc = _col_info["rec_wtc"]
+        dtc = _col_info["rec_dtc"]
+        upc = _col_info["rec_upc"]
+        hc_mgr = _col_info["rec_mgc"]
+        hc_hod = _col_info["rec_hdc"]
+        rfc = _col_info["ref_rfc"]
+        wac = _col_info["ref_wac"]
     else:
         ec  = find_col(rec,["Sales Exec ID","EMP ID","Emp ID"])
         dvc = find_col(rec,["Deal Val (WT)","Deal Value","Deal Val"])
         wtc = find_col(rec,["WT AMT","WT_AMT"])
         dtc = find_col(rec,["Entry Date","Clear Date","Receipt Date"])
         upc = find_col(rec,["Unique","Upsell","UNIQUE"])
-        mgc = find_col(rec,["Manager Id","Old Sales HOD-3 ID"])
-        hodc= find_col(rec,["HOD Id","Old Sales Hod ID"])
+        hc_mgr = find_col(rec, ["Manager Id","Old Sales HOD-3 ID"])
+        hc_hod = find_col(rec, ["HOD Id","Old Sales Hod ID"])
+        rfc = find_col(ref,["Sales Ex. ID","Sales Exec ID","EMP ID"])
+        wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
 
     if not ec: return {}
 
-    # ── fast group lookup ─────────────────────────────────
-    eid_str = str(eid_str).strip()
-    if _grp_l1 is not None:
+    # ── fetch matching rows from cache or full DataFrame ──
+    if _rec_cache is not None:
+        rec_by_exec, rec_by_mgr, rec_by_hod = _rec_cache
         if desig == "L2" or is_l2:
-            r = _grp_mgr.get(eid_str, pd.DataFrame()) if _grp_mgr else pd.DataFrame()
+            r = rec_by_mgr.get(eid_str, pd.DataFrame())
         elif desig in ("L3","L4","L5","L6"):
-            r = _grp_hod.get(eid_str, pd.DataFrame()) if _grp_hod else pd.DataFrame()
+            r = rec_by_hod.get(eid_str, pd.DataFrame())
         else:
-            r = _grp_l1.get(eid_str, pd.DataFrame())
+            r = rec_by_exec.get(eid_str, pd.DataFrame())
     else:
-        # Legacy slow path
         if desig == "L2" or is_l2:
-            hc = mgc
+            hc = hc_mgr
         elif desig in ("L3","L4","L5","L6"):
-            hc = hodc
+            hc = hc_hod
         else:
             hc = None
         if hc:
@@ -569,26 +640,23 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
             mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
         r = rec[mask]
 
-    gross = _sf(r[wtc].fillna(0).sum()) if (wtc and len(r)>0) else 0.0
-    dval  = _sf(r[dvc].fillna(0).sum()) if (dvc and len(r)>0) else 0.0
+    gross = _sf(r[wtc].fillna(0).sum()) if wtc and len(r)>0 else 0.0
+    dval  = _sf(r[dvc].fillna(0).sum()) if dvc and len(r)>0 else 0.0
 
     # ── refund ────────────────────────────────────────────
     refund = 0.0
-    if _grp_ref is not None:
-        rr = _grp_ref.get(eid_str, pd.DataFrame())
-        if _ref_wac and len(rr)>0:
-            refund = _sf(rr[_ref_wac].fillna(0).sum())
-    else:
-        rfc = find_col(ref,["Sales Ex. ID","Sales Exec ID","EMP ID"])
-        if rfc:
-            wac = find_col(ref,["WT Amount","WT_Amount","WT AMT"])
+    if rfc:
+        if _ref_cache is not None:
+            rr = _ref_cache.get(eid_str, pd.DataFrame())
+        else:
             rr = ref[ref[rfc].astype(str).str.split(".").str[0].str.strip()==eid_str]
-            if wac: refund = _sf(rr[wac].fillna(0).sum())
+        if wac and len(rr)>0:
+            refund = _sf(rr[wac].fillna(0).sum())
 
     net_coll = gross - refund
     client_a_eff = max(float(client_a),1)
 
-    # ── period-based deal value & spot txn counts ─────────
+    # Period-based deal value & spot txn counts
     fnt_dv   = {"1_12":0.0,"20_30":0.0}
     spot_txn = {"2_6":0,"7_12":0,"20_30":0}
     if dtc and len(r)>0:
@@ -608,7 +676,7 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
             spot_txn["20_30"] = int((days>=20).sum())
         except: pass
 
-    # ── IM Star / Leader counts ───────────────────────────
+    # IM Star/Leader new sale counts
     im_count = 0; im_pro_count = 0
     if upc and len(r)>0:
         uv = r[upc].fillna("").astype(str).str.upper()
@@ -633,6 +701,8 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
         "txns":len(r),
     }
 
+
+# ──────────────────────────────────────────────────────────
 # INCENTIVE CALCULATORS
 # ──────────────────────────────────────────────────────────
 def _milestone(pcdv, tgt, slabs):
@@ -911,41 +981,44 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
     return out
 
 
+# ──────────────────────────────────────────────────────────
+# BIG TICKET (from deal-level data in receipt)
+# ──────────────────────────────────────────────────────────
 def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False,
-                    _rec_cols=None, _grp_l1=None, _grp_mgr=None):
-    """Big ticket incentive. Fast path: supply pre-built index dicts."""
+                    _rec_cache=None, _col_info=None):
     empty = {"3L+":0,"2L+":0,"1L+":0,"10L+":0,"8L+":0,"5L+":0}
-
-    if _rec_cols is not None:
-        ec  = _rec_cols["ec"]
-        mgc = _rec_cols["mgc"]
-        upc = _rec_cols["upc"]
+    if _col_info:
+        ec  = _col_info["rec_ec"]
+        mgc = _col_info["rec_mgc"]
+        upc = _col_info["rec_upc"]
     else:
         ec  = find_col(rec,["Sales Exec ID","EMP ID"])
         mgc = find_col(rec,["Old Sales HOD-3 ID","Manager Id"])
         upc = find_col(rec,["Unique","Upsell"])
-
     if not ec: return 0, empty
-    eid_str = str(eid_str).strip()
 
-    if _grp_l1 is not None:
-        r = (_grp_mgr.get(eid_str, pd.DataFrame()) if is_l2 and _grp_mgr
-             else _grp_l1.get(eid_str, pd.DataFrame())).copy()
+    if _rec_cache is not None:
+        rec_by_exec, rec_by_mgr, _ = _rec_cache
+        if is_l2 and mgc:
+            r = rec_by_mgr.get(eid_str, pd.DataFrame()).copy()
+        else:
+            r = rec_by_exec.get(eid_str, pd.DataFrame()).copy()
     else:
         if is_l2 and mgc:
             mask = rec[mgc].astype(str).str.split(".").str[0].str.strip()==eid_str
         else:
             mask = rec[ec].astype(str).str.split(".").str[0].str.strip()==eid_str
         r = rec[mask].copy()
-
     if len(r) == 0: return 0, empty
 
+    # Only IM Star/Leader type deals for big ticket
     if upc and upc in r.columns:
         im_mask = r[upc].fillna("").astype(str).str.upper().apply(
             lambda x: any(k in x for k in IM_STAR_LEADER_KW))
         r = r[im_mask]
     if len(r) == 0: return 0, empty
 
+    # Re-locate deal value column on the filtered subset to avoid KeyError
     dvc = find_col(r, ["Deal Val (WT)","Deal Value","Deal Val","WT AMT","WT_AMT"])
     if not dvc: return 0, empty
 
@@ -954,7 +1027,8 @@ def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False,
     except (KeyError, TypeError):
         return 0, empty
 
-    counts = dict(empty); total_bt = 0
+    counts = dict(empty)
+    total_bt = 0
     for dv in deal_vals_lakh:
         for s in slabs:
             if dv >= s.get("Min_Lakh",0):
@@ -965,70 +1039,96 @@ def calc_big_ticket(rec, eid_str, desig, vert, slabs, is_l2=False,
     return total_bt, counts
 
 
+
 # ──────────────────────────────────────────────────────────
-# MILESTONE TARGET FILE LOADER  (OPTIMISED: iterrows → to_dict)
+# MILESTONE TARGET FILE LOADER
 # ──────────────────────────────────────────────────────────
 def load_ta_targets(f):
+    """
+    Load milestone targets from the uploaded target file.
+    Expected sheets:
+      L4       : L4 Name, Target (collection target in Cr)
+      L3       : Employee Name, Target (collection target in Cr)
+      L1 Renewal: IIL (Emp ID), Employee Name, TGT CMR 100% (decimal)
+      L2 Target : IIL (Emp ID), Employee Name, % TGT (decimal)
+    Returns dict with keys: l1_cmr, l2_cmr, l3_coll, l4_coll
+      l1_cmr  : {emp_id_str: cmr_target_pct (0-100)}
+      l2_cmr  : {emp_id_str: cmr_target_pct (0-100)}
+      l3_coll : {emp_name_lower: coll_target_rs}
+      l4_coll : {l4_name_lower:  coll_target_rs}
+    """
     empty = {"l1_cmr":{}, "l2_cmr":{}, "l3_coll":{}, "l4_coll":{}}
     if f is None: return empty
     try:
         xl = pd.ExcelFile(f)
         norms = {s.strip().upper(): s for s in xl.sheet_names}
 
-        def _load_eid_tgt(sh_key_list, id_candidates, tgt_candidates, pct_col=True):
-            result = {}
-            sh = next((norms.get(k) for k in sh_key_list if norms.get(k)), None)
-            if not sh: return result
-            df = pd.read_excel(f, sheet_name=sh)
-            df.columns = [str(c).strip() for c in df.columns]
-            iil_c = find_col(df, id_candidates)
-            tgt_c = find_col(df, tgt_candidates)
-            if not iil_c or not tgt_c: return result
-            for row in df.to_dict("records"):
-                eid = str(row.get(iil_c,"")).strip().split(".")[0]
-                if not eid or eid.lower() in ("nan","none",""): continue
-                val = _sf(row.get(tgt_c,0))
-                result[eid] = round(val*100 if (pct_col and val<=1.0) else val, 4)
-            return result
+        # L1 Renewal CMR targets
+        l1_cmr = {}
+        sh1 = norms.get("L1 RENEWAL") or norms.get("L1RENEWAL") or norms.get("L1")
+        if sh1:
+            df1 = pd.read_excel(f, sheet_name=sh1)
+            df1.columns = [str(c).strip() for c in df1.columns]
+            iil_c = find_col(df1, ["IIL","Employee ID","Emp ID","EmpID"])
+            tgt_c = find_col(df1, ["TGT CMR 100%","CMR Target","Target CMR","TGT CMR","CMR%","Target"])
+            if iil_c and tgt_c:
+                for _, row in df1.iterrows():
+                    eid = str(row[iil_c]).strip().split(".")[0]
+                    if not eid or eid.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    # Convert decimal (0.4) → percentage (40.0)
+                    l1_cmr[eid] = round(val * 100 if val <= 1.0 else val, 4)
 
-        def _load_name_tgt(sh_key_list, name_candidates, tgt_candidates):
-            result = {}
-            sh = next((norms.get(k) for k in sh_key_list if norms.get(k)), None)
-            if not sh: return result
-            df = pd.read_excel(f, sheet_name=sh)
-            df.columns = [str(c).strip() for c in df.columns]
-            name_c = find_col(df, name_candidates)
-            tgt_c  = find_col(df, tgt_candidates)
-            if not name_c or not tgt_c: return result
-            for row in df.to_dict("records"):
-                nm = str(row.get(name_c,"")).strip()
-                if not nm or nm.lower() in ("nan","none",""): continue
-                val = _sf(row.get(tgt_c,0))
-                rs = val * 1e7 if val < 10000 else val
-                result[nm.lower()] = rs
-            return result
+        # L2 CMR targets
+        l2_cmr = {}
+        sh2 = norms.get("L2 TARGET") or norms.get("L2TARGET") or norms.get("L2")
+        if sh2:
+            df2 = pd.read_excel(f, sheet_name=sh2)
+            df2.columns = [str(c).strip() for c in df2.columns]
+            iil_c = find_col(df2, ["IIL","Employee ID","Emp ID"])
+            tgt_c = find_col(df2, ["% TGT","TGT","Target","CMR Target","CMR%"])
+            if iil_c and tgt_c:
+                for _, row in df2.iterrows():
+                    eid = str(row[iil_c]).strip().split(".")[0]
+                    if not eid or eid.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    l2_cmr[eid] = round(val * 100 if val <= 1.0 else val, 4)
 
-        l1_cmr = _load_eid_tgt(
-            ["L1 RENEWAL","L1RENEWAL","L1"],
-            ["IIL","Employee ID","Emp ID","EmpID"],
-            ["TGT CMR 100%","CMR Target","Target CMR","TGT CMR","CMR%","Target"],
-        )
-        l2_cmr = _load_eid_tgt(
-            ["L2 TARGET","L2TARGET","L2"],
-            ["IIL","Employee ID","Emp ID"],
-            ["% TGT","TGT","Target","CMR Target","CMR%"],
-        )
-        l3_coll = _load_name_tgt(
-            ["L3"],
-            ["Employee Name","Name","L3 Name","L3Name"],
-            ["Target","Collection Target","Coll Target"],
-        )
-        l4_coll = _load_name_tgt(
-            ["L4"],
-            ["L4 Name","Name","Employee Name"],
-            ["Target","Collection Target","Coll Target"],
-        )
-        return {"l1_cmr":l1_cmr,"l2_cmr":l2_cmr,"l3_coll":l3_coll,"l4_coll":l4_coll}
+        # L3 collection targets (in Crores → convert to Rs.)
+        l3_coll = {}
+        sh3 = norms.get("L3")
+        if sh3:
+            df3 = pd.read_excel(f, sheet_name=sh3)
+            df3.columns = [str(c).strip() for c in df3.columns]
+            name_c = find_col(df3, ["Employee Name","Name","L3 Name","L3Name"])
+            tgt_c  = find_col(df3, ["Target","Collection Target","Coll Target"])
+            if name_c and tgt_c:
+                for _, row in df3.iterrows():
+                    nm = str(row[name_c]).strip()
+                    if not nm or nm.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    # If value looks like Crores (< 10000), convert to Rs.
+                    rs = val * 1e7 if val < 10000 else val
+                    l3_coll[nm.lower()] = rs
+
+        # L4 collection targets
+        l4_coll = {}
+        sh4 = norms.get("L4")
+        if sh4:
+            df4 = pd.read_excel(f, sheet_name=sh4)
+            df4.columns = [str(c).strip() for c in df4.columns]
+            name_c = find_col(df4, ["L4 Name","Name","Employee Name"])
+            tgt_c  = find_col(df4, ["Target","Collection Target","Coll Target"])
+            if name_c and tgt_c:
+                for _, row in df4.iterrows():
+                    nm = str(row[name_c]).strip()
+                    if not nm or nm.lower() in ("nan","none",""): continue
+                    val = _sf(row[tgt_c])
+                    rs = val * 1e7 if val < 10000 else val
+                    l4_coll[nm.lower()] = rs
+
+        return {"l1_cmr": l1_cmr, "l2_cmr": l2_cmr,
+                "l3_coll": l3_coll, "l4_coll": l4_coll}
     except Exception as e:
         st.warning(f"⚠️ Could not load target file: {e}")
         return empty
@@ -1602,6 +1702,8 @@ def build_excel_output(results_dict, sel_month):
             ws.set_column(0,len(df_sum.columns)-1,16); ws.freeze_panes(2,0)
 
     return buf.getvalue()
+
+
 # ──────────────────────────────────────────────────────────
 # STREAMLIT UI
 # ──────────────────────────────────────────────────────────
@@ -1694,56 +1796,12 @@ sel_month = st.sidebar.selectbox("Month to calculate", options=months,
                                   index=len(months)-1, key="ta_month")
 
 rec, ref, rnl = filter_month(rec_raw, ref_raw, rnl_raw, sel_month)
-
-# ── OPTIMISED: pass bytes to cached load_ta_structure ─────
-struct_map = load_ta_structure(struct_f.getvalue(), struct_f.name)
-if not struct_map:
-    st.error("Could not load TA structure. Check the FSF_TA sheet in the file.")
-    st.stop()
-
-csd_count = sum(1 for v in struct_map.values() if v["Vertical"]=="CSD")
-kcd_count = sum(1 for v in struct_map.values() if v["Vertical"]=="KCD")
-st.success(f"✅ Loaded {len(struct_map)} TA employees — CSD: {csd_count}, KCD: {kcd_count}")
-
-with st.expander("Employee Structure Preview"):
-    preview = pd.DataFrame([
-        {"Emp ID":k,"Name":v["Name"],"Vertical":v["Vertical"],"Designation":v["Designation"],
-         "Vintage":v["Vintage"],"Ageing":v["Ageing"],"Client-A":v.get("Client-A",0)}
-        for k,v in struct_map.items()
-    ])
-    st.dataframe(preview, use_container_width=True, hide_index=True)
-
-if not (receipt_f and refund_f and renewal_f):
-    st.info("Upload Receipt, Refund, and Renewal files to proceed.", icon="📂")
-    st.stop()
-
-# Load files
-rec_raw = clean_receipt(_rf(receipt_f))
-ref_raw = _rf(refund_f)
-rnl_raw = _rf(renewal_f)
-
-# Normalise EMP ID in renewal
-ec_rnl = find_col(rnl_raw, ["EMP ID","Emp ID","EmpID","Employee ID"])
-if ec_rnl:
-    rnl_raw[ec_rnl] = rnl_raw[ec_rnl].apply(
-        lambda x: str(int(float(x))) if str(x).replace(".","").isdigit() else str(x))
-
-months = get_months(rec_raw, rnl_raw)
-if not months:
-    st.warning("No months detected from files. Check Entry Date / Month columns.", icon="⚠️")
-    st.stop()
-
-sel_month = st.sidebar.selectbox("Month to calculate", options=months,
-                                  index=len(months)-1, key="ta_month")
-
-rec, ref, rnl = filter_month(rec_raw, ref_raw, rnl_raw, sel_month)
 st.info(f"📅 {sel_month} | Receipt: {len(rec)} rows | Refund: {len(ref)} rows | Renewal: {len(rnl) if rnl is not None else 0} rows")
 
 st.subheader("Step 2 – Calculate")
 
 # Detect L2 name column in renewal (for L2+ CMR lookup)
 l2_rnl_col = find_col(rnl, ["L2","L2 Name","L2Name","RM Name"]) if rnl is not None else None
-
 
 if calc_btn:
     results = {
@@ -1753,59 +1811,30 @@ if calc_btn:
         "bm_kcd":[],"bt_bm_kcd":[],"bt_ch_kcd":[],
     }
 
-    # ═══════════════════════════════════════════════════════
-    # PRE-COMPUTATION  — run ONCE before the employee loop
-    # ═══════════════════════════════════════════════════════
-
-    # 1. Previous-month renewal data computed ONCE (was inside the loop!)
-    _prev_sel = get_prev_month_str(sel_month, months)
-    _rnl_prev = pd.DataFrame()
-    if _prev_sel:
-        _, _, _rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
-        if _rnl_prev is None: _rnl_prev = pd.DataFrame()
-
-    # 2. Receipt column cache + grouped dicts (O(N) once vs O(N*M) per employee)
-    _rec_cols, _grp_l1, _grp_mgr, _grp_hod = _build_rec_index(rec)
-
-    # 3. Refund grouped dict
-    _ref_rfc, _ref_wac, _grp_ref = _build_ref_index(ref)
-
-    # 4. Renewal grouped by EID and by L2 name (for current month)
-    _rnl_ec = find_col(rnl, ["EMP ID","Emp ID","EmpID","Employee ID"]) if rnl is not None else None
-    _rnl_sc = find_col(rnl, ["Status","STATUS"]) if rnl is not None else None
-    _rnl_pc = find_col(rnl, ["WS/MDC Main","Product","Service"]) if rnl is not None else None
-    _rnl_by_eid  = {}; _rnl_by_name = {}
-    if rnl is not None and _rnl_ec and len(rnl):
-        rnl_c = rnl.copy()
-        rnl_c["_eid"] = rnl_c[_rnl_ec].astype(str).str.split(".").str[0].str.strip()
-        _rnl_by_eid = dict(tuple(rnl_c.groupby("_eid", sort=False)))
-        if l2_rnl_col and l2_rnl_col in rnl_c.columns:
-            rnl_c["_l2n"] = rnl_c[l2_rnl_col].astype(str).str.strip()
-            _rnl_by_name = dict(tuple(rnl_c.groupby("_l2n", sort=False)))
-
-    # 5. Previous month renewal grouped dicts
-    _prev_by_eid  = {}; _prev_by_name = {}
-    _prev_sc = None;    _prev_pc = None
-    if len(_rnl_prev):
-        _prev_ec2 = find_col(_rnl_prev, ["EMP ID","Emp ID","EmpID","Employee ID"])
-        _prev_sc  = find_col(_rnl_prev, ["Status","STATUS"])
-        _prev_pc  = find_col(_rnl_prev, ["WS/MDC Main","Product","Service"])
-        if _prev_ec2:
-            prnl = _rnl_prev.copy()
-            prnl["_eid"] = prnl[_prev_ec2].astype(str).str.split(".").str[0].str.strip()
-            _prev_by_eid = dict(tuple(prnl.groupby("_eid", sort=False)))
-            if l2_rnl_col and l2_rnl_col in prnl.columns:
-                prnl["_l2n"] = prnl[l2_rnl_col].astype(str).str.strip()
-                _prev_by_name = dict(tuple(prnl.groupby("_l2n", sort=False)))
-
-    # ═══════════════════════════════════════════════════════
-    # EMPLOYEE LOOP  — now uses pre-built indexes
-    # ═══════════════════════════════════════════════════════
     prog = st.progress(0, "Calculating…")
     eids = list(struct_map.keys())
 
+    # ── Pre-compute everything ONCE before the employee loop ──────────────
+    # 1. Previous month renewal data (was being re-filtered inside loop)
+    _prev_sel = get_prev_month_str(sel_month, months)
+    if _prev_sel:
+        _, _, rnl_prev = filter_month(rec_raw, ref_raw, rnl_raw, _prev_sel)
+    else:
+        rnl_prev = None
+
+    # 2. CMR caches for current and previous month
+    cmr_eid_cache,  cmr_name_cache  = precompute_cmr_cache(rnl,      l2_rnl_col)
+    cmr_eid_cachep, cmr_name_cachep = precompute_cmr_cache(rnl_prev, l2_rnl_col)
+
+    # 3. Receipt / refund index caches
+    rec_by_exec, rec_by_mgr, rec_by_hod, ref_by_exec, col_info = \
+        precompute_receipt_cache(rec, ref)
+    _rec_cache = (rec_by_exec, rec_by_mgr, rec_by_hod)
+    _ref_cache = ref_by_exec
+    # ─────────────────────────────────────────────────────────────────────
+
     for i, eid in enumerate(eids):
-        emp    = struct_map[eid]
+        emp = struct_map[eid]
         vert   = emp["Vertical"]
         desig  = emp["Designation"]
         ageing = emp["Ageing"]
@@ -1814,34 +1843,27 @@ if calc_btn:
         is_l2  = desig in ("L2","L3","L4","L5")
         is_25cr= "25" in str(emp.get("Group",""))
 
-        # CMR (current month) — fast lookup via pre-grouped dict
+        # CMR (current month) — O(1) cache lookup
         if is_l2 and l2_rnl_col and name:
-            cmr = calc_cmr_by_name(rnl, l2_rnl_col, name,
-                                   _rnl_by_name=_rnl_by_name,
-                                   _rnl_sc=_rnl_sc, _rnl_pc=_rnl_pc)
+            cmr = cmr_name_cache.get(name.strip(), dict(_CMR_ZERO))
             if cmr["sent"] == 0:
-                cmr = calc_cmr(rnl, eid, _rnl_by_eid=_rnl_by_eid,
-                               _rnl_sc=_rnl_sc, _rnl_pc=_rnl_pc)
+                cmr = cmr_eid_cache.get(eid, dict(_CMR_ZERO))
         else:
-            cmr = calc_cmr(rnl, eid, _rnl_by_eid=_rnl_by_eid,
-                           _rnl_sc=_rnl_sc, _rnl_pc=_rnl_pc)
+            cmr = cmr_eid_cache.get(eid, dict(_CMR_ZERO))
 
-        # CMR+1 — previous month renewal (pre-computed ONCE outside the loop)
+        # CMR+1 — previous month (O(1) cache lookup — no repeated filter_month call)
         if _prev_sel:
             if is_l2 and l2_rnl_col and name:
-                cmr_prev = calc_cmr_by_name(_rnl_prev, l2_rnl_col, name,
-                                            _rnl_by_name=_prev_by_name,
-                                            _rnl_sc=_prev_sc, _rnl_pc=_prev_pc)
+                cmr_prev = cmr_name_cachep.get(name.strip(), dict(_CMR_ZERO))
                 if cmr_prev["sent"] == 0:
-                    cmr_prev = calc_cmr(_rnl_prev, eid, _rnl_by_eid=_prev_by_eid,
-                                        _rnl_sc=_prev_sc, _rnl_pc=_prev_pc)
+                    cmr_prev = cmr_eid_cachep.get(eid, dict(_CMR_ZERO))
             else:
-                cmr_prev = calc_cmr(_rnl_prev, eid, _rnl_by_eid=_prev_by_eid,
-                                    _rnl_sc=_prev_sc, _rnl_pc=_prev_pc)
+                cmr_prev = cmr_eid_cachep.get(eid, dict(_CMR_ZERO))
         else:
-            cmr_prev = {"sent":0,"recd":0,"pct":0.0,"ss_sent":0,"ss_recd":0,"ss_pct":0.0}
+            cmr_prev = dict(_CMR_ZERO)
 
         # Per-employee targets from target file
+        # L1 CMR renewal target
         if desig == "L1":
             per_emp_cmr_tgt = ta_targets["l1_cmr"].get(eid, S["csd_cmr_tgt"])
         elif desig == "L2":
@@ -1849,6 +1871,9 @@ if calc_btn:
         else:
             per_emp_cmr_tgt = S["csd_cmr_tgt"]
 
+        # L3/L4 collection targets (looked up by name)
+        emp_l3_name = emp.get("L3 Name","").lower()
+        emp_l4_name = emp.get("L4 Name","").lower()
         emp_own_name = emp.get("Name","").lower()
         if desig == "L3":
             per_emp_coll_tgt = ta_targets["l3_coll"].get(emp_own_name, 0)
@@ -1857,24 +1882,26 @@ if calc_btn:
         else:
             per_emp_coll_tgt = 0
 
+        # Inject into emp so calc_employee can use them
         emp = dict(emp)
         emp["CMR_Target_Pct"] = per_emp_cmr_tgt
         if per_emp_coll_tgt > 0:
             emp["Coll_Target"] = per_emp_coll_tgt
 
+        # Recalculate vintage from Ageing using sir's exact labels
         _age = emp.get("Ageing", 0)
         if _age <= 90:    emp["Vintage"] = "0-90"
         elif _age <= 270: emp["Vintage"] = "90-270"
         else:             emp["Vintage"] = "270+"
 
+        # Sir uses Client-C as PCDV denominator
         cc = max(float(emp.get("Client-C", ca) or ca), 1)
 
-        # Receipt data — fast lookup via pre-grouped dicts
+        # Receipt data — O(1) cache lookup
         data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=cc,
-                            _rec_cols=_rec_cols, _grp_l1=_grp_l1,
-                            _grp_mgr=_grp_mgr, _grp_hod=_grp_hod,
-                            _ref_wac=_ref_wac, _grp_ref=_grp_ref)
+                            _rec_cache=_rec_cache, _ref_cache=_ref_cache, _col_info=col_info)
 
+        # Calculate incentive
         inc = calc_employee(emp, data, cmr, S, is_25cr=is_25cr)
 
         row = {
@@ -1897,7 +1924,7 @@ if calc_btn:
             "pcdv":data.get("pcdv",0),
         }
 
-        # Big Ticket — fast lookup via pre-grouped dicts
+        # Big Ticket
         row["bt_inc"] = 0; row["bt_counts"] = {}
         row["aop"] = 0; row["aop_pct"] = 0; row["bt_eligible"] = "NO"
         row["csd_cmr_tgt"] = S["csd_cmr_tgt"]
@@ -1907,7 +1934,8 @@ if calc_btn:
             is_nursery = desig == "L1" and fy_age <= 90
             if is_nursery:
                 vl = "60-90" if fy_age > 60 else "60D"
-                row["vintage_label"] = vl; emp["vintage_label"] = vl
+                row["vintage_label"] = vl
+                emp["vintage_label"] = vl
                 results["nursery"].append(row)
             elif desig == "L1":
                 results["exec_csd"].append(row)
@@ -1915,17 +1943,19 @@ if calc_btn:
                 results["rm_csd"].append(row)
             elif desig == "L3":
                 bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                    S["bt_bm_csd"], is_l2=False,
-                    _rec_cols=_rec_cols, _grp_l1=_grp_l1, _grp_mgr=_grp_mgr)
+                                                     S["bt_bm_csd"], is_l2=False,
+                                                     _rec_cache=_rec_cache, _col_info=col_info)
                 row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
                              "bt_eligible":"Yes" if bt_inc>0 else "No"})
-                results["bm_csd"].append(row); results["bt_bm_csd"].append(row)
-            else:
+                results["bm_csd"].append(row)
+                results["bt_bm_csd"].append(row)
+            else:  # L4+
                 bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                    S["bt_ch_csd"], is_l2=True,
-                    _rec_cols=_rec_cols, _grp_l1=_grp_l1, _grp_mgr=_grp_mgr)
+                                                     S["bt_ch_csd"], is_l2=True,
+                                                     _rec_cache=_rec_cache, _col_info=col_info)
                 row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
-                             "bt_eligible":"Yes" if bt_inc>0 else "No","deal_target":0})
+                             "bt_eligible":"Yes" if bt_inc>0 else "No",
+                             "deal_target":0})
                 results["bt_ch_csd"].append(row)
 
         elif vert == "KCD":
@@ -1933,7 +1963,8 @@ if calc_btn:
             is_nursery = desig == "L1" and fy_age <= 90
             if is_nursery:
                 vl = "60-90" if fy_age > 60 else "60D"
-                row["vintage_label"] = vl; emp["vintage_label"] = vl
+                row["vintage_label"] = vl
+                emp["vintage_label"] = vl
                 results["nursery"].append(row)
             elif desig == "L1":
                 results["exec_kcd"].append(row)
@@ -1941,15 +1972,16 @@ if calc_btn:
                 results["rm_kcd"].append(row)
             elif desig == "L3":
                 bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                    S["bt_bm_kcd"], is_l2=False,
-                    _rec_cols=_rec_cols, _grp_l1=_grp_l1, _grp_mgr=_grp_mgr)
+                                                     S["bt_bm_kcd"], is_l2=False,
+                                                     _rec_cache=_rec_cache, _col_info=col_info)
                 row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
                              "bt_eligible":"Yes" if bt_inc>0 else "NO"})
-                results["bm_kcd"].append(row); results["bt_bm_kcd"].append(row)
-            else:
+                results["bm_kcd"].append(row)
+                results["bt_bm_kcd"].append(row)
+            else:  # L4+
                 bt_inc, bt_counts = calc_big_ticket(rec, eid, desig, vert,
-                    S["bt_ch_kcd"], is_l2=True,
-                    _rec_cols=_rec_cols, _grp_l1=_grp_l1, _grp_mgr=_grp_mgr)
+                                                     S["bt_ch_kcd"], is_l2=True,
+                                                     _rec_cache=_rec_cache, _col_info=col_info)
                 row.update({"bt_inc":bt_inc,"bt_counts":bt_counts,
                              "bt_eligible":"Yes" if bt_inc>0 else "No"})
                 results["bt_ch_kcd"].append(row)
@@ -1973,6 +2005,7 @@ if calc_btn:
         m3.metric("Total Big Ticket", f"₹{total_bt:,.0f}")
         m4.metric("Avg Incentive", f"₹{total_payout/max(total_emp,1):,.0f}")
 
+    # Preview
     if all_rows_flat:
         st.markdown("#### Employee-wise Preview")
         preview_df = pd.DataFrame([{
@@ -1986,6 +2019,7 @@ if calc_btn:
         } for r in all_rows_flat])
         st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
+    # Export
     out_bytes = build_excel_output(results, sel_month)
     st.download_button(
         "⬇️ Download Full TA Incentive Report (Excel)",
