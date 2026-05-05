@@ -330,20 +330,42 @@ def load_ta_structure(f):
             "L6 ID":id_sv(l6i),"L6 Name":sv(l6n),
         }
 
-    # Aggregate Client-A for L2+ from L1 subordinates
-    if ec and l2i and cac:
+    # Aggregate Client-A and HC for all management levels from L1 data
+    if ec and cac:
         try:
             df["_eid"] = df[ec].astype(str).str.split(".").str[0].str.strip()
-            df["_l2"] = df[l2i].astype(str).str.split(".").str[0].str.strip()
-            df[cac]   = pd.to_numeric(df[cac], errors="coerce").fillna(0)
-            agg = df.groupby("_l2").agg(ca_sum=(cac,"sum"), l1_cnt=("_eid","count")).reset_index()
+            df[cac] = pd.to_numeric(df[cac], errors="coerce").fillna(0)
+            # Only L1 rows for aggregation
+            l1_df = df[df[dc].astype(str).str.strip().str.upper()=="L1"] if dc else df
+            def _agg_for(id_col, src_df=None):
+                if not id_col: return {}
+                src = src_df if src_df is not None else l1_df
+                tmp = src.groupby(src[id_col].astype(str).str.split(".").str[0].str.strip()).agg(
+                    ca_sum=(cac,"sum"), l1_cnt=("_eid","count")).to_dict("index")
+                return tmp
+            # L2 count per BM: count of L2 employees where L3 ID = BM ID
+            l2_df = df[df[dc].astype(str).str.strip().str.upper()=="L2"] if dc else df
+            agg_l2_cnt = _agg_for(l3i, l2_df) if l3i else {}
+            agg_l2 = _agg_for(l2i)
+            agg_l3 = _agg_for(l3i)
+            agg_l4 = _agg_for(l4i)
+            agg_l5 = _agg_for(l5i)
             for eid, emp in result.items():
-                if emp["Designation"] not in ("L2","L3","L4","L5"): continue
-                m = agg[agg["_l2"]==eid]
-                if len(m):
-                    result[eid]["Client-A_Agg"] = float(m.iloc[0]["ca_sum"])
-                    result[eid]["L1_Count"]      = int(m.iloc[0]["l1_cnt"])
-        except: pass
+                d = emp["Designation"]
+                a = None
+                if d=="L2":   a = agg_l2.get(eid)
+                elif d=="L3":
+                    a = agg_l3.get(eid)
+                    l2c = agg_l2_cnt.get(eid)
+                    if l2c: result[eid]["L2_Count"] = int(l2c["l1_cnt"])
+                elif d=="L4": a = agg_l4.get(eid)
+                elif d=="L5": a = agg_l5.get(eid)
+                if a:
+                    result[eid]["Client-A_Agg"] = float(a["ca_sum"])
+                    result[eid]["HC"]            = int(a["l1_cnt"])
+                    result[eid]["L1_Count"]      = int(a["l1_cnt"])
+        except Exception as ex:
+            pass
     return result
 
 
@@ -485,12 +507,8 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
     # Pick hierarchy column based on designation
     if desig == "L2" or is_l2:
         hc = find_col(rec, ["Manager Id","Old Sales HOD-3 ID"])
-    elif desig == "L3":
-        hc = find_col(rec, ["HOD -2 Id","HOD-2 Id","Old Sales HOD-2 ID"])
-    elif desig == "L4":
-        hc = find_col(rec, ["HOD - 1 Id","HOD-1 Id"])
-    elif desig in ("L5","L6"):
-        hc = find_col(rec, ["HOD Id","HOD ID"])
+    elif desig in ("L3","L4","L5","L6"):
+        hc = find_col(rec, ["HOD Id","Old Sales Hod ID"])
     else:
         hc = None
 
@@ -1198,7 +1216,7 @@ def build_excel_output(results_dict, sel_month):
                        "L5 ID","L5 Name","L6  ID","L6 Name","HC","L2",
                        "Joining Date","IIL Vertical Name","Location",
                        "Client-A","Client-C","Deal Value","PCDV","Collection","Refund","Net Collection",
-                       "Target","Ach\n%","Sent","CMR\nReceived","Ren %",
+                       "Target","Ach\n%","CMR\nSent","CMR\nReceived","Ren %",
                        "Payout\nEligibile","Incentive","Total Incentive","Gross Incentive",
                        "Paid\nIncentive","Balance\nIncentive"]
             rows_bm = []
@@ -1209,7 +1227,7 @@ def build_excel_output(results_dict, sel_month):
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
                     "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
-                    "HC":r.get("HC",0),"L2":r.get("L2 Count",0),
+                    "HC":r.get("HC",0),"L2":r.get("L2_Count",0),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD","Location":r.get("Location",""),
                     "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
@@ -1217,7 +1235,7 @@ def build_excel_output(results_dict, sel_month):
                     "Collection":round(r.get("gross_coll",0),2),"Refund":round(r.get("refund",0),2),
                     "Net Collection":round(r.get("net_coll",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
-                    "Sent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
+                    "CMR\nSent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "Payout\nEligibile":r.get("payout_eligible","No"),
                     "Incentive":r.get("base_inc",0),"Total Incentive":r.get("total_inc",0),
@@ -1307,7 +1325,7 @@ def build_excel_output(results_dict, sel_month):
         if kcd_l1:
             cols_kl1 = ["Employee ID","Employee Name","L2 ID","L2 Name","L3 ID","L3 Name",
                         "L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name",
-                        "Joining Date","IIL Vertical Name","Group","Aeging","Vintage",
+                        "Joining Date/Movement Date","IIL Vertical Name","Group","Aeging","Vintage",
                         "Target","Client-A","Client-C","Deal Value","PCDV",
                         "Sent","Recd","Ren %","Sent.1","Recd.1","Ren %.1",
                         "SS+\nMultiplier","Target\nPCDV%","Incentive","Mulitipler\nPayout","Final\nIncentive",
@@ -1326,7 +1344,7 @@ def build_excel_output(results_dict, sel_month):
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
                     "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
-                    "Joining Date":str(r.get("Joining Date",""))[:10],
+                    "Joining Date/Movement Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
                     "Target":tgt,"Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
@@ -1739,7 +1757,7 @@ if calc_btn:
         if vert == "CSD":
             is_nursery = desig == "L1" and ageing <= 90
             if is_nursery:
-                row["vintage_label"] = "60-90" if ageing > 60 else "0-60"
+                row["vintage_label"] = "60-90" if ageing > 60 else "60D"
                 results["nursery"].append(row)
             elif desig == "L1":
                 results["exec_csd"].append(row)
@@ -1763,7 +1781,7 @@ if calc_btn:
         elif vert == "KCD":
             is_nursery = desig == "L1" and ageing <= 90
             if is_nursery:
-                row["vintage_label"] = "60-90" if ageing > 60 else "0-60"
+                row["vintage_label"] = "60-90" if ageing > 60 else "60D"
                 results["nursery"].append(row)
             elif desig == "L1":
                 results["exec_kcd"].append(row)
