@@ -814,13 +814,30 @@ def _ss_mult(ss_pct, ss_sent, min_sent, slabs):
         if ss_pct >= r.get("Min_SS_CMR_Pct",0): return r.get("Multiplier",0.5)
     return 0.5
 
-def _nursery_mult(sent, recd, cmr_pct, sent_max, cmr_grid, cmr_table):
-    if sent <= sent_max:
-        tbl = cmr_table.get(sent, cmr_table.get(0,(0,0.0)))
+def _nursery_mult(sent, recd, cmr_pct, sent_max, cmr_grid, cmr_table,
+                  bucket="60-90", grid_60d=None):
+    """
+    bucket="60-90": genuine new joiners
+      Sent 0-1 → 1.0 (grace)
+      Sent 2-4 → 1.0 if Recd >= Min_Recd from table, else 0.0
+      Sent >= 5 → 0.0 always
+    bucket="60D": BD→TA movement employees
+      Sent = 0 → 1.0 (grace)
+      Recd >= 4 → 0.60,  Recd 2-3 → 0.35,  else 0.0
+    """
+    if bucket == "60D":
+        if sent == 0: return 1.0
+        slabs = grid_60d or [{"Min_Recd":4,"Mult":0.60},
+                              {"Min_Recd":2,"Mult":0.35},
+                              {"Min_Recd":0,"Mult":0.00}]
+        for r in slabs:
+            if recd >= r.get("Min_Recd",0): return r.get("Mult",0.0)
+        return 0.0
+    else:  # 60-90
+        if sent >= 5: return 0.0
+        if sent <= 1: return 1.0
+        tbl = cmr_table.get(sent, (0, 1.0))
         return tbl[1] if recd >= tbl[0] else 0.0
-    for r in cmr_grid:
-        if cmr_pct >= r.get("Min_CMR_Pct",0): return r.get("Mult",0.0)
-    return 0.0
 
 def _bm_milestone(ach_pct, slabs):
     for r in slabs:
