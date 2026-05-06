@@ -323,6 +323,17 @@ def load_ta_structure(f):
         def nv(c): return _sf(row[c]) if c else 0.0
         def id_sv(c): return str(row[c]).strip().split(".")[0] if c else ""
 
+        # Determine nursery bucket: "60D" = old mover, "60-90" = new joiner
+        _jd_raw2 = row[jc] if jc else None
+        _jd2 = _to_date(_jd_raw2)
+        if hasattr(_jd2, 'date') and callable(_jd2.date): _jd2 = _jd2.date()
+        try:
+            import datetime as _dtx
+            _FY2 = _dtx.date(2026, 4, 1)
+            _jd_fy2 = (_FY2 - _jd2).days if _jd2 and str(_jd2) not in ("NaT","nan","None","") else 9999
+        except: _jd_fy2 = 9999
+        _nurs_bkt = "60D" if _jd_fy2 > 90 else "60-90"
+
         result[eid] = {
             "Name":     sv(nc),   "Designation": desig,
             "Vertical": vert,     "Vintage":     vint,
@@ -330,6 +341,7 @@ def load_ta_structure(f):
             "Client-A": nv(cac),  "Client-C":    nv(ccc),
             "HC":       nv(hcc),  "Group":       sv(grc),
             "Remarks":  sv(rmc),  "Email Id":    sv(email_c),
+            "_nurs_bucket": _nurs_bkt,
             "Department": sv(dept_c),
             "Client_Status_Eligible": (str(row[cstat_c]).strip().upper()=="YES") if cstat_c else True,
             "Location": sv(loc_c),
@@ -369,7 +381,10 @@ def load_ta_structure(f):
             df["_is_nurs"] = [_calc_fy(j, m) for j, m in zip(
                 list(_jds)  if _jds  is not None else [None]*len(df),
                 list(_mjds) if _mjds is not None else [None]*len(df))]
-            _ccc = gc(["Client-C","Client C"])
+            _ccc = gc(["Client-C","Client C","ClientC"])
+            # Ensure Client-C is numeric
+            if _ccc and _ccc in df.columns:
+                df[_ccc] = pd.to_numeric(df[_ccc], errors="coerce").fillna(0)
             if _ccc and _ccc in df.columns:
                 df[_ccc] = pd.to_numeric(df[_ccc], errors="coerce").fillna(0)
 
@@ -1010,13 +1025,11 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         elif desig == "L3":  # BM-KCD
             _gc=data.get("gross",0); _rv=data.get("refund",0); _nr=_gc-_rv
-            _net_cr=round(_nr/1e7,6); _coll_cr=round(_gc/1e7,6); _ref_cr=round(_rv/1e7,6)
-            coll_target=emp.get("Coll_Target",0)
-            ach_pct=(_net_cr/coll_target*100) if coll_target>0 else 0
+            coll_target=emp.get("Coll_Target",0)  # KCD target in Rs
+            ach_pct=(_nr/coll_target*100) if coll_target>0 else 0
             incentive=_bm_milestone(ach_pct,S["bm_kcd"]); total=int(incentive)
             out.update({
                 "scheme":"BM KCD","gross_coll":_gc,"refund":_rv,"net_coll":_nr,
-                "gross_coll_cr":_coll_cr,"refund_cr":_ref_cr,"net_coll_cr":_net_cr,
                 "coll_target":coll_target,"ach_pct":round(ach_pct,2),
                 "payout_eligible":"Yes" if incentive>0 else "No",
                 "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
@@ -1147,14 +1160,18 @@ def load_ta_targets(f):
             df3.columns = [str(c).strip() for c in df3.columns]
             name_c = find_col(df3, ["Employee Name","Name","L3 Name","L3Name"])
             tgt_c  = find_col(df3, ["Target","Collection Target","Coll Target"])
+            eid_c  = find_col(df3, ["Employee ID","EID","IIL","Emp ID"])
             if name_c and tgt_c:
                 for _, row in df3.iterrows():
                     nm = str(row[name_c]).strip()
                     if not nm or nm.lower() in ("nan","none",""): continue
                     val = _sf(row[tgt_c])
-                    # If value looks like Crores (< 10000), convert to Rs.
-                    rs = val * 1e7 if val < 10000 else val
-                    l3_coll[nm.lower()] = rs
+                    # BM-CSD target stored in Crores (< 1000) — keep as-is
+                    l3_coll[nm.lower()] = val
+                    if eid_c:
+                        eid_val = str(row[eid_c]).strip().split('.')[0]
+                        if eid_val and eid_val not in ("nan","none",""):
+                            l3_coll[eid_val] = val
 
         # L4 collection targets
         l4_coll = {}
@@ -1638,9 +1655,9 @@ def build_excel_output(results_dict, sel_month):
                     "Aeging":r.get("Ageing",0),"HC":r.get("HC",0),
                     "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
                     "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
-                    "Collection":round(r.get("gross_coll_cr",r.get("gross_coll",0)/1e7),6),
-                    "Refund":round(r.get("refund_cr",r.get("refund",0)/1e7),6),
-                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
+                    "Collection":round(r.get("gross_coll",0),2),
+                    "Refund":round(r.get("refund",0),2),
+                    "Net Collection":round(r.get("net_coll",0),2),
                     "Deal Value":round(r.get("deal_val",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "Incentive":r.get("base_inc",0),
@@ -2006,9 +2023,11 @@ if calc_btn:
         emp_l4_name = emp.get("L4 Name","").lower()
         emp_own_name = emp.get("Name","").lower()
         if desig == "L3":
-            per_emp_coll_tgt = ta_targets["l3_coll"].get(emp_own_name, 0)
+            per_emp_coll_tgt = (ta_targets["l3_coll"].get(eid, 0) or
+                                ta_targets["l3_coll"].get(emp_own_name, 0))
         elif desig == "L4":
-            per_emp_coll_tgt = ta_targets["l4_coll"].get(emp_own_name, 0)
+            per_emp_coll_tgt = (ta_targets["l4_coll"].get(eid, 0) or
+                                ta_targets["l4_coll"].get(emp_own_name, 0))
         else:
             per_emp_coll_tgt = 0
 
@@ -2057,7 +2076,15 @@ if calc_btn:
             "Client-A_Agg":emp.get("Client-A_Agg",emp.get("Client-A",0)),
             "HC":emp.get("HC",0),"Group":emp.get("Group",""),
             "Location":emp.get("Location","Tele Annual"),
-            **{k:v for k,v in emp.items() if "ID" in k or "Name" in k},
+            **{k:v for k,v in emp.items()
+                    if "ID" in k or "Name" in k
+                    or k in ("MDC","Star","Leader","WS-M","WS-A","IVE",
+                             "MDC.1","Star.1","Leader.1","WS-M.1","WS-A.1","IVE.1",
+                             "Email Id","Location","Department","Client-A","Client-C",
+                             "Client-A_Agg","Client-C_Agg","HC","Ageing",
+                             "Joining Date","Vintage","Group","Remarks",
+                             "Client_Status_Eligible","FY_Ageing","lt90_count",
+                             "l1_eids","all_l1_eids","L2_Count","_nurs_bucket")},
             **inc,
             "fnt_dv":data.get("fnt_dv",{}),
             "pcdv_1_12":data.get("pcdv_1_12",0),"pcdv_20_30":data.get("pcdv_20_30",0),
@@ -2074,9 +2101,9 @@ if calc_btn:
 
         if vert == "CSD":
             fy_age = emp.get("FY_Ageing", ageing)
-            is_nursery = desig == "L1" and fy_age <= 90
+            is_nursery = desig == "L1" and (fy_age <= 90 or emp.get("_nurs_bucket","60-90") == "60D")
             if is_nursery:
-                vl = "60-90" if fy_age > 60 else "60D"
+                vl = emp.get("_nurs_bucket","60-90")
                 row["vintage_label"] = vl
                 emp["vintage_label"] = vl
                 results["nursery"].append(row)
@@ -2100,9 +2127,9 @@ if calc_btn:
 
         elif vert == "KCD":
             fy_age = emp.get("FY_Ageing", ageing)
-            is_nursery = desig == "L1" and fy_age <= 90
+            is_nursery = desig == "L1" and (fy_age <= 90 or emp.get("_nurs_bucket","60-90") == "60D")
             if is_nursery:
-                vl = "60-90" if fy_age > 60 else "60D"
+                vl = emp.get("_nurs_bucket","60-90")
                 row["vintage_label"] = vl
                 emp["vintage_label"] = vl
                 results["nursery"].append(row)
@@ -2177,4 +2204,3 @@ if calc_btn:
             } for r in zero]), use_container_width=True, hide_index=True)
         else:
             st.success("All employees earned an incentive! 🎉")
- 
