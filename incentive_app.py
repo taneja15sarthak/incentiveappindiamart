@@ -90,7 +90,7 @@ def build_ta_slab_config():
         {"Min_CMR_Pct":50,"Mult":0.35},{"Min_CMR_Pct":0,"Mult":0.0},
     ])
     nursery_table = pd.DataFrame([
-        {"Sent":4,"Min_Recd":3,"Mult":1.0},{"Sent":3,"Min_Recd":2,"Mult":1.0},
+        {"Sent":4,"Min_Recd":2,"Mult":1.0},{"Sent":3,"Min_Recd":2,"Mult":1.0},
         {"Sent":2,"Min_Recd":1,"Mult":1.0},{"Sent":1,"Min_Recd":0,"Mult":1.0},
         {"Sent":0,"Min_Recd":0,"Mult":0.0},
     ])
@@ -815,29 +815,48 @@ def _ss_mult(ss_pct, ss_sent, min_sent, slabs):
     return 0.5
 
 def _nursery_mult(sent, recd, cmr_pct, sent_max, cmr_grid, cmr_table,
-                  bucket="60-90", grid_60d=None):
+                  bucket="60-90", grid_60d=None, fy_age=999, vertical="CSD"):
     """
-    bucket="60-90": genuine new joiners
-      Sent 0-1 → 1.0 (grace)
-      Sent 2-4 → 1.0 if Recd >= Min_Recd from table, else 0.0
-      Sent >= 5 → 0.0 always
-    bucket="60D": BD→TA movement employees
-      Sent = 0 → 1.0 (grace)
-      Recd >= 4 → 0.60,  Recd 2-3 → 0.35,  else 0.0
+    Official PDF Nursery Scheme — Renewal Multiplier.
+
+    CSD Scheme (PDF 1):
+      Sent=4: Recd>=2    Sent>=5 CMR grid: >=35% (0-60D), >=40% (61-90D)
+
+    KCD/25Cr+ Scheme (PDF 2):
+      Sent=4: Recd>=3    Sent>=5 CMR grid: >=60% (all periods)
+
+    Renewal Table:
+      Sent=0 → 1.0 always
+      Sent=1 → 1.0 always
+      Sent=2 → 1.0 if Recd>=1, else 0.0
+      Sent=3 → 1.0 if Recd>=2, else 0.0
+      Sent=4 → CSD: Recd>=2 | KCD: Recd>=3
+      Sent>=5 → CMR% Grid (binary 1.0 or 0.0)
+
+    All payouts are binary 1.0 or 0.0.
     """
-    if bucket == "60D":
+    if vertical == "KCD":
+        # KCD: Sent=4 needs Recd>=3, Sent>=5 needs CMR%>=60%
         if sent == 0: return 1.0
-        slabs = grid_60d or [{"Min_Recd":4,"Mult":0.60},
-                              {"Min_Recd":2,"Mult":0.35},
-                              {"Min_Recd":0,"Mult":0.00}]
-        for r in slabs:
-            if recd >= r.get("Min_Recd",0): return r.get("Mult",0.0)
-        return 0.0
-    else:  # 60-90
-        if sent >= 5: return 0.0
-        if sent <= 1: return 1.0
-        tbl = cmr_table.get(sent, (0, 1.0))
-        return tbl[1] if recd >= tbl[0] else 0.0
+        if sent == 1: return 1.0
+        if sent == 2: return 1.0 if recd >= 1 else 0.0
+        if sent == 3: return 1.0 if recd >= 2 else 0.0
+        if sent == 4: return 1.0 if recd >= 3 else 0.0   # KCD: >=3
+        return 1.0 if cmr_pct >= 60.0 else 0.0           # KCD: 60% threshold
+
+    # CSD (default)
+    # CMR threshold: 35% for first 60D / 60D movers, 40% for 61-90D
+    if bucket == "60D" or fy_age <= 60:
+        cmr_thresh = 35.0
+    else:
+        cmr_thresh = 40.0
+
+    if sent == 0: return 1.0
+    if sent == 1: return 1.0
+    if sent == 2: return 1.0 if recd >= 1 else 0.0
+    if sent == 3: return 1.0 if recd >= 2 else 0.0
+    if sent == 4: return 1.0 if recd >= 2 else 0.0   # CSD: >=2
+    return 1.0 if cmr_pct >= cmr_thresh else 0.0
 
 def _bm_milestone(ach_pct, slabs):
     for r in slabs:
@@ -900,18 +919,23 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
     if is_nursery:
         min_prod = S["nursery_min_prod"]
         bucket    = emp.get("vintage_label", emp.get("_nurs_bucket","60-90"))
-        grid_60d  = S.get("nursery_60d_grid")
-        # Eligible: Client Status = "Yes" AND Productivity >= 3
+        fy_age_n  = emp.get("FY_Ageing", emp.get("Ageing", 999))
+        # min_prod: 2 for 0-60D (from 2nd txn), 3 for 61-90D (from 3rd txn)
+        if bucket == "60D" or fy_age_n <= 60:
+            min_prod = 2   # first 60 days of TA tenure
+        else:
+            min_prod = S["nursery_min_prod"]  # 3 for days 61-90
         _cs_ok    = emp.get("Client_Status_Eligible", True)
         eligible  = _cs_ok and (productivity >= min_prod)
         inc = int(productivity * S["nursery_inc_per_txn"]) if eligible else 0
         mult = _nursery_mult(cmr_sent, cmr_recd, cmr_pct,
                              S["nursery_sent_max"], S["nursery_grid"],
-                             S["nursery_table"], bucket=bucket, grid_60d=grid_60d)
+                             S["nursery_table"], bucket=bucket,
+                             grid_60d=None, fy_age=fy_age_n, vertical=vert)
         gross_inc = round(inc * mult, 0)
         out.update({
             "scheme":"Nursery", "productivity":productivity,
-            "eligible":"Yes" if eligible else "No",
+            "eligible":"Yes" if (_cs_ok and productivity>=min_prod) else "No",
             "renewal_mult":mult, "base_inc":inc, "gross_inc":gross_inc,
             "total_inc":int(gross_inc),
             "sp2_6_gross":0,"sp7_12_gross":0,"sp20_30_gross":0,
@@ -1007,7 +1031,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         ss_m = _ss_mult(ss_pct, ss_sent, S["kcd_min_ss_sent"], S["kcd_ss_mult"])
 
         if desig == "L1":
-            tgt_pcdv = S.get("kcd_target_map",{}).get((emp.get("Group","KCD"),vint),1800)
+            tgt_pcdv = S.get("kcd_target_map",{}).get((str(emp.get("Group","KCD") or "KCD").strip(),vint),1800)
             grid   = _milestone(pcdv_total, tgt_pcdv, S["kcd_milestones"])
             incr   = round(max(0,pcdv_total-tgt_pcdv)*client_a*S.get("csd_incr_rate",0.03)/1000)*1000 if grid>0 else 0
             gross_inc = round((grid+incr)*ss_m,0)
@@ -1028,7 +1052,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             })
 
         elif desig == "L2":
-            tgt_pcdv = S.get("kcd_target_map",{}).get((emp.get("Group","KCD"),vint),1800)
+            tgt_pcdv = S.get("kcd_target_map",{}).get((str(emp.get("Group","KCD") or "KCD").strip(),vint),1800)
             grid     = _milestone(pcdv_total,tgt_pcdv,S["kcd_milestones"])
             gross_inc= round(grid*ss_m,0)
             payout_elig = gross_inc > 0
@@ -1059,6 +1083,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             incentive=_bm_milestone(ach_pct,S["bm_kcd"]); total=int(incentive)
             out.update({
                 "scheme":"BM KCD","gross_coll":_gc,"refund":_rv,"net_coll":_nr,
+                "gross_coll_cr":_gc,"refund_cr":_rv,"net_coll_cr":_nr,  # KCD: all Rs (no conversion)
                 "coll_target":coll_target,"ach_pct":round(ach_pct,2),
                 "payout_eligible":"Yes" if incentive>0 else "No",
                 "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
@@ -1215,8 +1240,7 @@ def load_ta_targets(f):
                     nm = str(row[name_c]).strip()
                     if not nm or nm.lower() in ("nan","none",""): continue
                     val = _sf(row[tgt_c])
-                    rs = val * 1e7 if val < 10000 else val
-                    l4_coll[nm.lower()] = rs
+                    l4_coll[nm.lower()] = val  # Crore
 
         return {"l1_cmr": l1_cmr, "l2_cmr": l2_cmr,
                 "l3_coll": l3_coll, "l4_coll": l4_coll}
@@ -1366,7 +1390,7 @@ def build_excel_output(results_dict, sel_month):
                     "Target":r.get("target_pcdv",0),"Incremental\nPCDV\nAmt.":r.get("incr_amt",0),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "Multiplier":r.get("cmr_mult",0),"Renewal\nTarget":(__import__("math").ceil(r.get("cmr_sent",0) * r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100) / max(r.get("cmr_sent",0),1) if r.get("cmr_sent",0)>0 else r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100),
+                    "Multiplier":r.get("cmr_mult",0),"Renewal\nTarget":r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,
                     "Sent.1":r.get("cmr1_sent",0),"Recd.1":r.get("cmr1_recd",0),"Ren %.1":round(r.get("cmr1_pct",0)/100,4),
                     "Incentive Grid":r.get("incentive_grid",0),"Incentive":r.get("base_inc",0),
                     "Gross\nIncentive":r.get("gross_inc",0),"Paid\nIncentive":0,
@@ -1414,13 +1438,13 @@ def build_excel_output(results_dict, sel_month):
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
-                    "Renewal\nTarget":(__import__("math").ceil(r.get("cmr_sent",0) * r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100) / max(r.get("cmr_sent",0),1) if r.get("cmr_sent",0)>0 else r.get("cmr_target_pct",r.get("csd_cmr_tgt",40))/100),
+                    "Renewal\nTarget":r.get("cmr_target_pct", r.get("csd_cmr_tgt",40))/100,
                     "Sent.1":r.get("cmr1_sent",0),"Recd.1":r.get("cmr1_recd",0),"Ren %.1":round(r.get("cmr1_pct",0)/100,4),
                     "Incremental\nPCDV\nAmt.":r.get("incr_amt",0),"Incentive\nGrid":r.get("incentive_grid",0),
                     "Incentive":r.get("base_inc",0),"Gross Incentive":r.get("gross_inc",0),
                     "Paid\nIncentive":0,"Balance\nIncentive":r.get("gross_inc",0),
                     "Transaction":r.get("sp2_6_txn",0),
-                    "Productvity":round(r.get("sp2_6_txn",0)/max(r.get("HC",1),1),2),
+                    "Productvity":round(r.get("sp2_6_txn",0)/max(r.get("HC",1),1),4),
                     "Gross\nIncentive.1":r.get("sp2_6_gross",0),"Paid\nIncentive.1":0,"Balance\nIncentive.1":r.get("sp2_6_gross",0),
                     "Transaction.1":r.get("sp7_12_txn",0),
                     "Productvity.1":round(r.get("sp7_12_txn",0)/max(r.get("HC",1),1),2),
@@ -1462,7 +1486,7 @@ def build_excel_output(results_dict, sel_month):
                     "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),"Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Collection":round(r.get("gross_coll_cr",r.get("gross_coll",0)/1e7),6),"Refund":round(r.get("refund_cr",r.get("refund",0)/1e7),6),
-                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
+                    "Net Collection":round(r.get("net_coll",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "CMR\nSent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1498,8 +1522,8 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
-                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),4),
-                    "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
+                    "Net Collection":round(r.get("net_coll",0),2),
+                    "AOP":r.get("coll_target",None),"%":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7)/max(r.get("coll_target",0) or 1,1)*100,4),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "3L+":cnt.get("3L+",0),"2L+":cnt.get("2L+",0),"1L+":cnt.get("1L+",0),
@@ -1723,7 +1747,7 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD",
-                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),4),
+                    "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1757,7 +1781,7 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD",
-                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),4),
+                    "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"%":round(r.get("aop_pct",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1781,46 +1805,69 @@ def build_excel_output(results_dict, sel_month):
             "Ach Pct","Sent","Recd","Ren Pct","Sent.1","Recd.1","Ren Pct.1",
             "Incentive","Gross Incentive","Paid Incentive","Balance Incentive"
         ]
-        for _chn, _chv in [("CH","csd"), ("CH-KCD","kcd")]:
+        for _chn, _chv in [(" CH","csd"), ("CH","kcd")]:
             _cr = results_dict.get(f"ch_{_chv}", [])
             if not _cr: continue
             _rws = []
             for r in _cr:
-                _nc = r.get("net_coll_cr", r.get("net_coll",0)/1e7)
+                _coll_rs = r.get("gross_coll",0); _ref_rs = r.get("refund",0)
+                _net_rs = _coll_rs - _ref_rs
                 _tg = r.get("coll_target", 0)
-                _ac = (_nc / _tg * 100) if _tg > 0 else 0
-                _rws.append({
-                    "Employee ID":r["eid"], "Employee Name":r.get("name",""),
-                    "L5 ID":r.get("L5 ID",""), "L5 Name":r.get("L5 Name",""),
-                    "L6  ID":r.get("L6 ID",""), "L6 Name":r.get("L6 Name",""),
-                    "Joining Date":str(r.get("Joining Date",""))[:10],
-                    "IIL Vertical Name":"Tele Annual " + _chv.upper(),
-                    "Client-A":r.get("Client-A_Agg", r.get("Client-A",0)),
-                    "Client-C":r.get("Client-C_Agg", r.get("Client-C",0)),
-                    "Collection":round(r.get("gross_coll",0)/1e7,4),
-                    "Refund":round(r.get("refund",0)/1e7,4),
-                    "Net Collection":round(_nc,4),
-                    "Target":_tg,
-                    "Ach Pct":round(_ac/100,4),
-                    "Sent":r.get("cmr_sent",0), "Recd":r.get("cmr_recd",0),
-                    "Ren Pct":round(r.get("cmr_pct",0)/100,4),
-                    "Sent.1":r.get("cmr1_sent",0), "Recd.1":r.get("cmr1_recd",0),
-                    "Ren Pct.1":round(r.get("cmr1_pct",0)/100,4),
-                    "Incentive":r.get("base_inc",0),
-                    "Gross Incentive":r.get("total_inc",0),
-                    "Paid Incentive":0,
-                    "Balance Incentive":r.get("total_inc",0),
-                })
+                # CSD CH: Net in Rs; KCD CH: Net in Lakh
+                _net_disp = _net_rs if _chv=="csd" else round(_net_rs/1e5, 4)
+                _ac = (_net_rs/_tg*100 if _tg>0 else (_net_disp/_tg*100 if _tg>0 else 0))
+                _net_f = round(_net_rs/1e5, 6)
+                _pcr = round(_net_rs/max(_coll_rs,1), 6) if _coll_rs else 0
+                _hc = r.get("HC",0); _l2 = r.get("L2_Count",0)
+                if _chv=="csd":
+                    _rws.append({
+                        "Employee ID":r["eid"], "Employee Name":r.get("name",""),
+                        "L5 ID":r.get("L5 ID",""), "L5 Name":r.get("L5 Name",""),
+                        "L6  ID":r.get("L6 ID",""), "L6 Name":r.get("L6 Name",""),
+                        "HC":_hc, "L2":_l2,
+                        "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                        "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
+                        "Joining Date":str(r.get("Joining Date",""))[:10],
+                        "IIL Vertical Name":"Tele Annual CSD",
+                        "Collection":round(_coll_rs,2), "Refund":round(_ref_rs,2),
+                        "Net Collection":round(_net_rs,2), "Net Collection F":_net_f, "PCR":_pcr,
+                        "Collection \nTarget":_tg, "Ach\n%":round(_net_rs/_tg*100/100,4) if _tg else 0,
+                        "Sent":r.get("cmr_sent",0), "Recd":r.get("cmr_recd",0),
+                        "Ren %":round(r.get("cmr_pct",0)/100,4),
+                        "Incentive":r.get("base_inc",0), "Total Inccentive":r.get("total_inc",0),
+                        "Gross Inccentive":r.get("total_inc",0),
+                        "Paid\nIncentive":0, "Balance\nIncentive":r.get("total_inc",0)})
+                else:
+                    _rws.append({
+                        "Employee ID":r["eid"], "Employee Name":r.get("name",""),
+                        "L6  ID":r.get("L6 ID",""), "L6 Name":r.get("L6 Name",""),
+                        "Joining Date":str(r.get("Joining Date",""))[:10],
+                        "IIL Vertical Name":"Tele Annual KCD",
+                        "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                        "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
+                        "Collection":round(_coll_rs,2), "Refund":round(_ref_rs,2),
+                        "Net Collection":_net_disp,
+                        "Collection \nTarget":_tg, "Ach\n%":round(_net_disp/_tg*100/100,4) if _tg else 0,
+                        "Sent":r.get("cmr_sent",0), "Recd":r.get("cmr_recd",0),
+                        "Ren %":round(r.get("cmr_pct",0)/100,4),
+                        "Incentive":r.get("base_inc",0), "Gross\nIncentive":r.get("total_inc",0),
+                        "Paid\nIncentive":0, "Balance\nIncentive":r.get("total_inc",0)})
+            _cf_csd=["Employee ID","Employee Name","L5 ID","L5 Name","L6  ID","L6 Name",
+                     "HC","L2","Client-A","Client-C","Joining Date","IIL Vertical Name",
+                     "Collection","Refund","Net Collection","Net Collection F","PCR",
+                     "Collection \nTarget","Ach\n%","Sent","Recd","Ren %",
+                     "Incentive","Total Inccentive","Gross Inccentive","Paid\nIncentive","Balance\nIncentive"]
+            _cf_kcd=["Employee ID","Employee Name","L6  ID","L6 Name","Joining Date","IIL Vertical Name",
+                     "Client-A","Client-C","Collection","Refund","Net Collection",
+                     "Collection \nTarget","Ach\n%","Sent","Recd","Ren %",
+                     "Incentive","Gross\nIncentive","Paid\nIncentive","Balance\nIncentive"]
+            _cf = _cf_csd if _chv=="csd" else _cf_kcd
             if _rws:
-                _df = pd.DataFrame(_rws).reindex(columns=_ch_col_names, fill_value="")
-                _df.to_excel(w, sheet_name=_chn, index=False, startrow=1)
-                _ws = w.sheets[_chn]
-                _hf = grn if _chv == "csd" else org
-                for ci, col in enumerate(_ch_col_names):
-                    _ws.write(1, ci, col, _hf)
-                _ws.set_column(0, len(_ch_col_names)-1, 14)
-                _ws.freeze_panes(2, 0)
-
+                _df=pd.DataFrame(_rws).reindex(columns=_cf, fill_value="")
+                _df.to_excel(w,sheet_name=_chn,index=False,startrow=1)
+                _ws=w.sheets[_chn]; _hf=grn if _chv=="csd" else org
+                for ci,col in enumerate(_cf): _ws.write(1,ci,col,_hf)
+                _ws.set_column(0,len(_cf)-1,14); _ws.freeze_panes(2,0)
         # ── Summary ────────────────────────────────────────
         all_rows = []
         for key, lst in results_dict.items():
@@ -2056,7 +2103,8 @@ if calc_btn:
                                 ta_targets["l3_coll"].get(emp_own_name, 0))
         elif desig == "L4":
             per_emp_coll_tgt = (ta_targets["l4_coll"].get(eid, 0) or
-                                ta_targets["l4_coll"].get(emp_own_name, 0))
+                                ta_targets["l4_coll"].get(emp_own_name, 0) or
+                                ta_targets["l4_coll"].get(emp_own_name.lower(), 0))
         else:
             per_emp_coll_tgt = 0
 
@@ -2088,7 +2136,8 @@ if calc_btn:
         cc = max(float(cc_agg or ca), 1)
 
         # Receipt data
-        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=cc, l1_eids=l1_eids)
+        _receipt_eids = team_eids if (team_eids and desig in ("L3","L4","L5")) else l1_eids
+        data = get_emp_data(rec, ref, eid, desig=desig, emp_name=name, client_a=cc, l1_eids=_receipt_eids)
 
         # Calculate incentive
         inc = calc_employee(emp, data, cmr, S, is_25cr=is_25cr)
