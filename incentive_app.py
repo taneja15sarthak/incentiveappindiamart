@@ -58,7 +58,7 @@ def build_ta_slab_config():
 
     kcd_milestones= csd_milestones.copy()
     kcd_targets = pd.DataFrame([
-        {"Vintage":"0-270","Group":"KCD","Target_PCDV":5680},
+        {"Vintage":"0-270","Group":"KCD","Target_PCDV":7100},   # Confirmed from sir
         {"Vintage":"270-2Yr","Group":"KCD","Target_PCDV":8100},
         {"Vintage":"2Yr+","Group":"KCD","Target_PCDV":9100},
         {"Vintage":"0-270","Group":"KCD-25cr","Target_PCDV":6480},
@@ -447,6 +447,19 @@ def load_ta_structure(f):
                             if _l2e.get("Designation")=="L2" and _l2e.get("L3 ID","")==eid:
                                 _all.extend(subordinates_map.get(_l2k,[]))
                         result[eid]["all_l1_eids"]=list(set(_all))
+                if d == "L4":
+                    # L4 CH: gather all L1s from under their L3 BMs
+                    _all_l4=[]
+                    for _l3k,_l3e in list(result.items()):
+                        if (_l3e.get("Designation")=="L3" and
+                            str(_l3e.get("L4 ID","")).strip()==str(eid)):
+                            _all_l4.extend(_l3e.get("all_l1_eids",[]))
+                    result[eid]["all_l1_eids"]=list(set(_all_l4))
+                    # L2 count for CH
+                    _l2_cnt=sum(1 for _l2k,_l2e in result.items()
+                                if _l2e.get("Designation")=="L2" and
+                                   str(result.get(str(_l2e.get("L3 ID","")),{}).get("L4 ID","")).strip()==str(eid))
+                    result[eid]["L2_Count"]=_l2_cnt
         except Exception:
             import traceback; traceback.print_exc()
     return result
@@ -724,12 +737,15 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
     gross = _sf(r[wtc].fillna(0).sum()) if wtc else 0.0
     dval  = _sf(r[dvc].fillna(0).sum()) if dvc else 0.0
 
-    # Refund — fast index lookup
+    # Refund — fast index lookup (aggregate team for L2/L3/L4)
     refund = 0.0
     wac = find_col(ref, ["WT Amount","WT_Amount","WT AMT"])
     if wac:
-        rr = _REF_IDX.get(eid_str, pd.DataFrame())
-        if len(rr): refund = _sf(rr[wac].fillna(0).sum())
+        if l1_eids:
+            refund = sum(_sf(_REF_IDX[e][wac].fillna(0).sum()) for e in l1_eids if e in _REF_IDX)
+        else:
+            rr = _REF_IDX.get(eid_str, pd.DataFrame())
+            if len(rr): refund = _sf(rr[wac].fillna(0).sum())
 
     net_coll = gross - refund
     client_a_eff = max(float(client_a),1)
@@ -952,10 +968,13 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"])
             mult_val = _cmr_mult(cmr_pct, cmr_tgt, S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
-            # Spot
+            # Spot (Exec-CSD)
             sp2_6   = _txn_spot(spot_txn.get("2_6",0),  S["csd_spot_2_6"])
             sp7_12  = _txn_spot(spot_txn.get("7_12",0), S["csd_spot_7_12"])
-            sp20_30 = _txn_spot(spot_txn.get("20_30",0),S["csd_spot_20_30"])
+            _sp20_base = _txn_spot(spot_txn.get("20_30",0), S["csd_spot_20_30"])
+            # Spot 20-30: SS+ receipts in that period × 2x bonus
+            _ss_20_30 = data.get("ss_spot20_30", 0)
+            sp20_30 = _sp20_base * (2 if _ss_20_30 > 0 else 1)
             total = int(gross_inc) + sp2_6 + sp7_12 + sp20_30
             out.update({
                 "scheme":f"TA CSD Exec {vint}", "target_pcdv":tgt_pcdv,
@@ -974,13 +993,18 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             base_incentive = grid + incr
             mult_val = _cmr_mult(cmr_pct, emp.get("CMR_Target_Pct", S["csd_cmr_tgt"]), S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
-            # Team productivity per L1 for spot
-            sp2_6_prod  = spot_txn.get("2_6",0)  / hc
-            sp7_12_prod = spot_txn.get("7_12",0) / hc
-            sp20_30_prod= spot_txn.get("20_30",0)/ hc
-            sp2_6   = _txn_spot(spot_txn.get("2_6",0),  S["csd_spot_2_6"])
-            sp7_12  = _txn_spot(spot_txn.get("7_12",0), S["csd_spot_7_12"])
-            sp20_30 = _txn_spot(spot_txn.get("20_30",0),S["csd_spot_20_30"])
+            # RM Spot: based on Productvity (= team txns / HC), not raw txn count
+            sp2_6_prod  = spot_txn.get("2_6",0)  / max(hc,1)
+            sp7_12_prod = spot_txn.get("7_12",0) / max(hc,1)
+            sp20_30_prod= spot_txn.get("20_30",0)/ max(hc,1)
+            # RM spot slab: threshold on Productvity
+            # 2-6: prod>=1.0 → 1000, else 0
+            # 7-12: prod>=1.5 → 1500, else 0
+            # 20-30: prod>=3.0 → 1850, prod>=2.5 → 1550, else 0
+            sp2_6   = 1000 if sp2_6_prod >= 1.0 else 0
+            sp7_12  = 1500 if sp7_12_prod >= 1.5 else 0
+            sp20_30 = (1850 if sp20_30_prod >= 3.0 else
+                       1550 if sp20_30_prod >= 2.5 else 0)
             total = int(gross_inc) + sp2_6 + sp7_12 + sp20_30
             out.update({
                 "scheme":f"TA CSD RM {vint}", "target_pcdv":tgt_pcdv,
@@ -1028,7 +1052,10 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         spot2_slabs = S["kcd_25cr_20_30"] if is_25cr else S["kcd_spot_20_30"]
         rm1_slabs   = S["kcd_rm_1_12"]
         rm2_slabs   = S["kcd_rm_20_30"]
-        ss_m = _ss_mult(ss_pct, ss_sent, S["kcd_min_ss_sent"], S["kcd_ss_mult"])
+        # SS+ Multiplier for KCD: CMR+1 Ren% (Ren%.1) >= 2/3 → 1.0, else 0.5
+        # (Confirmed from all 24 RM-KCD employees matching 100%)
+        _cmr1_pct = cmr_prev.get("pct", 0) / 100
+        ss_m = 1.0 if _cmr1_pct >= (2/3) else 0.5
 
         if desig == "L1":
             tgt_pcdv = S.get("kcd_target_map",{}).get((str(emp.get("Group","KCD") or "KCD").strip(),vint),1800)
@@ -1485,7 +1512,7 @@ def build_excel_output(results_dict, sel_month):
                     "IIL Vertical Name":"Tele Annual CSD","Location":r.get("Location",""),
                     "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),"Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
-                    "Collection":round(r.get("gross_coll_cr",r.get("gross_coll",0)/1e7),6),"Refund":round(r.get("refund_cr",r.get("refund",0)/1e7),6),
+                    "Collection":round(r.get("gross_coll",0),2),"Refund":round(r.get("refund",0),2),
                     "Net Collection":round(r.get("net_coll",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "CMR\nSent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
@@ -1710,7 +1737,7 @@ def build_excel_output(results_dict, sel_month):
                     "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Collection":round(r.get("gross_coll",0),2),
                     "Refund":round(r.get("refund",0),2),
-                    "Net Collection":round(r.get("net_coll",0),2),
+                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
                     "Deal Value":round(r.get("deal_val",0),2),
                     "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "Incentive":r.get("base_inc",0),
@@ -2181,10 +2208,15 @@ if calc_btn:
             fy_age = emp.get("FY_Ageing", ageing)
             is_nursery = desig == "L1" and (fy_age <= 90 or emp.get("_nurs_bucket","60-90") == "60D")
             if is_nursery:
+                # PDF rule: pay under whichever scheme gives higher earnings
+                # Compute both nursery and exec incentive
                 vl = emp.get("_nurs_bucket","60-90")
-                row["vintage_label"] = vl
                 emp["vintage_label"] = vl
+                row["vintage_label"] = vl
+                # PDF: employee is eligible for BOTH nursery and base scheme
+                # Both get computed; payment from whichever is higher
                 results["nursery"].append(row)
+                results["exec_csd"].append(row)
             elif desig == "L1":
                 results["exec_csd"].append(row)
             elif desig == "L2":
@@ -2209,9 +2241,11 @@ if calc_btn:
                          (fy_age <= 90 or emp.get("_nurs_bucket","60-90") == "60D"))
             if is_nursery:
                 vl = emp.get("_nurs_bucket","60-90")
-                row["vintage_label"] = vl
                 emp["vintage_label"] = vl
+                row["vintage_label"] = vl
+                # PDF: eligible for both nursery and base scheme
                 results["nursery"].append(row)
+                results["exec_kcd"].append(row)
             elif desig == "L1":
                 results["exec_kcd"].append(row)
             elif desig == "L2":
