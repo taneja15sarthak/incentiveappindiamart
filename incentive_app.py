@@ -11,6 +11,12 @@ from datetime import date
 st.set_page_config(page_title="TA Incentive Calculator", layout="wide", page_icon="📊")
 
 CALC_DATE  = date(2026, 4, 30)
+FY_START   = date(2026, 4, 1)
+
+# BD→TA movement employees who qualify for "60D" nursery scheme
+# Source: "BD to TA Movement Month" column in sir's TA sheet
+_60D_NURSERY_EIDS = {"60504","117268","104639","112667","119273",
+                     "106325","112044","107101","116951"}
 EXCEL_EPOCH= date(1899, 12, 30)
 
 IM_STAR_LEADER_KW = {"IM STAR","IM LEADER","CITY STAR","CITY LEADER","PREFERRED STAR",
@@ -305,39 +311,34 @@ def load_ta_structure(f):
         vint   = str(row[fgc]).strip() if fgc else "91-270D"
         vint = "90-270"  # placeholder; overridden by ageing in calc loop
 
-        ageing = 0
+        ageing = 0; fy_ageing = 0
+        # Compute both CALC_DATE ageing and FY_START (Apr 1) ageing
+        # Sir's Aeging column = FY ageing (days from Apr 1)
         if agc and str(row[agc]).strip() not in ("nan","None",""):
-            try: ageing = int(float(row[agc]))
+            try: fy_ageing = int(float(row[agc]))
             except: pass
-        if ageing == 0:
-            jd = _to_date(row[jc]) if jc else None
-            if jd:
-                try:
-                    import datetime as _dt
-                    jd_date = jd.date() if isinstance(jd, _dt.datetime) else jd
-                    ageing = (CALC_DATE - jd_date).days
-                except Exception:
-                    ageing = 0
+        jd_val = row[jc] if jc else None
+        jd = _to_date(jd_val) if jd_val is not None else None
+        if jd and str(jd) not in ("NaT","nan","None",""):
+            try:
+                import datetime as _dt
+                jd_date = jd.date() if isinstance(jd, _dt.datetime) else jd
+                ageing    = max(0, (CALC_DATE - jd_date).days)  # from Apr 30
+                if fy_ageing == 0:
+                    fy_ageing = max(0, (FY_START  - jd_date).days)  # from Apr 1
+            except Exception:
+                ageing = fy_ageing = 0
 
         def sv(c): return str(row[c]).strip() if c else ""
         def nv(c): return _sf(row[c]) if c else 0.0
         def id_sv(c): return str(row[c]).strip().split(".")[0] if c else ""
 
-        # Determine nursery bucket: "60D" = old mover, "60-90" = new joiner
-        _jd_raw2 = row[jc] if jc else None
-        _jd2 = _to_date(_jd_raw2)
-        if hasattr(_jd2, 'date') and callable(_jd2.date): _jd2 = _jd2.date()
-        try:
-            import datetime as _dtx
-            _FY2 = _dtx.date(2026, 4, 1)
-            _jd_fy2 = (_FY2 - _jd2).days if _jd2 and str(_jd2) not in ("NaT","nan","None","") else 9999
-        except: _jd_fy2 = 9999
-        _nurs_bkt = "60D" if _jd_fy2 > 90 else "60-90"
+        _nurs_bkt = "60D" if str(eid).strip() in _60D_NURSERY_EIDS else "60-90"
 
         result[eid] = {
             "Name":     sv(nc),   "Designation": desig,
             "Vertical": vert,     "Vintage":     vint,
-            "Ageing":   ageing,   "Joining Date":_to_date(row[jc]) if jc else None,
+            "Ageing":   ageing,   "FY_Ageing": fy_ageing,  "Joining Date":_to_date(row[jc]) if jc else None,
             "Client-A": nv(cac),  "Client-C":    nv(ccc),
             "HC":       nv(hcc),  "Group":       sv(grc),
             "Remarks":  sv(rmc),  "Email Id":    sv(email_c),
@@ -378,9 +379,14 @@ def load_ta_structure(f):
                         return 0 <= (_FY - jd).days <= 90
                 except: pass
                 return False
-            df["_is_nurs"] = [_calc_fy(j, m) for j, m in zip(
-                list(_jds)  if _jds  is not None else [None]*len(df),
-                list(_mjds) if _mjds is not None else [None]*len(df))]
+            _eid_col = ec  # Employee ID column
+            df["_is_nurs"] = [
+                (str(row_eid).strip().split(".")[0] in _60D_NURSERY_EIDS or _calc_fy(j, m))
+                for row_eid, j, m in zip(
+                    df[_eid_col].tolist() if _eid_col else [""]*len(df),
+                    list(_jds)  if _jds  is not None else [None]*len(df),
+                    list(_mjds) if _mjds is not None else [None]*len(df))
+            ]
             _ccc = gc(["Client-C","Client C","ClientC"])
             # Ensure Client-C is numeric
             if _ccc and _ccc in df.columns:
@@ -871,14 +877,20 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
     # ── NURSERY (L1, ageing ≤ 90 days) ────────────────────
     productivity = data.get("txns",0)  # total txns as proxy for productivity
-    is_nursery = desig in ("L1","") and emp.get("FY_Ageing", emp.get("Ageing",999)) <= 90
+    _fy_ce = emp.get("FY_Ageing", emp.get("Ageing",999))
+    is_nursery = desig in ("L1","") and (_fy_ce <= 90 or emp.get("_nurs_bucket","60-90") == "60D")
 
     if is_nursery:
         min_prod = S["nursery_min_prod"]
-        eligible = productivity >= min_prod
+        bucket    = emp.get("vintage_label", emp.get("_nurs_bucket","60-90"))
+        grid_60d  = S.get("nursery_60d_grid")
+        # Eligible: Client Status = "Yes" AND Productivity >= 3
+        _cs_ok    = emp.get("Client_Status_Eligible", True)
+        eligible  = _cs_ok and (productivity >= min_prod)
         inc = int(productivity * S["nursery_inc_per_txn"]) if eligible else 0
         mult = _nursery_mult(cmr_sent, cmr_recd, cmr_pct,
-                             S["nursery_sent_max"], S["nursery_grid"], S["nursery_table"])
+                             S["nursery_sent_max"], S["nursery_grid"],
+                             S["nursery_table"], bucket=bucket, grid_60d=grid_60d)
         gross_inc = round(inc * mult, 0)
         out.update({
             "scheme":"Nursery", "productivity":productivity,
@@ -2126,8 +2138,9 @@ if calc_btn:
                 results["ch_csd"].append(row)
 
         elif vert == "KCD":
-            fy_age = emp.get("FY_Ageing", ageing)
-            is_nursery = desig == "L1" and (fy_age <= 90 or emp.get("_nurs_bucket","60-90") == "60D")
+            fy_age = emp.get("FY_Ageing", emp.get("Ageing", 999))
+            is_nursery = (desig == "L1" and
+                         (fy_age <= 90 or emp.get("_nurs_bucket","60-90") == "60D"))
             if is_nursery:
                 vl = emp.get("_nurs_bucket","60-90")
                 row["vintage_label"] = vl
