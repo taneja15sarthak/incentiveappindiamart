@@ -412,14 +412,12 @@ def parse_slabs(cfg):
     new_joiner_cap       = float(params.get("Max_Incentive", 20000))
 
     # ── CSD SPS (April or March slabs) ──────────────────────
-    def _csd_sps_slabs(apr_key, mar_key):
-        k = apr_key if apr_key in cfg else mar_key
+    def _csd_sps_slabs(may_key, apr_key, mar_key):
+        k = may_key if may_key in cfg else (apr_key if apr_key in cfg else mar_key)
         return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
                 for _, r in cfg[k].iterrows()]
-    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May",
-                         _csd_sps_slabs("CSD_SPS_91_270_Apr", "CSD_SPS_91_270D"))
-    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",
-                         _csd_sps_slabs("CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus"))
+    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May", "CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
+    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",    "CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
     # CSD RM: May → Apr → default
     _rm_df = cfg.get("CSD_RM_May", cfg.get("CSD_RM", cfg.get("CSD_SPS_91_270D", pd.DataFrame())))
     _rm_thresh_col = ("PCR_Threshold" if "PCR_Threshold" in _rm_df.columns
