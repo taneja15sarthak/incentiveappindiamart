@@ -1163,10 +1163,14 @@ def make_may_slab_config_excel():
             ws.write(0, 0, f"May'26 Scheme | {sheet_name} | Do NOT rename columns.", note_fmt)
             ws.set_row(0, 18)
     return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False)
+def make_april_slab_config_excel():
     """Generate the downloadable April 2026 Slab_Config.xlsx with April-specific sheets."""
     march_base = build_march_slab_config()
     april_ext  = build_april_slab_config()
-    combined   = {**march_base, **april_ext}   # April tables override/extend March
+    combined   = {**march_base, **april_ext}
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
         hdr_fmt  = w.book.add_format({"bold": True, "bg_color": "#1F4E79", "font_color": "#FFFFFF", "border": 1})
