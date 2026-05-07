@@ -719,7 +719,7 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
     """Fast receipt lookup using pre-built indices."""
     ec  = find_col(rec,["Sales Exec ID","EMP ID","Emp ID"])
     dvc = find_col(rec,["Deal Value","Deal Val (WT)","Deal Val"])
-    wtc = find_col(rec,["WT AMT","WT_AMT"])
+    wtc = find_col(rec,["Receipt Amount","WT AMT","WT_AMT"])  # Sir uses Receipt Amount
     dtc = find_col(rec,["Entry Date","Clear Date","Receipt Date"])
     upc = find_col(rec,["Unique","Upsell","UNIQUE"])
     if not ec: return {}
@@ -1514,7 +1514,7 @@ def build_excel_output(results_dict, sel_month):
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Collection":round(r.get("gross_coll",0),2),"Refund":round(r.get("refund",0),2),
                     "Net Collection":round(r.get("net_coll",0),2),
-                    "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
+                    "Target":r.get("coll_target") or None,"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "CMR\nSent":r.get("cmr_sent",0),"CMR\nReceived":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
                     "Payout\nEligibile":r.get("payout_eligible","No"),
@@ -1683,7 +1683,8 @@ def build_excel_output(results_dict, sel_month):
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"HC":r.get("HC",0),
-                    "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
+                    "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                    "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(r.get("pcdv",0),2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -1739,7 +1740,7 @@ def build_excel_output(results_dict, sel_month):
                     "Refund":round(r.get("refund",0),2),
                     "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
                     "Deal Value":round(r.get("deal_val",0),2),
-                    "Target":r.get("coll_target",0),"Ach\n%":round(r.get("ach_pct",0)/100,4),
+                    "Target":r.get("coll_target") or None,"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "Incentive":r.get("base_inc",0),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
