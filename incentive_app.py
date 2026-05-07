@@ -612,6 +612,8 @@ def parse_slabs(cfg):
     sam_catalog_slabs = _sam_listing_slabs("KCD_SAM_Catalog_May", "KCD_SAM_Catalog")
 
 
+    _roi_key = _kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI")
+
     return {
         # CSD New
         "csd_new_slabs":       csd_new_slabs,
@@ -650,12 +652,8 @@ def parse_slabs(cfg):
         "kcd_nagpur_slabs":    kcd_nagpur_slabs,
         "kcd_incr":            kcd_incr,
         # KCD ROI (lower PCDV thresholds, same per-txn rates as Regular)
-        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
-                               if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
-                               else kcd_270_slabs,
-        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
-                                if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
-                                else kcd_91_270_slabs,
+        "kcd_roi_270_slabs":    to_kcd_slabs(_roi_key) if _roi_key in cfg else kcd_270_slabs,
+        "kcd_roi_91_270_slabs": to_kcd_slabs(_roi_key) if _roi_key in cfg else kcd_91_270_slabs,
         # KCD Listing/Catalog
         "kcd_listing_slabs":   kcd_listing_slabs,
         "kcd_listing_rates":   kcd_listing_rates,
