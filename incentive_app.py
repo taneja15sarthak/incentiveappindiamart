@@ -497,15 +497,19 @@ def parse_slabs(cfg):
     _hc_sam          = int(_p("KCD_HC_Mult_SAM",      17000))
 
     # ── CSD New (April or March slabs) ───────────────────────
-    _new_slab_key    = "CSD_New_Slabs_Apr"  if "CSD_New_Slabs_Apr"  in cfg else "CSD_New_Slabs"
-    _new_params_key  = "CSD_New_Params_Apr" if "CSD_New_Params_Apr" in cfg else "CSD_New_Params"
-    csd_new_slabs = [
-        (int(r["PCDV_Threshold"]), int(r["Payout"]))
-        for _, r in cfg[_new_slab_key].iterrows()
-    ]
-    params = cfg[_new_params_key].set_index("Parameter")["Value"].to_dict()
+    _new_slab_key   = ("CSD_New_Slabs_Apr" if "CSD_New_Slabs_Apr" in cfg
+                       else "CSD_New_Slabs"  if "CSD_New_Slabs"    in cfg else None)
+    _new_params_key = ("CSD_New_Params_Apr" if "CSD_New_Params_Apr" in cfg
+                       else "CSD_New_Params" if "CSD_New_Params"    in cfg else None)
+    _ns_df = cfg.get(_new_slab_key, pd.DataFrame()) if _new_slab_key else pd.DataFrame()
+    csd_new_slabs = (
+        [(int(r["PCDV_Threshold"]), int(r["Payout"])) for _, r in _ns_df.iterrows()]
+        if len(_ns_df) > 0 else [(2800,10500),(2400,7000),(2100,5100),(1800,3100)]
+    )
+    _np_df = cfg.get(_new_params_key, pd.DataFrame()) if _new_params_key else pd.DataFrame()
+    params = ({str(r["Parameter"]): float(r["Value"]) for _, r in _np_df.iterrows()}
+              if len(_np_df) > 0 and "Parameter" in _np_df.columns else {})
     csd_new_incr_thresh  = float(params.get("Incremental_Threshold", 2800))
-    # Incr rate and cap come from Scheme_Params if available, else CSD_New_Params sheet
     csd_new_incr_rate    = _nj_incr_rate if "CSD_NewJoiner_Incr_Rate_%" in _sp else float(params.get("Incremental_Rate_%", 3.0)) / 100
     csd_slab2_mult       = float(params.get("Slab2_CMR_Multiplier_%", 120)) / 100
     min_txn_0_30         = _pop_min_0_30 if "CSD_PoP_Min_Txn_0_30D" in _sp else int(params.get("Min_Txn_0_30D", 2))
@@ -540,9 +544,9 @@ def parse_slabs(cfg):
     rm_cmr_slab1 = _rm_params_dict.get("CMR_Slab1_Target_%", 55)
     rm_cmr_slab2 = _rm_params_dict.get("CMR_Slab2_Target_%", 60)
 
-    # ── CSD SPS Multipliers ──────────────────────────────────
-    mult_rows = cfg["CSD_SPS_Multipliers"].set_index("Parameter")
-    # MDC-1 multiplier thresholds now come from Scheme_Params
+    # ── CSD SPS Multipliers — now driven by Scheme_Params, legacy sheet optional ──
+    _mult_df = cfg.get("CSD_SPS_Multipliers", pd.DataFrame())
+    # All values come from Scheme_Params; legacy sheet ignored if Scheme_Params present
     mdc1_above   = _mdc1_hi_thr
     mdc1_between = _mdc1_mid_thr
     mdc1_mult_hi = _mdc1_hi_mult
@@ -553,9 +557,12 @@ def parse_slabs(cfg):
     boost_mult   = _boost_mult
 
     # ── CSD Spot ─────────────────────────────────────────────
-    spot_params = cfg["CSD_Spot"].set_index("Parameter")["Value"].to_dict()
+    _csd_spot_df = cfg.get("CSD_Spot", pd.DataFrame())
+    spot_params = {}
+    if len(_csd_spot_df) > 0 and "Parameter" in _csd_spot_df.columns:
+        spot_params = _csd_spot_df.set_index("Parameter")["Value"].to_dict()
     csd_spot_min     = int(spot_params.get("Min_NR_Upsell_AMR", 3))
-    csd_spot_base    = int(spot_params.get("Base_Reward", 1500))
+    csd_spot_base    = int(spot_params.get("Base_Reward", 2000))
     csd_spot_per_txn = int(spot_params.get("Per_Txn_After_Min", 750))
 
     # ── CSD Spot April (FNT-1 / FNT-2 rates from config) ────
@@ -613,18 +620,26 @@ def parse_slabs(cfg):
 
     # ── Power of Productivity ────────────────────────────────
     prod_to_pop = {}
-    for _, r in cfg["Power_of_Productivity"].iterrows():
-        for kw in str(r["Product_Keywords"]).split(","):
-            prod_to_pop[kw.strip().upper()] = int(r["Incentive_Per_Txn"])
+    _pop_df = cfg.get("Power_of_Productivity", pd.DataFrame())
+    if len(_pop_df) > 0 and "Product_Keywords" in _pop_df.columns:
+        for _, r in _pop_df.iterrows():
+            for kw in str(r["Product_Keywords"]).split(","):
+                prod_to_pop[kw.strip().upper()] = int(r.get("Incentive_Per_Txn", 0))
 
     # ── KCD Regular (April or March slabs) ──────────────────
     def to_kcd_slabs(sheet_key):
-        return [
-            (int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
-            if "Slab1_Per_Txn" in cfg[sheet_key].columns
-            else (int(r["PCDV_Threshold"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
-            for _, r in cfg[sheet_key].iterrows()
-        ]
+        df = cfg.get(sheet_key, pd.DataFrame())
+        if df is None or len(df) == 0:
+            return []
+        try:
+            if "Slab1_Per_Txn" in df.columns:
+                return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
+                        for _, r in df.iterrows()]
+            else:
+                return [(int(r["PCDV_Threshold"]), int(r["CMR72_Per_Txn"]), int(r["CMR80_Per_Txn"]))
+                        for _, r in df.iterrows()]
+        except Exception:
+            return []
     def _kcd_key(may_key, apr_key, mar_key):
         return may_key if may_key in cfg else (apr_key if apr_key in cfg else mar_key)
     kcd_270_slabs    = to_kcd_slabs(_kcd_key("KCD_Regular_270_May",    "KCD_Regular_270_Apr",    "KCD_Regular_270D"))
@@ -635,47 +650,60 @@ def parse_slabs(cfg):
 
     # ── KCD Incremental Rates ────────────────────────────────
     kcd_incr = {}
-    for _, r in cfg["KCD_Incremental_Rates"].iterrows():
-        kcd_incr[str(r["Vintage"])] = (float(r["Incr_Threshold"]), float(r["Incr_Rate_%"]) / 100)
+    _kcd_incr_df = cfg.get("KCD_Incremental_Rates", pd.DataFrame())
+    if len(_kcd_incr_df) > 0 and "Vintage" in _kcd_incr_df.columns:
+        for _, r in _kcd_incr_df.iterrows():
+            kcd_incr[str(r["Vintage"])] = (float(r.get("Incr_Threshold", 0)),
+                                            float(r.get("Incr_Rate_%", 1.4)) / 100)
 
     # ── KCD Listing ──────────────────────────────────────────
-    _ls_key = "KCD_Listing_May" if "KCD_Listing_May" in cfg else "KCD_Listing_Slabs"
-    _ls_df = cfg[_ls_key]
+    _ls_key = ("KCD_Listing_May" if "KCD_Listing_May" in cfg
+               else "KCD_Listing_Slabs" if "KCD_Listing_Slabs" in cfg else None)
+    _ls_df = cfg.get(_ls_key, pd.DataFrame()) if _ls_key else pd.DataFrame()
     _ls_c1 = ("CMR72_Per_Txn" if "CMR72_Per_Txn" in _ls_df.columns
               else "Slab1_Per_Txn" if "Slab1_Per_Txn" in _ls_df.columns
-              else _ls_df.columns[1])
-    _ls_c2 = ("CMR80_Per_Txn" if "CMR80_Per_Txn" in _ls_df.columns else "Slab2_Per_Txn")
-    kcd_listing_slabs = [
-        (int(r["Target_Pct"]), int(r[_ls_c1]), int(r[_ls_c2]))
-        for _, r in _ls_df.iterrows()
-    ]
+              else (_ls_df.columns[1] if len(_ls_df.columns) > 1 else None))
+    _ls_c2 = ("CMR80_Per_Txn" if "CMR80_Per_Txn" in _ls_df.columns
+              else "Slab2_Per_Txn" if "Slab2_Per_Txn" in _ls_df.columns else None)
+    kcd_listing_slabs = (
+        [(int(r["Target_Pct"]), int(r[_ls_c1]), int(r[_ls_c2]))
+         for _, r in _ls_df.iterrows()]
+        if (_ls_c1 and _ls_c2 and len(_ls_df) > 0) else []
+    )
     kcd_listing_rates = {}
-    for _, r in cfg["KCD_Listing_Rates"].iterrows():
-        kcd_listing_rates[str(r["Vintage"])] = {
-            "base_rate":    float(r["Base_Client_Rate"]),
-            "listing_rate": float(r["Listing_Client_Rate"]),
-        }
+    _lr_df = cfg.get("KCD_Listing_Rates", pd.DataFrame())
+    if len(_lr_df) > 0 and "Vintage" in _lr_df.columns:
+        for _, r in _lr_df.iterrows():
+            kcd_listing_rates[str(r["Vintage"])] = {
+                "base_rate":    float(r.get("Base_Client_Rate", 7000)),
+                "listing_rate": float(r.get("Listing_Client_Rate", 22000)),
+            }
 
     # ── KCD Catalog ──────────────────────────────────────────
-    _cat_key = "KCD_Catalog_May" if "KCD_Catalog_May" in cfg else "KCD_Catalog_Slabs"
-    _cat_df = cfg[_cat_key]
+    _cat_key = ("KCD_Catalog_May" if "KCD_Catalog_May" in cfg
+                else "KCD_Catalog_Slabs" if "KCD_Catalog_Slabs" in cfg else None)
+    _cat_df = cfg.get(_cat_key, pd.DataFrame()) if _cat_key else pd.DataFrame()
     _cat_c1 = ("CMR72_Per_Txn" if "CMR72_Per_Txn" in _cat_df.columns
                else "Slab1_Per_Txn" if "Slab1_Per_Txn" in _cat_df.columns
-               else _cat_df.columns[1])
-    _cat_c2 = ("CMR80_Per_Txn" if "CMR80_Per_Txn" in _cat_df.columns else "Slab2_Per_Txn")
-    kcd_catalog_slabs = [
-        (int(r["Target_Pct"]), int(r[_cat_c1]), int(r[_cat_c2]))
-        for _, r in _cat_df.iterrows()
-    ]
+               else (_cat_df.columns[1] if len(_cat_df.columns) > 1 else None))
+    _cat_c2 = ("CMR80_Per_Txn" if "CMR80_Per_Txn" in _cat_df.columns
+               else "Slab2_Per_Txn" if "Slab2_Per_Txn" in _cat_df.columns else None)
+    kcd_catalog_slabs = (
+        [(int(r["Target_Pct"]), int(r[_cat_c1]), int(r[_cat_c2]))
+         for _, r in _cat_df.iterrows()]
+        if (_cat_c1 and _cat_c2 and len(_cat_df) > 0) else []
+    )
 
     # ── KCD Spot ─────────────────────────────────────────────
     kcd_spot = {}
-    for _, r in cfg["KCD_Spot"].iterrows():
-        kcd_spot[str(r["Spot_Key"])] = {
-            "thresh": int(r["PCDV_Threshold"]),
-            "base":   int(r["Base_Reward"]),
-            "per1k":  int(r["Per_1K_After"]),
-        }
+    _kcd_spot_df = cfg.get("KCD_Spot", pd.DataFrame())
+    if len(_kcd_spot_df) > 0 and "Spot_Key" in _kcd_spot_df.columns:
+        for _, r in _kcd_spot_df.iterrows():
+            kcd_spot[str(r["Spot_Key"])] = {
+                "thresh": int(r.get("PCDV_Threshold", 0)),
+                "base":   int(r.get("Base_Reward", 0)),
+                "per1k":  int(r.get("Per_1K_After", 0)),
+            }
 
     # ── KCD WK-1 Power of Productivity Spot (May 01-09) ──────
     # Per-product-type spot: {product_key: {"l1_annual": N, "l1_myr": N}}
