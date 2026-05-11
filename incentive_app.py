@@ -3038,9 +3038,9 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
                  ss_cmr_pct, ss_sent, S, collection_target=0, metric_label="PCDV"):
     """KCD ROI incentive — same rates as Regular but lower PCDV thresholds (8K/11K/14K)."""
-    slabs = {"270D+":   S.get("kcd_roi_270_slabs",    S["kcd_270_slabs"]),
-             "91-270D": S.get("kcd_roi_91_270_slabs", S["kcd_91_270_slabs"])}.get(
-        vintage, S["kcd_0_90_slabs"])
+    slabs = {"270D+":   S.get("kcd_roi_270_slabs",    S.get("kcd_270_slabs",   [])),
+             "91-270D": S.get("kcd_roi_91_270_slabs", S.get("kcd_91_270_slabs",[]))}.get(
+        vintage, S.get("kcd_0_90_slabs", []))
     _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
     ss_mult = 0.5 if (ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72)) else 1.0
     base = per_txn * txn_count * ss_mult
@@ -3058,12 +3058,13 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
     """
     loc = str(location).upper()
     if "NAGPUR" in loc:
-        _, per_txn = pcdv_slab(pcdv, S["kcd_nagpur_slabs"], cmr_col_val)
+        _, per_txn = pcdv_slab(pcdv, S.get("kcd_nagpur_slabs", []), cmr_col_val)
     elif any(c in loc for c in ["HYDERABAD", "VASHI", "RAIPUR", "INDORE"]):
-        _, per_txn = pcdv_slab(pcdv, S["kcd_hvri_slabs"], cmr_col_val)
+        _, per_txn = pcdv_slab(pcdv, S.get("kcd_hvri_slabs", []), cmr_col_val)
     else:
-        slabs = {"270D+": S["kcd_270_slabs"], "91-270D": S["kcd_91_270_slabs"]}.get(
-            vintage, S["kcd_0_90_slabs"])
+        slabs = {"270D+": S.get("kcd_270_slabs", []),
+                 "91-270D": S.get("kcd_91_270_slabs", [])}.get(
+            vintage, S.get("kcd_0_90_slabs", []))
         _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
 
     # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 70%
@@ -3117,7 +3118,7 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
         return 0, "KCD Listing -- target=0"
     achv    = (net_dv / collection_target) * 100
     per_txn = next((r2 if cmr_col_val == 2 else r1
-                    for t, r1, r2 in S["kcd_listing_slabs"] if achv >= t), 0)
+                    for t, r1, r2 in S.get("kcd_listing_slabs", []) if achv >= t), 0)
     incr    = max(0, net_dv - collection_target) * S.get("kcd_incr_rate", 0.014)
     if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
         ss_mult = 0.5
@@ -3537,10 +3538,11 @@ def calc_mcats_renewal(im_star_amr_count, S, is_l2=False):
 
 
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
-    cfg = S["kcd_spot"].get(spot_key, {})
-    if not cfg or pcdv < cfg["thresh"]:
+    _kcd_spot_dict = S.get("kcd_spot", {})
+    cfg = _kcd_spot_dict.get(spot_key, {}) if _kcd_spot_dict else {}
+    if not cfg or pcdv < cfg.get("thresh", 0):
         return 0
-    raw = cfg["base"] + max(0, int((pcdv - cfg["thresh"]) / 1000)) * cfg["per1k"]
+    raw = cfg.get("base", 0) + max(0, int((pcdv - cfg.get("thresh", 0)) / 1000)) * cfg.get("per1k", 0)
     return round(raw * (1.25 if mult_met else 0.5), 0)
 
 
