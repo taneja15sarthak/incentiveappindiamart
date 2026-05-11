@@ -512,15 +512,17 @@ def parse_slabs(cfg):
     min_txn_31_90        = _pop_min_31_90 if "CSD_PoP_Min_Txn_31_90D" in _sp else int(params.get("Min_Txn_31_90D", 3))
     new_joiner_cap       = _nj_cap
 
-    # ── CSD SPS (April or March slabs) ──────────────────────
-    def _csd_sps_slabs(apr_key, mar_key):
-        k = apr_key if apr_key in cfg else mar_key
+    # ── CSD SPS (May → April → March fallback) ──────────────────
+    def _csd_sps_slabs(may_key, apr_key, mar_key):
+        k = (may_key if may_key in cfg else
+             apr_key  if apr_key  in cfg else mar_key)
+        df = cfg.get(k, pd.DataFrame())
+        if df is None or len(df) == 0:
+            return []
         return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
-                for _, r in cfg[k].iterrows()]
-    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May",
-                         _csd_sps_slabs("CSD_SPS_91_270_Apr", "CSD_SPS_91_270D"))
-    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",
-                         _csd_sps_slabs("CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus"))
+                for _, r in df.iterrows()]
+    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May", "CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
+    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",    "CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
     # CSD RM: May → Apr → default
     _rm_df = cfg.get("CSD_RM_May", cfg.get("CSD_RM", cfg.get("CSD_SPS_91_270D", pd.DataFrame())))
     _rm_thresh_col = ("PCR_Threshold" if "PCR_Threshold" in _rm_df.columns
