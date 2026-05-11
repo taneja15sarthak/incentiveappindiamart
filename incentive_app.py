@@ -2284,44 +2284,76 @@ def load_sam_ilp_targets(uploaded_file):
 
 
 def load_kcd_targets(uploaded_file):
-    """Load per-employee KCD Collection Targets from a kcd_calc-style file.
-    Reads: Employee ID, Client-A, Listing Client, Catalog Client,
-           PCR Target, Collection Target.
-    Returns dict: {emp_id: {client_a, listing, catalog, pcr_target, coll_target}}
+    """Load per-employee KCD targets from multiple sheet formats.
+    Supports:
+    - Classic kcd_calc style: Employee ID, Client-A, Listing Client, Catalog Client, Target
+    - Incentive L1/L2 style (multi-sheet): employeeid, Catalog C, Listing C, Overall, Target, Ctarget, Ltarget
+    Returns dict: {emp_id_str: {client_a, listing, catalog, pcr_target, coll_target, team}}
     """
     if uploaded_file is None:
         return {}
+    result = {}
     try:
+        xl = pd.ExcelFile(uploaded_file)
+        # Try Incentive_L1_L2 style (multi-sheet: 0-90D L1, 90D+ L1, SAM)
+        target_sheets = [s for s in xl.sheet_names
+                         if any(k in s.lower() for k in ['0-90', '90d', 'l1', 'sam', 'l2'])]
+        if target_sheets:
+            for sh in xl.sheet_names:
+                try:
+                    df = pd.read_excel(uploaded_file, sheet_name=sh)
+                    df.columns = [str(c).strip() for c in df.columns]
+                    emp_col = find_col(df, ["employeeid","Employee ID","EmpID","Emp ID","level2_id"])
+                    if not emp_col: continue
+                    for _, row in df.iterrows():
+                        eid = str(row[emp_col]).strip().split('.')[0]
+                        if not eid or eid.lower() in ("nan","direct",""): continue
+                        def _n(keys):
+                            for k in keys:
+                                if k in row.index and pd.notna(row[k]):
+                                    try: return float(row[k])
+                                    except: pass
+                            return 0.0
+                        _ca   = _n(["Overall","Client-A","Total Client","total_client"])
+                        _lc   = _n(["Listing C","Listing Client","Listing Clients","listing_client"])
+                        _cc   = _n(["Catalog C","Catalog Client","Catalog Clients","catalog_client"])
+                        _ct   = _n(["Target","Collection Target","Overall Target","overall_target"])
+                        _lt   = _n(["Ltarget","Listing Target","listing_target"])
+                        _catt = _n(["Ctarget","Catalog Target","catalog_target"])
+                        if _ct == 0: _ct = _lt + _catt
+                        _pcr  = _ct / _ca if _ca > 0 else 0
+                        _team = str(row["Team"]).strip() if "Team" in row.index and pd.notna(row.get("Team")) else ""
+                        if eid not in result or _ca > result[eid].get("client_a", 0):
+                            result[eid] = {"client_a": _ca, "listing": _lc, "catalog": _cc,
+                                           "pcr_target": _pcr, "coll_target": _ct, "team": _team}
+                except Exception:
+                    continue
+            return result
+        # Fallback: single-sheet classic format
         df = _read_file(uploaded_file)
         df.columns = [str(c).strip().replace('\n', ' ') for c in df.columns]
-        emp_col = find_col(df, ["Employee ID","Emp ID","EmpID","ID","employeeid","employee_id"])
-        if not emp_col:
-            return {}
-        ca_col  = find_col(df, ["Client-A","Client A","ClientA","Total Client","total_client"])
-        lc_col  = find_col(df, ["Listing Client","Listing Clients","listing_client"])
-        cc_col  = find_col(df, ["Catalog Client","Catalog Clients","catalog_client"])
-        pcr_col = find_col(df, ["PCR Target","PCDV Target","PCR_Target"])
-        ct_col  = find_col(df, ["Collection Target","Overall Target","overall_target"])
-        lt_col  = find_col(df, ["Listing Target","listing_target"])
-        cat_t_col = find_col(df, ["Catalog Target","catalog_target"])
-        result = {}
+        emp_col = find_col(df, ["Employee ID","Emp ID","EmpID","ID","employeeid"])
+        if not emp_col: return {}
+        ca_col    = find_col(df, ["Client-A","Client A","Overall","Total Client"])
+        lc_col    = find_col(df, ["Listing Client","Listing Clients","Listing C"])
+        cc_col    = find_col(df, ["Catalog Client","Catalog Clients","Catalog C"])
+        ct_col    = find_col(df, ["Collection Target","Target","Overall Target"])
+        lt_col    = find_col(df, ["Listing Target","Ltarget"])
+        cat_t_col = find_col(df, ["Catalog Target","Ctarget"])
         for _, row in df.iterrows():
             eid = str(row[emp_col]).strip().split('.')[0]
             if not eid or eid.lower() in ("nan", ""): continue
-            def _n(c):
+            def _nv(c):
                 if not c: return 0.0
                 try: return float(row[c])
                 except: return 0.0
-            _ct = _n(ct_col)
-            # If no overall target but have listing+catalog targets, sum them
+            _ct = _nv(ct_col)
             if _ct == 0 and lt_col and cat_t_col:
-                _ct = _n(lt_col) + _n(cat_t_col)
-            # Derive PCR target from overall target / client-A if not available
-            _ca = _n(ca_col)
-            _pcr_t = _n(pcr_col) if pcr_col else (_ct / _ca if _ca > 0 else 0)
-            result[eid] = {"client_a": _ca, "listing": _n(lc_col),
-                           "catalog": _n(cc_col), "pcr_target": _pcr_t,
-                           "coll_target": _ct}
+                _ct = _nv(lt_col) + _nv(cat_t_col)
+            _ca = _nv(ca_col)
+            _pcr_t = _ct / _ca if _ca > 0 else 0
+            result[eid] = {"client_a": _ca, "listing": _nv(lc_col), "catalog": _nv(cc_col),
+                           "pcr_target": _pcr_t, "coll_target": _ct, "team": ""}
         return result
     except Exception as e:
         st.warning(f"KCD Targets file error: {e}")
@@ -3836,6 +3868,16 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         except Exception:
             pass
 
+    # KCD WK-1 per-product type counts (already computed above)
+    # Excellent Incentive Spot count: transactions on day 4 of month
+    excellent_txn_count = 0
+    if _date_col_sp and len(rec) > 0:
+        try:
+            _exc_days = pd.to_datetime(rec[_date_col_sp], errors='coerce').dt.day
+            excellent_txn_count = int((_exc_days == 4).sum())
+        except Exception:
+            pass
+
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
@@ -3845,7 +3887,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
-            wk1_prod_counts)
+            wk1_prod_counts, excellent_txn_count)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -3868,7 +3910,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                all_cmr_pct=None, all_cmr_sent=0,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
                vintage_bucket="", designation="", weekly_dv=None,
-               cmr_plus1_sent=0):
+               cmr_plus1_sent=0, wk1_prod_counts=None, excellent_txn_count=0):
     """
     Main routing -- all fixes applied:
     - SPS booster: auto 1.2× when vintage_bucket='SPS'; Pune TAT/60D override for others
@@ -4352,49 +4394,35 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         _im_star_pro_spot_kcd = int(im_star_pro_count * S.get("im_star_rate", 1000)) if _is_sam else 0
 
         # ── KCD WK-1 Power of Productivity Spot (01-09 May) ─────────────────────
-        # Per-product-type rates from Scheme_Params / KCD_WK1_Spot_May config sheet
-        # Eligibility: ≥2 NR Upsell/Ren in the WK-1 period (01-09)
-        # 50% payout if monthly base not achieved (monthly_base_inc handled after calc)
         _wk1_spot = 0
-        _wk1_rates = S.get("kcd_wk1_spot", {})   # {category: {l1_annual, l1_myr}}
-        if _wk1_rates and wk1_prod_counts:
-            _wk1_total_prods = sum(wk1_prod_counts.values())
+        _wk1_rates = S.get("kcd_wk1_spot", {})
+        _wk1_counts = wk1_prod_counts or {}
+        if _wk1_rates and _wk1_counts:
+            _wk1_total_prods = sum(_wk1_counts.values())
             if _wk1_total_prods >= 2:  # min 2 prods in WK-1 period
-                _mode_col = find_col(receipt_df, ["Mode", "mode", "Product Mode",
-                                                   "Subscription Type", "tenure"])
                 for cat, rate_info in _wk1_rates.items():
-                    _cat_count = wk1_prod_counts.get(cat, 0)
+                    _cat_count = _wk1_counts.get(cat, 0)
                     if _cat_count > 0:
                         if isinstance(rate_info, dict):
                             _ann_rate = rate_info.get("l2_annual" if _is_sam else "l1_annual", 0)
-                            _myr_rate = rate_info.get("l2_myr"    if _is_sam else "l1_myr",    0)
                         else:
                             _ann_rate = int(rate_info) if not _is_sam else int(rate_info) // 2
-                            _myr_rate = _ann_rate * 2
-                        # Simple: if no mode split available use annual rate × count
-                        _wk1_spot += _cat_count * _ann_rate  # TODO: split Annual/MYR by mode
+                        _wk1_spot += _cat_count * _ann_rate
 
         # ── Excellent Incentive Spot (04 May only) ───────────────────────────────
-        # CSD/KCD L1 (90+ vintage CSD only): ₹750/txn on 04-May transactions
-        # L2 (RM/SAM): ₹400/txn from 2nd transaction onwards on 04-May
+        # Uses pre-computed per-employee count (passed via parameter to avoid full-df scan)
         _excellent_spot = 0
         _exc_day   = int(S.get("Excellent_Spot_Day", 4))
         _exc_l1    = int(S.get("Excellent_Spot_L1_Rate", 750))
         _exc_l2    = int(S.get("Excellent_Spot_L2_Rate", 400))
-        _exc_date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
-        if _exc_date_col and _exc_day > 0 and len(receipt_df) > 0:
-            try:
-                _exc_days = pd.to_datetime(receipt_df[_exc_date_col], errors='coerce').dt.day
-                _exc_txn_count = int((_exc_days == _exc_day).sum())
-                if _is_sam or str(designation).upper().strip() == "L2":
-                    if _exc_txn_count >= 2:
-                        _excellent_spot = (_exc_txn_count - 1) * _exc_l2
-                else:
-                    _is_90plus = vintage not in ("0-30D", "31-90D")
-                    if _is_90plus and _exc_txn_count > 0:
-                        _excellent_spot = _exc_txn_count * _exc_l1
-            except Exception:
-                pass
+        if _exc_day > 0 and excellent_txn_count > 0:
+            if _is_sam or str(designation).upper().strip() == "L2":
+                if excellent_txn_count >= 2:
+                    _excellent_spot = (excellent_txn_count - 1) * _exc_l2
+            else:
+                _is_90plus = vintage not in ("0-30D", "31-90D")
+                if _is_90plus:
+                    _excellent_spot = excellent_txn_count * _exc_l1
 
         # ── KCD IM Insta Spot ─────────────────────────────────────────────────
         _insta_min_w = S.get("insta_min_week", 2); _insta_min_m = S.get("insta_min_month", 7)
@@ -4985,16 +5013,26 @@ if calc_btn:
         # Apply KCD targets override (from uploaded kcd_targets file)
         if s.get("Vertical","") == "KCD" and kcd_targets.get(emp_id):
             _kt = kcd_targets[emp_id]
-            if _kt.get("coll_target",0) > 0:
-                s = dict(s)
+            s = dict(s)
+            # Always apply client counts and targets from the dedicated target file
+            if _kt.get("client_a", 0) > 0:
+                s["Client Count"]      = _kt["client_a"]
+            if _kt.get("listing", 0) > 0:
+                s["Listing Clients"]   = _kt["listing"]
+            if _kt.get("catalog", 0) > 0:
+                s["Catalog Clients"]   = _kt["catalog"]
+            if _kt.get("coll_target", 0) > 0:
                 s["Collection Target"] = _kt["coll_target"]
                 s["PCR Target"]        = _kt["pcr_target"]
-                if _kt.get("client_a",0) > 0:
-                    s["Client Count"]  = _kt["client_a"]
-                if _kt.get("listing",0) > 0:
-                    s["Listing Clients"] = _kt["listing"]
-                if _kt.get("catalog",0) > 0:
-                    s["Catalog Clients"] = _kt["catalog"]
+            # Apply team from target file if not already set in structure file
+            if _kt.get("team", "") and not any(
+                    k in str(s.get("Team","")).upper()
+                    for k in ["LISTING","CATALOG","HVRI","NAGPUR","ROI"]):
+                _team_from_file = str(_kt["team"]).strip()
+                if "LISTING" in _team_from_file.upper():
+                    s["Team"] = "Listing (KCD)"
+                elif "CATALOG" in _team_from_file.upper():
+                    s["Team"] = "Catalog (KCD)"
 
         # ── KCD team re-routing after client counts are resolved ─────────────
         # Listing/Catalog columns may not exist in structure file by name.
@@ -5032,7 +5070,7 @@ if calc_btn:
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
-            wk1_prod_counts) = \
+            wk1_prod_counts, excellent_txn_count) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
@@ -5080,7 +5118,9 @@ if calc_btn:
                              collection_target=s.get("Collection Target", 0),
                              vintage_bucket=s.get("Vintage Bucket", ""),
                              designation=s.get("Designation", ""),
-                             weekly_dv=weekly_dv)
+                             weekly_dv=weekly_dv,
+                             wk1_prod_counts=wk1_prod_counts,
+                             excellent_txn_count=excellent_txn_count)
         except Exception as _e:
             inc = {
                 "Days Since Joining": "", "CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
@@ -5112,11 +5152,11 @@ if calc_btn:
             "Designation":        s.get("Designation", ""),
         "Client-A (aggregated)": int(s.get("Client Count", 0) or 0),
         "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 0)
-                                   if (str(s.get("Designation","")).upper().strip() == "L2"
-                                       and "CSD" in str(s.get("Vertical","")).upper())
+                                   if ("CSD" in str(s.get("Vertical","")).upper()
+                                       and float(s.get("Client-C", 0) or 0) > 0)
                                    else ""),
-        "Catalog Client":       int(float(s.get("Catalog Clients", 0) or 0)),
-        "Listing Client":       int(float(s.get("Listing Clients", 0) or 0)),
+        "Catalog Client":        int(float(s.get("Catalog Clients", 0) or 0)) if float(s.get("Catalog Clients", 0) or 0) > 0 else "",
+        "Listing Client":        int(float(s.get("Listing Clients", 0) or 0)) if float(s.get("Listing Clients", 0) or 0) > 0 else "",
         "Effective Team Size":  int(s.get("Effective Team Size", 0) or 0),
         "L1 Count":             int(s.get("L1 Count", 0) or 0),
             "Calc Month":         sel_month if sel_month else "All",
