@@ -328,6 +328,52 @@ def build_default_slab_config():
         {"Spot_Key": "KCD_0_90D",     "PCDV_Threshold": 4000,  "Base_Reward": 2500, "Per_1K_After": 1000},
     ])
 
+    # ── Scheme Parameters — must be defined before return ────────────────────
+    scheme_params = pd.DataFrame([
+        {"Parameter": "CSD_NewJoiner_Cap",         "Value": 20000, "Description": "Max PCDV+PoP incentive for 0-90D employees (₹)"},
+        {"Parameter": "CSD_PoP_Min_CMR_Pct",       "Value": 55.0,  "Description": "Min CMR% to earn PoP (0-90D)"},
+        {"Parameter": "CSD_NewJoiner_Incr_Rate_%",  "Value": 3.0,   "Description": "% of incremental DV above top PCDV slab (0-90D)"},
+        {"Parameter": "CSD_PoP_Min_Txn_0_30D",     "Value": 2,     "Description": "Min productivity count to qualify PoP (0-30D)"},
+        {"Parameter": "CSD_PoP_Min_Txn_31_90D",    "Value": 3,     "Description": "Min productivity count to qualify PoP (31-90D)"},
+        {"Parameter": "CSD_PoP_Use_Slab_Gate",     "Value": 0,     "Description": "PoP CMR gate: 0=flat CMR% floor (Apr/Mar), 1=Slab1 target must be achieved (May+)"},
+        {"Parameter": "CSD_BothAchievers_On",      "Value": 0,     "Description": "Both Achievers PoP mult: 0=off (Apr/Mar), 1=on (May+)→PCDV+CMR=125% CMR-only=50%"},
+        {"Parameter": "CSD_BothAchievers_Pct",     "Value": 125,   "Description": "Both Achievers full payout % (when PCDV slab + CMR Slab1 both achieved)"},
+        {"Parameter": "CSD_OnlyCMR_Achiever_Pct",  "Value": 50,    "Description": "Only CMR Achiever payout % (CMR Slab1 hit but PCDV slab not hit)"},
+        {"Parameter": "CSD_MDC1_Mid_Threshold_%",   "Value": 25,   "Description": "MDC-1 CMR% between Mid and High → Mid_Mult; below → Low_Mult"},
+        {"Parameter": "CSD_MDC1_High_Mult_%",       "Value": 120,  "Description": "MDC-1 multiplier (%) when above High threshold"},
+        {"Parameter": "CSD_MDC1_Mid_Mult_%",        "Value": 100,  "Description": "MDC-1 multiplier (%) when between thresholds"},
+        {"Parameter": "CSD_MDC1_Low_Mult_%",        "Value": 50,   "Description": "MDC-1 multiplier (%) when below Mid threshold"},
+        {"Parameter": "CSD_Booster_TAT_Below",      "Value": 1,    "Description": "SPS Booster: Ext Ticket TAT must be below this"},
+        {"Parameter": "CSD_Booster_60D_Below_%",    "Value": 10,   "Description": "SPS Booster: 60D Not Met must be below this %"},
+        {"Parameter": "CSD_Booster_Mult_%",         "Value": 120,  "Description": "SPS Booster multiplier when both criteria met (%)"},
+        {"Parameter": "CSD_RM_CMR_Min_%",           "Value": 53,   "Description": "CSD RM min CMR% to be eligible (below = no incentive)"},
+        {"Parameter": "CSD_RM_CMR_Slab1_%",         "Value": 60,   "Description": "CSD RM Slab1 CMR threshold (100% payout)"},
+        {"Parameter": "CSD_RM_CMR_Slab2_%",         "Value": 65,   "Description": "CSD RM Slab2 CMR threshold (120% payout)"},
+        {"Parameter": "KCD_SS_Plus_Threshold_%",    "Value": 72,   "Description": "KCD SS+ gate: ≥ this CMR% → 100% payout, else 50%"},
+        {"Parameter": "KCD_CMR_Slab2_%",            "Value": 80,   "Description": "KCD higher CMR slab for top per-txn rate"},
+        {"Parameter": "KCD_Min_Prod_Week",          "Value": 2,    "Description": "Min productivity per week to unlock base incentive"},
+        {"Parameter": "KCD_Min_Prod_Month",         "Value": 8,    "Description": "Min monthly productivity (established employees)"},
+        {"Parameter": "KCD_Min_Prod_Month_New",     "Value": 6,    "Description": "Min monthly productivity (CSD-to-KCD / new joiners)"},
+        {"Parameter": "KCD_Incr_Rate_Regular_%",    "Value": 1.4,  "Description": "KCD incremental % above threshold (Regular/ROI/HVRI/Listing)"},
+        {"Parameter": "KCD_Incr_Rate_Nagpur_%",     "Value": 0.85, "Description": "KCD Nagpur L1 incremental % above 32K PCDV"},
+        {"Parameter": "KCD_SAM_Incr_Rate_%",        "Value": 0.65, "Description": "KCD SAM (L2) incremental % above threshold"},
+        {"Parameter": "KCD_SAM_Nagpur_Incr_%",      "Value": 0.45, "Description": "KCD SAM Nagpur incremental % above 32K PCDV"},
+        {"Parameter": "IM_Insta_L1_Rate",           "Value": 300,  "Description": "IM Insta spot per qualifying sale (L1, ₹)"},
+        {"Parameter": "IM_Insta_L2_Rate",           "Value": 150,  "Description": "IM Insta spot per qualifying sale (L2 SAM, ₹)"},
+        {"Parameter": "IM_Insta_Min_Week",          "Value": 2,    "Description": "Min IM Insta prods in any one week to qualify"},
+        {"Parameter": "IM_Insta_Min_Month",         "Value": 7,    "Description": "Min IM Insta prods total in the month to qualify"},
+        {"Parameter": "MCATs_L1_Rate",              "Value": 1000, "Description": "MCATs spot per MCAT from 3rd onwards (L1, ₹)"},
+        {"Parameter": "MCATs_L2_Rate",              "Value": 500,  "Description": "MCATs spot per MCAT from 3rd onwards (L2 SAM, ₹)"},
+        {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts (spot from count+1)"},
+        {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Leader Pro/Pref spot per new sale (₹)"},
+        {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
+        {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular / Listing / Catalog L1)"},
+        {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
+        {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
+        {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
+        {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
+    ])
+
     return {
         "CSD_New_Slabs":        csd_new,
         "CSD_New_Params":       csd_new_incr,
@@ -338,7 +384,6 @@ def build_default_slab_config():
         "CSD_SPS_Multipliers":  csd_sps_mult,
         "CSD_Spot":             csd_spot,
         "Power_of_Productivity":pop,
-        # KCD L2 (SAM) slabs
         "KCD_SAM_Regular":      kcd_sam_regular,
         "KCD_SAM_ROI":          kcd_sam_roi,
         "KCD_SAM_HVRI":         kcd_sam_hvri,
@@ -359,60 +404,6 @@ def build_default_slab_config():
         "KCD_Spot":             kcd_spot,
         "Scheme_Params":        scheme_params,
     }
-
-    # Build scheme_params here (before return) so all defaults are correct
-    scheme_params = pd.DataFrame([
-        # ─ CSD New Joiner ─────────────────────────────────────────────────────
-        {"Parameter": "CSD_NewJoiner_Cap",         "Value": 20000, "Description": "Max PCDV+PoP incentive for 0-90D employees (₹)"},
-        {"Parameter": "CSD_PoP_Min_CMR_Pct",       "Value": 55.0,  "Description": "Min CMR% to earn PoP (0-90D)"},
-        {"Parameter": "CSD_NewJoiner_Incr_Rate_%",  "Value": 3.0,   "Description": "% of incremental DV above top PCDV slab (0-90D)"},
-        {"Parameter": "CSD_PoP_Min_Txn_0_30D",     "Value": 2,     "Description": "Min productivity count to qualify PoP (0-30D)"},
-        {"Parameter": "CSD_PoP_Min_Txn_31_90D",    "Value": 3,     "Description": "Min productivity count to qualify PoP (31-90D)"},
-        # ─ CSD SPS MDC-1 Multiplier ───────────────────────────────────────────
-        {"Parameter": "CSD_MDC1_High_Threshold_%",  "Value": 35,   "Description": "MDC-1 CMR% above this → High_Mult"},
-        {"Parameter": "CSD_MDC1_Mid_Threshold_%",   "Value": 25,   "Description": "MDC-1 CMR% between Mid and High → Mid_Mult; below → Low_Mult"},
-        {"Parameter": "CSD_MDC1_High_Mult_%",       "Value": 120,  "Description": "MDC-1 multiplier (%) when above High threshold"},
-        {"Parameter": "CSD_MDC1_Mid_Mult_%",        "Value": 100,  "Description": "MDC-1 multiplier (%) when between thresholds"},
-        {"Parameter": "CSD_MDC1_Low_Mult_%",        "Value": 50,   "Description": "MDC-1 multiplier (%) when below Mid threshold"},
-        # ─ CSD SPS Booster ────────────────────────────────────────────────────
-        {"Parameter": "CSD_Booster_TAT_Below",      "Value": 1,    "Description": "SPS Booster: Ext Ticket TAT must be below this"},
-        {"Parameter": "CSD_Booster_60D_Below_%",    "Value": 10,   "Description": "SPS Booster: 60D Not Met must be below this %"},
-        {"Parameter": "CSD_Booster_Mult_%",         "Value": 120,  "Description": "SPS Booster multiplier when both criteria met (%)"},
-        # ─ CSD RM CMR Eligibility ─────────────────────────────────────────────
-        {"Parameter": "CSD_RM_CMR_Min_%",           "Value": 53,   "Description": "CSD RM min CMR% to be eligible (below = no incentive)"},
-        {"Parameter": "CSD_RM_CMR_Slab1_%",         "Value": 60,   "Description": "CSD RM Slab1 CMR threshold (100% payout)"},
-        {"Parameter": "CSD_RM_CMR_Slab2_%",         "Value": 65,   "Description": "CSD RM Slab2 CMR threshold (120% payout)"},
-        # ─ KCD SS+ CMR ────────────────────────────────────────────────────────
-        {"Parameter": "KCD_SS_Plus_Threshold_%",    "Value": 72,   "Description": "KCD SS+ gate: ≥ this CMR% → 100% payout, else 50%"},
-        {"Parameter": "KCD_CMR_Slab2_%",            "Value": 80,   "Description": "KCD higher CMR slab for top per-txn rate"},
-        # ─ KCD Productivity Gate ──────────────────────────────────────────────
-        {"Parameter": "KCD_Min_Prod_Week",          "Value": 2,    "Description": "Min productivity per week to unlock base incentive"},
-        {"Parameter": "KCD_Min_Prod_Month",         "Value": 8,    "Description": "Min monthly productivity (established employees)"},
-        {"Parameter": "KCD_Min_Prod_Month_New",     "Value": 6,    "Description": "Min monthly productivity (CSD-to-KCD / new joiners)"},
-        # ─ KCD Incremental Rates ──────────────────────────────────────────────
-        {"Parameter": "KCD_Incr_Rate_Regular_%",    "Value": 1.4,  "Description": "KCD incremental % above threshold (Regular/ROI/HVRI/Listing)"},
-        {"Parameter": "KCD_Incr_Rate_Nagpur_%",     "Value": 0.85, "Description": "KCD Nagpur L1 incremental % above 32K PCDV"},
-        {"Parameter": "KCD_SAM_Incr_Rate_%",        "Value": 0.65, "Description": "KCD SAM (L2) incremental % above threshold"},
-        {"Parameter": "KCD_SAM_Nagpur_Incr_%",      "Value": 0.45, "Description": "KCD SAM Nagpur incremental % above 32K PCDV"},
-        # ─ IM Insta Spot ──────────────────────────────────────────────────────
-        {"Parameter": "IM_Insta_L1_Rate",           "Value": 300,  "Description": "IM Insta spot per qualifying sale (L1, ₹)"},
-        {"Parameter": "IM_Insta_L2_Rate",           "Value": 150,  "Description": "IM Insta spot per qualifying sale (L2 SAM, ₹)"},
-        {"Parameter": "IM_Insta_Min_Week",          "Value": 2,    "Description": "Min IM Insta prods in any one week to qualify"},
-        {"Parameter": "IM_Insta_Min_Month",         "Value": 7,    "Description": "Min IM Insta prods total in the month to qualify"},
-        # ─ MCATs Renewals Spot ────────────────────────────────────────────────
-        {"Parameter": "MCATs_L1_Rate",              "Value": 1000, "Description": "MCATs spot per MCAT from 3rd onwards (L1, ₹)"},
-        {"Parameter": "MCATs_L2_Rate",              "Value": 500,  "Description": "MCATs spot per MCAT from 3rd onwards (L2 SAM, ₹)"},
-        {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts (spot from count+1)"},
-        # ─ IM Star Pro+ Spot ──────────────────────────────────────────────────
-        {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Leader Pro/Pref spot per new sale (₹)"},
-        {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
-        # ─ KCD Highest Collection Multipliers ─────────────────────────────────
-        {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular / Listing / Catalog L1)"},
-        {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
-        {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
-        {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
-        {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
-    ])
 
 
 def load_slab_config(uploaded_file):
@@ -466,6 +457,10 @@ def parse_slabs(cfg):
     _nj_incr_rate    = _p("CSD_NewJoiner_Incr_Rate_%",    3.0) / 100
     _pop_min_0_30    = int(_p("CSD_PoP_Min_Txn_0_30D",    2))
     _pop_min_31_90   = int(_p("CSD_PoP_Min_Txn_31_90D",   3))
+    _pop_slab_gate   = bool(int(_p("CSD_PoP_Use_Slab_Gate",   0)))   # False=flat floor, True=Slab1 gate
+    _both_achiev_on  = bool(int(_p("CSD_BothAchievers_On",    0)))   # False=off (Apr), True=on (May)
+    _both_achiev_pct = _p("CSD_BothAchievers_Pct",   125) / 100      # 1.25
+    _cmr_only_pct    = _p("CSD_OnlyCMR_Achiever_Pct", 50) / 100     # 0.50
     _mdc1_hi_thr     = _p("CSD_MDC1_High_Threshold_%",   35)
     _mdc1_mid_thr    = _p("CSD_MDC1_Mid_Threshold_%",    25)
     _mdc1_hi_mult    = _p("CSD_MDC1_High_Mult_%",       120) / 100
@@ -793,6 +788,10 @@ def parse_slabs(cfg):
         # CSD
         "new_joiner_cap":      _nj_cap,
         "pop_cmr_floor":       _pop_cmr_floor,
+        "pop_use_slab_gate":   _pop_slab_gate,
+        "both_achievers_on":   _both_achiev_on,
+        "both_achievers_pct":  _both_achiev_pct,
+        "cmr_only_pct":        _cmr_only_pct,
         "mdc1_hi_thr":         _mdc1_hi_thr,
         "mdc1_mid_thr":        _mdc1_mid_thr,
         "mdc1_hi_mult":        _mdc1_hi_mult,
@@ -1144,7 +1143,11 @@ def build_may_slab_config():
             {"Parameter": "CSD_NewJoiner_Incr_Rate_%",  "Value": 3.0,   "Description": "% of incr DV above top PCDV slab (0-90D)"},
             {"Parameter": "CSD_PoP_Min_Txn_0_30D",     "Value": 2,     "Description": "Min productivity count to qualify PoP (0-30D)"},
             {"Parameter": "CSD_PoP_Min_Txn_31_90D",    "Value": 3,     "Description": "Min productivity count to qualify PoP (31-90D)"},
-            {"Parameter": "CSD_MDC1_High_Threshold_%",  "Value": 35,   "Description": "MDC-1 CMR% above this → High_Mult"},
+            # May'26: PoP gate = CMR Slab1 achieved; Both Achievers multiplier ON
+            {"Parameter": "CSD_PoP_Use_Slab_Gate",     "Value": 1,     "Description": "PoP CMR gate: 1=Slab1 target must be achieved (May scheme)"},
+            {"Parameter": "CSD_BothAchievers_On",      "Value": 1,     "Description": "Both Achievers PoP mult ON for May: PCDV+CMR=125%, CMR-only=50%"},
+            {"Parameter": "CSD_BothAchievers_Pct",     "Value": 125,   "Description": "Both Achievers full payout % (PCDV slab + CMR Slab1 both achieved)"},
+            {"Parameter": "CSD_OnlyCMR_Achiever_Pct",  "Value": 50,    "Description": "Only CMR Achiever payout % (CMR Slab1 hit, PCDV slab not hit)"},
             {"Parameter": "CSD_MDC1_Mid_Threshold_%",   "Value": 25,   "Description": "MDC-1 CMR% between Mid and High → Mid_Mult; below → Low_Mult"},
             {"Parameter": "CSD_MDC1_High_Mult_%",       "Value": 120,  "Description": "MDC-1 multiplier (%) when above High threshold"},
             {"Parameter": "CSD_MDC1_Mid_Mult_%",        "Value": 100,  "Description": "MDC-1 multiplier (%) when between thresholds"},
@@ -2418,39 +2421,48 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
                  pop_cmr_floor=None, metric_label="PCDV"):
     """
     CSD 0-30D / 31-90D base + PoP.
-    - Base: fixed PCDV slab, CMR slab multiplier (slab 0 still earns at 100%)
-    - PoP:  Annual/MYR only, IM Insta excluded, min CMR 55% gate
+    - Base: fixed PCDV slab × CMR multiplier
+    - PoP gate (May'26): CMR Slab1 must be achieved (individual target)
+    - Both Achievers (May'26): PCDV slab hit AND CMR Slab1 hit → PoP × 125%
+                               Only CMR Slab1 hit (no PCDV slab) → PoP × 50%
+    - April/March: flat pop_cmr_floor gate (55%/50%), no Both Achievers mult
     """
     min_txn = S["min_txn_0_30"] if vintage == "0-30D" else S["min_txn_31_90"]
 
     # Base incentive: fixed payout from PCDV slab table
     _slabs = S["csd_new_slabs"]  # [(threshold, payout), ...] sorted descending
     base   = next((r for t, r in _slabs if pcdv >= t), 0)
-    # Highest slab threshold (2800): incremental = (PCDV - 2800) * clients * 3%
-    # Scheme doc: "3% on Deal Value above 2800 PCDV"
-    # (FAQ example: PCDV 3500, 100 clients -> incr = (3500-2800)*100*3% = 2100)
-    _incr_threshold = _slabs[0][0] if _slabs else 2800  # highest threshold in config
+    _pcdv_slab_hit = base > 0   # True if PCDV qualifies for any slab
+    _incr_threshold = _slabs[0][0] if _slabs else 2800
     incr  = max(0, pcdv - _incr_threshold) * client_c * S["csd_new_incr_rate"] if pcdv > _incr_threshold else 0
-    # CMR multiplier: Slab 2 -> 120%, Slab 1 -> 100%, below Slab 1 -> 0%
+    # CMR multiplier: Slab 2 → 120%, Slab 1 → 100%, below Slab 1 → 0%
     mult  = S["csd_slab2_mult"] if cmr_slab == 2 else (1.0 if cmr_slab >= 1 else 0.0)
     _base_before_cap = (base + incr) * mult
-    # Cap at 20,000 (scheme: "earn up to Rs.20000") applied to base only here
-    # Final cap base+PoP is applied in route_calc
     base_total = min(_base_before_cap, S.get("new_joiner_cap", 20000))
 
     # Productivity (Annual + MYR only; IM Insta excluded)
     prod_score, _, reg_count = calc_productivity(rnl_prods, rnl_modes, "csd_new")
 
-    # PoP eligibility: min transactions AND min 55% CMR
+    # ── PoP eligibility ────────────────────────────────────────────────────────
+    # May scheme: gate = CMR Slab1 achieved (cmr_slab >= 1), not flat floor %
+    # April/March: gate = flat pop_cmr_floor %
+    # Detect May by checking if Scheme_Params has Both_Achievers configured
+    # (or if pop_cmr_floor was explicitly passed as None, use slab gate)
+    _use_slab_gate = S.get("pop_use_slab_gate", False)
+    _both_achiev_on = S.get("both_achievers_on", False)
+    _both_pct = S.get("both_achievers_pct", 1.25)
+    _cmr_only = S.get("cmr_only_pct", 0.50)
+
     pop = 0
     pop_reason = ""
-    _pop_floor = pop_cmr_floor if pop_cmr_floor is not None else POP_CMR_FLOOR
-    if cmr_pct_achieved < _pop_floor:
-        pop_reason = f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {_pop_floor}% min"
+    _cmr_qualified = (cmr_slab >= 1) if _use_slab_gate else (cmr_pct_achieved >= (pop_cmr_floor if pop_cmr_floor is not None else POP_CMR_FLOOR))
+
+    if not _cmr_qualified:
+        pop_reason = f"PoP blocked: CMR slab not achieved (slab={cmr_slab})" if _use_slab_gate else f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {pop_cmr_floor or POP_CMR_FLOOR}% min"
     elif prod_score < min_txn:
         pop_reason = f"PoP blocked: {prod_score} txns < {min_txn} min"
     else:
-        # Use service tiers from enriched receipt (accurate) if available
+        # Calculate raw PoP from service tiers
         if svc_tiers:
             pop = sum(TIER_REWARD.get(int(t), 0) for t in svc_tiers
                       if isinstance(t, (int, float)) and t in (1, 2, 3))
@@ -2461,6 +2473,15 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
                         and not is_insta(p)]
             pop = sum(pop_for_product(p, S["prod_to_pop"]) for p in eligible)
             pop_reason = f"PoP: {prod_score} txns × CMR {cmr_pct_achieved:.1f}%"
+
+        # ── Both Achievers multiplier (May'26 only) ───────────────────────────
+        if _use_slab_gate and _both_achiev_on:
+            if _pcdv_slab_hit and cmr_slab >= 1:
+                pop = round(pop * _both_pct, 0)
+                pop_reason += f" | Both Achievers {_both_pct:.0%}"
+            else:
+                pop = round(pop * _cmr_only, 0)
+                pop_reason += f" | Only CMR Achiever {_cmr_only:.0%}"
 
     notes = (f"CSD {vintage} | {metric_label}:{round(pcdv)} | clients:{int(client_c)} | "
              f"CMR slab:{cmr_slab} | {pop_reason}")
