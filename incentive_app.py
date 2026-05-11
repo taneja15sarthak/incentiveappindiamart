@@ -82,6 +82,17 @@ IM_STAR_PRO_PRODUCTS = {
     "IM Star Pro+", "Preferred Star Pro+",
 }
 
+# KCD WK-1 Power of Productivity spot product categories (01-09 May)
+# Maps product name keywords → category key used in kcd_wk1_spot config
+WK1_PRODUCT_CATEGORIES = {
+    "IM_STAR_PRO":   ["IM Star Pro", "IM Star/Pro"],
+    "IM_LEADER_PRO": ["IM Leader Pro", "IM Leader/Pro"],
+    "PREF_SS_PRO":   ["Preferred Star Pro", "Pref SS", "Pref Star Pro", "Pref SS/Pro"],
+    "PREF_LS_PRO":   ["Preferred Leader Pro", "Pref LS", "Pref Leader Pro", "Pref LS/Pro"],
+    "VALUE_PLUS":    ["Value+", "Value Plus"],
+    "PL_PLUS":       ["PL+", "PL Plus", "Preferred Leader Plus"],
+}
+
 # IM Insta products (0.5 productivity)
 INSTA_PRODUCTS = {"IM InstaDiamond","IM InstaGold","IM InstaPlatinum",
                   "IM insta Diamond","IM Insta Renewal"}
@@ -367,6 +378,10 @@ def build_default_slab_config():
         {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts (spot from count+1)"},
         {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Leader Pro/Pref spot per new sale (₹)"},
         {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
+        # ─ Excellent Incentive Spot (single day) ──────────────────────────────
+        {"Parameter": "Excellent_Spot_L1_Rate",    "Value": 750,  "Description": "Excellent Spot: Rs/txn for CSD/KCD L1 (90+ vintage only)"},
+        {"Parameter": "Excellent_Spot_L2_Rate",    "Value": 400,  "Description": "Excellent Spot: Rs/txn for L2 (RM/SAM) from 2nd txn"},
+        {"Parameter": "Excellent_Spot_Day",        "Value": 4,    "Description": "Day-of-month on which Excellent Incentive Spot applies"},
         {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular / Listing / Catalog L1)"},
         {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
         {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
@@ -714,7 +729,9 @@ def parse_slabs(cfg):
         if key:
             kcd_wk1_spot[key] = {
                 "l1_annual": int(r.get("L1_Annual", 0)),
-                "l1_myr":    int(r.get("L1_MYR", 0)),
+                "l1_myr":    int(r.get("L1_MYR",    0)),
+                "l2_annual": int(r.get("L2_Annual",  0)),
+                "l2_myr":    int(r.get("L2_MYR",     0)),
             }
 
     # ── SAM slab parsing helpers ─────────────────────────────
@@ -1117,17 +1134,15 @@ def build_may_slab_config():
     kcd_sam_catalog_may = kcd_sam_listing_may.copy()
 
     # ── KCD WK-1 Power of Productivity Spot (May 01-09) ─────────────────────
-    # NEW in May: per-product-type incentive (replaces April PCDV-based FNT spot)
-    # Eligibility: ≥2 prods in week; 50% payout if not qualifying monthly base
-    # L1 rates (L2/SAM = half):
+    # Per-product-type spot: NR Upsell / Upsell on Ren; min 2 prods in WK-1
+    # 50% if monthly base not achieved; SAM = half L1 rates
     kcd_wk1_spot = pd.DataFrame([
-        # product_key, annual_amt, myr_amt (L1; L2 = half)
-        {"Product_Key": "IM_STAR_PRO",    "L1_Annual": 500,  "L1_MYR": 1000},
-        {"Product_Key": "IM_LEADER_PRO",  "L1_Annual": 750,  "L1_MYR": 1500},
-        {"Product_Key": "PREF_SS_PRO",    "L1_Annual": 500,  "L1_MYR": 1000},
-        {"Product_Key": "PREF_LS_PRO",    "L1_Annual": 1000, "L1_MYR": 2000},
-        {"Product_Key": "VALUE_PLUS",     "L1_Annual": 500,  "L1_MYR": 1000},
-        {"Product_Key": "PL_PLUS",        "L1_Annual": 1500, "L1_MYR": 3000},
+        {"Product_Key": "IM_STAR_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "IM_LEADER_PRO",  "L1_Annual": 750,  "L1_MYR": 1500, "L2_Annual": 400, "L2_MYR": 750},
+        {"Product_Key": "PREF_SS_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "PREF_LS_PRO",    "L1_Annual": 1000, "L1_MYR": 2000, "L2_Annual": 500, "L2_MYR": 1000},
+        {"Product_Key": "VALUE_PLUS",     "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "PL_PLUS",        "L1_Annual": 1500, "L1_MYR": 3000, "L2_Annual": 750, "L2_MYR": 1500},
     ])
 
     # KCD incremental rates — same as April
@@ -1206,6 +1221,10 @@ def build_may_slab_config():
             {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts"},
             {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Pref spot per new sale (₹)"},
             {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
+            # Excellent Incentive Spot
+            {"Parameter": "Excellent_Spot_L1_Rate",    "Value": 750,  "Description": "Excellent Spot Rs/txn L1 (90+ vintage)"},
+            {"Parameter": "Excellent_Spot_L2_Rate",    "Value": 400,  "Description": "Excellent Spot Rs/txn L2 from 2nd txn"},
+            {"Parameter": "Excellent_Spot_Day",        "Value": 4,    "Description": "Day-of-month Excellent Spot applies"},
             {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular/Listing/Catalog L1)"},
             {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
             {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
@@ -2557,9 +2576,29 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
         booster = 1.0
 
     total = per_txn * eff_txn_count * mdc1_mult * booster
+
+    # ── Both Achievers (May scheme): PCDV slab hit AND CMR slab hit → 125%
+    #    Only CMR slab hit (PCDV below any threshold) → 50% of min slab rate
+    if S.get("both_achievers_on", False):
+        _pcdv_hit = per_txn > 0  # PCDV cleared at least the lowest threshold
+        _cmr_hit  = cmr_slab >= 1
+        if _pcdv_hit and _cmr_hit:
+            total = round(total * S.get("both_achievers_pct", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_hit and not _pcdv_hit:
+            # Only CMR achieved → 50% of minimum slab rate
+            _min_per_txn = min((r for _, r, _ in slabs), default=0)
+            total = round(_min_per_txn * eff_txn_count * mdc1_mult * booster
+                          * S.get("cmr_only_pct", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+        else:
+            _ba_note = ""
+    else:
+        _ba_note = ""
+
     notes = (f"CSD SPS {vintage} | {metric_label}:{round(pcdv)} | CMR slab:{cmr_slab} | "
              f"₹{per_txn}/txn×{eff_txn_count} | MDC1:{mdc1_mult:.1f}({mdc1_cmr:.0f}%) "
-             f"boost:{booster} | No PoP")
+             f"boost:{booster}{_ba_note} | No PoP")
     return round(total, 0), notes
 
 
@@ -2617,36 +2656,46 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
     """
     # ── AF: Per-txn from CSD_RM slab (PCDV x CMR%) ─────────────────────────
     slabs = S.get("csd_rm_slabs", [])
-    _cmr_slab1 = S.get("rm_cmr_slab1", 55)
-    _cmr_slab2 = S.get("rm_cmr_slab2", 60)
+    _cmr_slab1 = S.get("rm_cmr_slab1", 60)
+    _cmr_slab2 = S.get("rm_cmr_slab2", 65)
+    _cmr_min   = S.get("rm_cmr_min",   53)
     cmr_pct_v  = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
+
+    # CMR eligibility tier: <min → 0, min to slab1 → 50%, slab1 to slab2 → 100%, slab2+ → 120%
+    # The 50%/100%/120% are applied to the per-txn rate via cmr_mult
+    if cmr_pct_v >= _cmr_slab2:
+        cmr_mult = 1.20   # Slab2 → 120%
+    elif cmr_pct_v >= _cmr_slab1:
+        cmr_mult = 1.00   # Slab1 → 100%
+    elif cmr_pct_v >= _cmr_min:
+        cmr_mult = 0.50   # min threshold to slab1 → 50% (Only CMR achiever minimum tier)
+    else:
+        cmr_mult = 0.0    # Below minimum → no incentive
+
     per_txn = 0
+    _pcdv_hit = False
     for (thresh, r1, r2) in sorted(slabs, reverse=True):
-        if pcdv >= thresh:   # April: use PCDV threshold
-            per_txn = r2 if cmr_pct_v >= _cmr_slab2 else (r1 if cmr_pct_v >= _cmr_slab1 else 0)
+        if pcdv >= thresh:
+            per_txn = r1   # base rate for this slab; cmr_mult applied below
+            _pcdv_hit = True
             break
-    # Fallback: if slab config gives per_txn=0 but PCDV is above minimum eligible threshold,
-    # use hardcoded April scheme rates (2500→1000/1200, 2700→1250/1500, 2900→1500/1750)
-    _DEFAULT_RM_SLABS = [(2900, 1500, 1750), (2700, 1250, 1500), (2500, 1000, 1200)]
+    # Fallback to hardcoded May rates if slab config is wrong
+    _DEFAULT_RM_SLABS = [(2900, 1250, 1500), (2700, 1000, 1200), (2500, 750, 900)]
     if per_txn == 0 and pcdv >= 2500:
         for (thresh, r1, r2) in _DEFAULT_RM_SLABS:
             if pcdv >= thresh:
-                per_txn = r2 if cmr_pct_v >= 60 else (r1 if cmr_pct_v >= 55 else 0)
+                per_txn = r1
+                _pcdv_hit = True
                 break
 
-    # ── AH: Base = per_txn * RAW productivity ───────────────────────────────
-    ah = per_txn * float(prod_raw or 0)
+    # Apply CMR multiplier to per_txn (slab2 uses r2 which bakes in 120%; we use cmr_mult instead)
+    # Effective per_txn after CMR eligibility
+    per_txn_eff = round(per_txn * cmr_mult, 0) if cmr_mult > 0 else 0
+
+    # ── AH: Base = per_txn_eff * RAW productivity ───────────────────────────
+    ah = per_txn_eff * float(prod_raw or 0)
 
     # ── AI: Cross Multiplier (2D: CMR% x MDC-1 CMR%) ────────────────────────
-    # FSF formula (exact):
-    # IF(CMR>=65% AND MDC1>=45%): 130%
-    # IF(CMR>=65% AND MDC1>=40%): 120%  IF(CMR>=65% AND MDC1>=35%): 110%
-    # IF(CMR>=65% AND MDC1<35%):  100%
-    # IF(CMR>=60% AND MDC1>=45%): 120%  IF(CMR>=60% AND MDC1>=40%): 110%
-    # IF(CMR>=60% AND MDC1>=35%): 100%  IF(CMR>=60% AND MDC1<35%):  75%
-    # IF(CMR>=55% AND MDC1>=45%): 110%  IF(CMR>=55% AND MDC1>=40%): 100%
-    # IF(CMR>=55% AND MDC1>=35%): 50%   IF(CMR>=55% AND MDC1<35%):  50%
-    # else: 0
     mdc = mdc1_cmr_pct * 100 if mdc1_cmr_pct <= 1 else mdc1_cmr_pct
     cmr = cmr_pct_v
     if cmr >= 65:
@@ -2659,7 +2708,7 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
         elif mdc >= 40: ai = 1.10
         elif mdc >= 35: ai = 1.00
         else:           ai = 0.75
-    elif cmr >= 55:
+    elif cmr >= _cmr_min:   # 53-59.9% range → uses 50% mult already in per_txn_eff
         if mdc >= 45:   ai = 1.10
         elif mdc >= 40: ai = 1.00
         else:           ai = 0.50
@@ -2669,29 +2718,36 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
     # ── AJ = AH * AI ────────────────────────────────────────────────────────
     aj = ah * ai
 
-    # ── AK: CMR+1 (April MDC-1) Multiplier ──────────────────────────────────
-    # FSF: IF(AJ>=1, IF(AB>35%, AJ*120%, IF(AB>=25%, AJ*100%, AJ*50%)), 0)
+    # ── AK: CMR+1 (MDC-1) Multiplier ────────────────────────────────────────
     cp1 = cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct
     if aj >= 1:
-        if cp1 > 35:   ak = aj * 1.20
+        if cp1 > 35:    ak = aj * 1.20
         elif cp1 >= 25: ak = aj * 1.00
         else:           ak = aj * 0.50
     else:
         ak = 0.0
 
     # ── AN: SPS Booster ──────────────────────────────────────────────────────
-    # FSF: IF(SPS AND ext_tat<1 AND 60D<10% AND AK>=1): AK*120% else AK
     if is_sps and float(ext_tat or 99) < 1 and float(d60 or 100) < 10 and ak >= 1:
         an = ak * 1.20
     else:
         an = ak
 
-    # ── AP: Floor at 0 ───────────────────────────────────────────────────────
-    total = round(max(0, an), 0)
+    # ── Both Achievers (May): PCDV hit + CMR Slab1 hit → 125% ───────────────
+    _ba_note = ""
+    if S.get("both_achievers_on", False):
+        _cmr_slab1_hit = cmr_pct_v >= _cmr_slab1
+        if _pcdv_hit and _cmr_slab1_hit:
+            an = an * S.get("both_achievers_pct", 1.25)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_slab1_hit and not _pcdv_hit:
+            # Only CMR → 50% already handled via cmr_mult; just note it
+            _ba_note = " | OnlyCMR(50%)"
 
+    total = round(max(0, an), 0)
     notes = (f"CSD RM | PCR:{pcr:.0f} | CMR:{cmr:.0f}% | MDC1:{mdc:.0f}% | "
-             f"PerTxn:{per_txn} | Prod:{prod_raw:.1f} | "
-             f"Cross:{ai:.0%} | CMR+1:{cp1:.0f}% | SPS:{is_sps} | Total:{total:.0f}")
+             f"PerTxn:{per_txn_eff} | Prod:{prod_raw:.1f} | "
+             f"Cross:{ai:.0%} | CMR+1:{cp1:.0f}% | SPS:{is_sps}{_ba_note} | Total:{total:.0f}")
     return total, notes
 
 
@@ -2835,9 +2891,22 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         ss_mult = 1.0
     total = round(base_before_ss * ss_mult, 0)
 
+    # Both Achievers (May): PCDV/DV slab hit + SS+ CMR hit → 125%; Only CMR → 50%
+    _ba_note = ""
+    if S.get("both_achievers_on", False):
+        _pcdv_hit = per_txn > 0
+        _cmr_hit  = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        if _pcdv_hit and _cmr_hit:
+            total = round(total * S.get("both_achievers_pct", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_hit and not _pcdv_hit:
+            _min_rate = min((r1 for _, r1, _ in slabs if r1 > 0), default=0)
+            total = round(_min_rate * txn_prod_raw * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+
     notes = (f"KCD SAM {'Nagpur' if is_nagpur else 'HVRI' if is_hvri else 'ROI' if is_roi else 'Regular'}"
              f" {vintage} | PCR:{pcr_val:.0f} | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
-             f"HC:{highest_coll:.0f} | Incr:{incremental:.0f} | SS+:{ss_mult}")
+             f"HC:{highest_coll:.0f} | Incr:{incremental:.0f} | SS+:{ss_mult}{_ba_note}")
     return total, notes
     team_up = str(team).upper()
     loc_up  = str(location).upper()
@@ -2959,8 +3028,24 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
         ss_mult = 1.0
 
     base = per_txn * txn_count * ss_mult
+
+    # Both Achievers (May): PCDV slab hit + CMR (SS+) hit → 125%; Only CMR → 50%
+    _ba_note = ""
+    if S.get("both_achievers_on", False):
+        _pcdv_hit = per_txn > 0
+        _cmr_hit  = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        if _pcdv_hit and _cmr_hit:
+            base = round(base * S.get("both_achievers_pct", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_hit and not _pcdv_hit:
+            # Only CMR: use minimum slab rate × 50%
+            _min_slab = (S.get("kcd_0_90_slabs") or S.get("kcd_91_270_slabs") or [])
+            _min_rate = min((r1 for _, r1, _ in _min_slab if r1 > 0), default=0)
+            base = round(_min_rate * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+
     return round(base, 0), \
-           f"KCD Regular {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}"
+           f"KCD Regular {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
 
 
 def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
@@ -2993,8 +3078,22 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     else:
         ss_mult = 1.0
     base = per_txn * txn_count * ss_mult
+
+    # Both Achievers (May): DV target + CMR → 125%; Only CMR → 50%
+    _ba_note = ""
+    if S.get("both_achievers_on", False):
+        _dv_hit  = per_txn > 0
+        _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        if _dv_hit and _cmr_hit:
+            base = round(base * S.get("both_achievers_pct", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_hit and not _dv_hit:
+            _min_rate = min((r1 for _, r1, _ in S.get("kcd_listing_slabs", [(0,0,0)]) if r1 > 0), default=0)
+            base = round(_min_rate * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+
     return round(base + incr, 0), \
-           f"KCD Listing {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}"
+           f"KCD Listing {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
 
 
 def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
@@ -3019,16 +3118,35 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
         return 0, "KCD Catalog -- target=0"
     achv    = (net_dv / collection_target) * 100
     per_txn = next((r2 if cmr_col_val == 2 else r1
-                    for t, r1, r2 in S["kcd_catalog_slabs"] if achv >= t), 0)
+                    for t, r1, r2 in S.get("kcd_catalog_slabs", []) if achv >= t), 0)
     # Incremental computed separately in route_calc (needs PCR% gate not NDV% gate)
-    btl_mult = 1.2 if btl_sales >= 2 else 1.0
+    btl_mult = 1.2 if btl_sales >= 2 else (1.0 if btl_sales == 1 else 0.0)
     if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
         ss_mult = 0.5
     else:
         ss_mult = 1.0
+
+    # CATALOG: BTL=0 → 0 incentive (FAQ Q14 confirmed)
+    if btl_mult == 0.0:
+        return 0.0, f"KCD Catalog {vintage} | Achv:{round(achv,1)}% | BTL=0 → No incentive"
+
     base = per_txn * txn_count * ss_mult * btl_mult
+
+    # Both Achievers (May): DV target + CMR → 125%; Only CMR → 50%
+    _ba_note = ""
+    if S.get("both_achievers_on", False):
+        _dv_hit  = per_txn > 0
+        _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        if _dv_hit and _cmr_hit:
+            base = round(base * S.get("both_achievers_pct", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_hit and not _dv_hit:
+            _min_rate = min((r1 for _, r1, _ in S.get("kcd_catalog_slabs", [(0,0,0)]) if r1 > 0), default=0)
+            base = round(_min_rate * txn_count * ss_mult * btl_mult * S.get("cmr_only_pct", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+
     return round(base, 0), \
-           f"KCD Catalog {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | BTL:{btl_mult} | SS+:{ss_mult}"
+           f"KCD Catalog {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | BTL:{btl_mult} | SS+:{ss_mult}{_ba_note}"
 
 
 def _spot_bullet(wk_pcdv, table, per_extra=None):
@@ -3158,6 +3276,13 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
     if spot == 0 and not _has_fnt_data and nr_upsell_count >= fnt2_cfg["min_prod"]:
         spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
         fnt2_spot = spot  # attribute to FNT-2 as fallback
+
+    # CSD FNT Spot Both Achievers gate (FAQ: PCDV & CMR mandatory → 100%; not both → 50%)
+    # monthly_base_inc == 0 means PCDV slab was NOT achieved → apply 50% on spot
+    if spot > 0 and monthly_base_inc == 0:
+        fnt1_spot = int(fnt1_spot * 0.5)
+        fnt2_spot = int(fnt2_spot * 0.5)
+        spot      = fnt1_spot + fnt2_spot
     return spot, fnt1_spot, fnt2_spot
 
 
@@ -3673,8 +3798,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     else:
         nr_upsell_count = 0
 
-    # IM Star Pro+ count for 28-30 Apr spot (BX="Yes" equivalent)
-    # Products: IM Star Pro, IM Leader Pro, Preferred Leader Pro, Preferred Star Pro
+    # IM Star Pro+ count for 28-30 spot (BX="Yes" equivalent)
     im_star_pro_count = 0
     _unique_col_sp = find_col(receipt_df, ["Unique", "UNIQUE"])
     _date_col_sp   = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
@@ -3689,6 +3813,29 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         except Exception:
             im_star_pro_count = 0
 
+    # KCD WK-1 Power of Productivity Spot (01-09 May): per-product-type count
+    # Only NR Upsell / Upsell on Renewal; must have ≥2 productivity in the week
+    wk1_prod_counts = {k: 0 for k in WK1_PRODUCT_CATEGORIES}  # {category: count}
+    if _unique_col_sp and len(rec) > 0:
+        try:
+            _uq_vals = rec[_unique_col_sp].fillna("").astype(str)
+            # Date gate: 01-09 May (day <= 9); use _date_col_sp if available
+            if _date_col_sp:
+                _days_wk1 = pd.to_datetime(rec[_date_col_sp], errors='coerce').dt.day
+                _is_wk1   = _days_wk1 <= 9
+            else:
+                _is_wk1 = pd.Series([True] * len(rec), index=rec.index)
+            # Check for NR Upsell / AMR (same gate as nr_upsell_count)
+            _nr_mask = _uq_vals.str.upper().str.contains("UPSELL|AMR|NR", na=False)
+            _wk1_rec = rec[_is_wk1 & _nr_mask]
+            for cat, keywords in WK1_PRODUCT_CATEGORIES.items():
+                _cat_mask = _wk1_rec[_unique_col_sp].apply(
+                    lambda v: any(kw.upper() in str(v).upper() for kw in keywords)
+                )
+                wk1_prod_counts[cat] = int(_cat_mask.sum())
+        except Exception:
+            pass
+
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
@@ -3697,7 +3844,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
-            weekly_prod_counts, im_star_pro_count)
+            weekly_prod_counts, im_star_pro_count,
+            wk1_prod_counts)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -3905,7 +4053,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcr=pcr_val, pcdv=pcdv, prod_raw=prod_score_receipt or 0,
                 cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
                 cmr_plus1_pct=_cmr_plus1,
-                ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
+                ext_tat=sb.get("ext_tat", S.get("boost_tat_thr", 1)), d60=sb.get("d60", S.get("boost_60d_thr", 10)),
                 is_sps=is_sps_employee, S=S)
             pop_inc = 0
             if S.get("has_apr_spot") or S.get("has_may_spot"):
@@ -3922,7 +4070,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcdv, client_cnt, cmr_slab, cmr_pct,
                 rnl_prods, rnl_modes, vintage, S,
                 svc_tiers=svc_tiers,
-                pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
+                pop_cmr_floor=S.get("pop_cmr_floor", POP_CMR_FLOOR),
                 metric_label=metric_label)
             # Combined cap: Total = min(base+PoP, 20000)
             # We store full PoP and apply cap at output (shows true PoP earned)
@@ -3955,7 +4103,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcr=pcr_val, pcdv=pcdv, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
                     cmr_plus1_pct=_cmr_plus1_31,
-                    ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
+                    ext_tat=sb.get("ext_tat", S.get("boost_tat_thr", 1)), d60=sb.get("d60", S.get("boost_60d_thr", 10)),
                     is_sps=is_sps_employee, S=S)
                 pop_inc = 0
             else:
@@ -3964,7 +4112,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcdv, client_cnt, cmr_slab, cmr_pct,
                     rnl_prods, rnl_modes, vintage, S,
                     svc_tiers=svc_tiers,
-                    pop_cmr_floor=sb.get("pop_cmr_floor", POP_CMR_FLOOR),
+                    pop_cmr_floor=S.get("pop_cmr_floor", POP_CMR_FLOOR),
                     metric_label=metric_label)
             # Combined cap: Total = min(base+PoP, 20000)
             if not _is_rel_mgr_31:
@@ -4010,12 +4158,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     pcr=pcr_val, pcdv=pcdv, prod_raw=prod_score_receipt or 0,
                     cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
                     cmr_plus1_pct=_cmr_plus1,
-                    ext_tat=sb.get("ext_tat", 99), d60=sb.get("d60", 99),
+                    ext_tat=sb.get("ext_tat", S.get("boost_tat_thr", 1)), d60=sb.get("d60", S.get("boost_60d_thr", 10)),
                     is_sps=is_sps_employee, S=S)
             else:
                 base_inc, notes = calc_csd_sps(
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
-                    emp_all_cmr, sb.get("ext_tat", 99), sb.get("d60", 99), S,
+                    emp_all_cmr,
+                    sb.get("ext_tat", S.get("boost_tat_thr", 1)),
+                    sb.get("d60",     S.get("boost_60d_thr", 10)),
+                    S,
                     metric_label=metric_label, is_sps=is_sps_employee,
                     mdc1_cmr_plus1=(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1
                                     else cmr_plus1_pct) if cmr_plus1_sent > 0 else None)
@@ -4196,9 +4347,52 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 spot_inc = _legacy_spot
 
         # ── IM Star Pro+ New Sale Spot (28-30 Apr): SAM only ₹1000/sale ─────────
-        # Products: IM Star Pro / IM Leader Pro / Preferred Leader Pro / Preferred Star Pro
-        # Computed in get_transactions as im_star_pro_count (entry date day >= 28)
         _im_star_pro_spot_kcd = int(im_star_pro_count * S.get("im_star_rate", 1000)) if _is_sam else 0
+
+        # ── KCD WK-1 Power of Productivity Spot (01-09 May) ─────────────────────
+        # Per-product-type rates from Scheme_Params / KCD_WK1_Spot_May config sheet
+        # Eligibility: ≥2 NR Upsell/Ren in the WK-1 period (01-09)
+        # 50% payout if monthly base not achieved (monthly_base_inc handled after calc)
+        _wk1_spot = 0
+        _wk1_rates = S.get("kcd_wk1_spot", {})   # {category: {l1_annual, l1_myr}}
+        if _wk1_rates and wk1_prod_counts:
+            _wk1_total_prods = sum(wk1_prod_counts.values())
+            if _wk1_total_prods >= 2:  # min 2 prods in WK-1 period
+                _mode_col = find_col(receipt_df, ["Mode", "mode", "Product Mode",
+                                                   "Subscription Type", "tenure"])
+                for cat, rate_info in _wk1_rates.items():
+                    _cat_count = wk1_prod_counts.get(cat, 0)
+                    if _cat_count > 0:
+                        if isinstance(rate_info, dict):
+                            _ann_rate = rate_info.get("l2_annual" if _is_sam else "l1_annual", 0)
+                            _myr_rate = rate_info.get("l2_myr"    if _is_sam else "l1_myr",    0)
+                        else:
+                            _ann_rate = int(rate_info) if not _is_sam else int(rate_info) // 2
+                            _myr_rate = _ann_rate * 2
+                        # Simple: if no mode split available use annual rate × count
+                        _wk1_spot += _cat_count * _ann_rate  # TODO: split Annual/MYR by mode
+
+        # ── Excellent Incentive Spot (04 May only) ───────────────────────────────
+        # CSD/KCD L1 (90+ vintage CSD only): ₹750/txn on 04-May transactions
+        # L2 (RM/SAM): ₹400/txn from 2nd transaction onwards on 04-May
+        _excellent_spot = 0
+        _exc_day   = int(S.get("Excellent_Spot_Day", 4))
+        _exc_l1    = int(S.get("Excellent_Spot_L1_Rate", 750))
+        _exc_l2    = int(S.get("Excellent_Spot_L2_Rate", 400))
+        _exc_date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+        if _exc_date_col and _exc_day > 0 and len(receipt_df) > 0:
+            try:
+                _exc_days = pd.to_datetime(receipt_df[_exc_date_col], errors='coerce').dt.day
+                _exc_txn_count = int((_exc_days == _exc_day).sum())
+                if _is_sam or str(designation).upper().strip() == "L2":
+                    if _exc_txn_count >= 2:
+                        _excellent_spot = (_exc_txn_count - 1) * _exc_l2
+                else:
+                    _is_90plus = vintage not in ("0-30D", "31-90D")
+                    if _is_90plus and _exc_txn_count > 0:
+                        _excellent_spot = _exc_txn_count * _exc_l1
+            except Exception:
+                pass
 
         # ── KCD IM Insta Spot ─────────────────────────────────────────────────
         _insta_min_w = S.get("insta_min_week", 2); _insta_min_m = S.get("insta_min_month", 7)
@@ -4284,7 +4478,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # Add IM Insta and MCATs to KCD spot total
     if "KCD" in vertical:
-        spot_inc = int(spot_inc) + _im_insta_spot + _mcats_spot + _im_star_pro_spot_kcd
+        spot_inc = int(spot_inc) + _im_insta_spot + _mcats_spot + _im_star_pro_spot_kcd + _wk1_spot + _excellent_spot
 
     # KCD breakdown -- extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
@@ -4384,6 +4578,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "FNT-2 Prod Count":    fnt2_prod_count,
         "FNT-2 Spot (₹)":     int(_fnt2_spot),
         "IM Star Pro+ Spot (₹)": int(_im_star_spot) if _im_star_spot > 0 else (int(_im_star_pro_spot_kcd) if _im_star_pro_spot_kcd > 0 else 0),
+        "WK-1 Prod Spot (₹)":   int(_wk1_spot),
+        "Excellent Spot (₹)":   int(_excellent_spot),
         "IM Insta Spot (₹)":   int(_im_insta_spot),
         "MCATs Spot (₹)":      int(_mcats_spot),
         "Spot Incentive (₹)":  int(spot_inc),
@@ -4436,20 +4632,16 @@ with st.sidebar:
     )
     use_pcr = metric_mode.startswith("PCR")
 
-    pop_cmr_floor = st.number_input(
-        "Min CMR% to earn PoP",
-        0.0, 100.0, 55.0, 1.0,
-        help="CSD 0-90D: minimum CMR% employee must achieve to earn Power of Productivity. "
-             "Apr=55%, Mar=50%"
-    )
+    with st.expander("⚙️ Advanced overrides (normally set by Slab Config)"):
+        st.caption("These override the Slab Config values only for this session. "
+                   "For permanent changes, edit the **Scheme_Params** sheet in the Slab Config Excel.")
+        def_tat  = st.number_input("Ext. Ticket TAT threshold (SPS booster)", 0.0, 10.0,
+                                   float(S.get("boost_tat_thr", 1.0)), 0.5,
+                                   help="SPS booster applies when ext ticket TAT is below this")
+        def_d60  = st.number_input("60D Not Met % threshold (SPS booster)", 0.0, 100.0,
+                                   float(S.get("boost_60d_thr", 10.0)), 1.0,
+                                   help="SPS booster applies when 60D not met % is below this")
 
-    with st.expander("CSD SPS (91D+ vintage)"):
-        st.caption("MDC-1 CMR% is auto-computed per employee from the renewal file. "
-                   "Set the booster thresholds below only if needed.")
-        def_tat  = st.number_input("Ext. Ticket TAT (SPS booster)", 0.0, 10.0,  1.5,
-                                   help="SPS booster applies when ext tickets TAT < this value")
-        def_d60  = st.number_input("60D Not Met % (SPS booster)",   0.0, 100.0, 12.0,
-                                   help="SPS booster applies when 60D not met % < this value")
     with st.expander("Spot Rate"):
         def_nr   = st.number_input("CSD NR Upsell/AMR count", 0, 50, 0)
         def_btl  = st.number_input("KCD Base-to-Listing sales", 0, 20, 0)
@@ -4457,7 +4649,7 @@ with st.sidebar:
 
     sb = dict(ext_tat=def_tat, d60=def_d60,
               nr_upsell=def_nr, btl_sales=def_btl, spot_met=def_spot,
-              use_pcr=use_pcr, pop_cmr_floor=pop_cmr_floor)
+              use_pcr=use_pcr)
 
     st.divider()
     st.header("📅 Select Month")
@@ -4837,7 +5029,8 @@ if calc_btn:
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
-            weekly_prod_counts, im_star_pro_count) = \
+            weekly_prod_counts, im_star_pro_count,
+            wk1_prod_counts) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
