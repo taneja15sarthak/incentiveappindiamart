@@ -4636,11 +4636,11 @@ with st.sidebar:
         st.caption("These override the Slab Config values only for this session. "
                    "For permanent changes, edit the **Scheme_Params** sheet in the Slab Config Excel.")
         def_tat  = st.number_input("Ext. Ticket TAT threshold (SPS booster)", 0.0, 10.0,
-                                   float(S.get("boost_tat_thr", 1.0)), 0.5,
-                                   help="SPS booster applies when ext ticket TAT is below this")
+                                   1.0, 0.5,
+                                   help="SPS booster applies when ext ticket TAT is below this. Default=1.0 (set in Scheme_Params)")
         def_d60  = st.number_input("60D Not Met % threshold (SPS booster)", 0.0, 100.0,
-                                   float(S.get("boost_60d_thr", 10.0)), 1.0,
-                                   help="SPS booster applies when 60D not met % is below this")
+                                   10.0, 1.0,
+                                   help="SPS booster applies when 60D not met % is below this. Default=10 (set in Scheme_Params)")
 
     with st.expander("Spot Rate"):
         def_nr   = st.number_input("CSD NR Upsell/AMR count", 0, 50, 0)
