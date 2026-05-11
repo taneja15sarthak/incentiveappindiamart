@@ -756,11 +756,11 @@ def parse_slabs(cfg):
         "kcd_nagpur_slabs":    kcd_nagpur_slabs,
         "kcd_incr":            kcd_incr,
         # KCD ROI (lower PCDV thresholds, same per-txn rates as Regular)
-        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
-                               if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
+        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI"))
+                               if _kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI") in cfg
                                else kcd_270_slabs,
-        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
-                                if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
+        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI"))
+                                if _kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI") in cfg
                                 else kcd_91_270_slabs,
         # KCD Listing/Catalog
         "kcd_listing_slabs":   kcd_listing_slabs,
