@@ -1977,27 +1977,38 @@ def load_structure_dump(uploaded_file):
             team = "Regular KCD"
 
         # ── Client Count ──────────────────────────────────────
-        def _safe_float(val, default=100):
+        def _safe_float(val, default=0):
             try:
                 v = float(val)
                 return v if not (v != v) else default  # NaN check
             except (TypeError, ValueError):
                 return default
 
+        # Read Client-A and Client-C directly from FSF_TA columns (pre-computed in sheet)
+        raw_client_a = _safe_float(row[client_a] if client_a else None, 0)
+        raw_client_c = _safe_float(row[client_c] if client_c else None, 0)
+
         if "CSD" in vertical:
-            cc = max(_safe_float(row[client_c] if client_c else None), 50)
+            # CSD: Client Count = Client-A (actual clients)
+            #      Client-C = Calculated clients (weighted, pre-computed in FSF_TA)
+            # Enforce minimum of 50 per scheme FAQ Q11
+            cc = max(raw_client_a, 50) if raw_client_a > 0 else 50
+            stored_client_c = max(raw_client_c, 50) if raw_client_c > 0 else cc
         elif "KCD" in vertical:
-            # Prefer Total Client, or sum Listing + Catalog if available
-            if client_a and str(row[client_a]).strip() not in ("nan",""):
-                cc = _safe_float(row[client_a])
+            # KCD: Client Count = Client-A (overall count)
+            #      Client-C not used for KCD (uses Listing/Catalog split separately)
+            if raw_client_a > 0:
+                cc = raw_client_a
             elif list_c_col and cat_c_col:
                 lc = _safe_float(row[list_c_col], 0)
                 cc_val = _safe_float(row[cat_c_col], 0)
                 cc = lc + cc_val if (lc + cc_val) > 0 else 100
             else:
                 cc = 100
+            stored_client_c = raw_client_c  # KCD Client-C shown in output but not used for PCDV
         else:
             cc = 100
+            stored_client_c = 0
 
         # ── Joining Date -- convert Excel serials (from xlsb) to proper dates ──
         jd = None
@@ -2052,7 +2063,9 @@ def load_structure_dump(uploaded_file):
             "Joining Date":      jd,
             "Vintage":           vintage,
             "Team":              team,
-            "Client Count":      cc,
+            "Client Count":      cc,           # Client-A (actual clients, used for KCD + CSD as denominator)
+            "Client-A":          raw_client_a, # raw Client-A straight from FSF_TA
+            "Client-C":          stored_client_c,  # Calculated clients from FSF_TA (for CSD PCDV)
             "Listing Clients":   lc_val,
             "Catalog Clients":   cat_val,
             "PCR Target":        pcr_target_raw,
@@ -2129,6 +2142,7 @@ def load_structure_dump(uploaded_file):
                 if True:
                     if client_a and client_a in row_agg.index:
                         result[eid]["Client Count"] = float(row_agg[client_a])
+                        result[eid]["Client-A"]     = float(row_agg[client_a])
                     if client_c and client_c in row_agg.index:
                         result[eid]["Client-C"] = float(row_agg[client_c])
                     if "Listing" in row_agg.index:
@@ -3878,6 +3892,24 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         except Exception:
             pass
 
+    # Computed Client-C: distinct clients who transacted in the month
+    # Used as PCDV denominator for CSD L1 (Calculated Client)
+    # Try to find a client/buyer ID column in the receipt
+    computed_client_c = 0
+    if len(rec) > 0:
+        _cid_col = find_col(rec, [
+            "Client GLID", "ClientGLID", "Buyer GLID", "BuyerGLID",
+            "Client ID", "ClientID", "Buyer ID", "BuyerID",
+            "GLID", "glid", "Member ID", "MemberID",
+            "Cust ID", "CustID", "Customer ID",
+        ])
+        if _cid_col:
+            computed_client_c = int(rec[_cid_col].dropna().nunique())
+        else:
+            # No client ID column — use productive receipt count as proxy
+            # (each productive receipt ≈ one client transaction)
+            computed_client_c = int(prod_score_receipt) if prod_score_receipt else txn_count
+
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
@@ -3887,7 +3919,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
-            wk1_prod_counts, excellent_txn_count)
+            wk1_prod_counts, excellent_txn_count,
+            computed_client_c)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -5070,7 +5103,8 @@ if calc_btn:
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
-            wk1_prod_counts, excellent_txn_count) = \
+            wk1_prod_counts, excellent_txn_count,
+            computed_client_c) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
@@ -5083,7 +5117,8 @@ if calc_btn:
             "Vintage":            s.get("Vintage", ""),
             "Team":               s.get("Team", ""),
             "Client Count":       s.get("Client Count", 1),
-            "Client-C":           s.get("Client-C", 0),
+            # Client-C: directly from FSF_TA (pre-computed Calculated Clients column)
+            "Client-C":           float(s.get("Client-C", 0) or 0),
             "Joining Date":       s.get("Joining Date", None),
             "Listing Clients":    s.get("Listing Clients", 0),
             "Catalog Clients":    s.get("Catalog Clients", 0),
@@ -5150,8 +5185,8 @@ if calc_btn:
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
             "Designation":        s.get("Designation", ""),
-        "Client-A (aggregated)": int(s.get("Client Count", 0) or 0),
-        "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 0)
+        "Client-A (aggregated)": int(float(s.get("Client Count", 0) or 0)),
+        "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 1)
                                    if ("CSD" in str(s.get("Vertical","")).upper()
                                        and float(s.get("Client-C", 0) or 0) > 0)
                                    else ""),
