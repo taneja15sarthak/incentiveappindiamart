@@ -387,6 +387,27 @@ def build_default_slab_config():
         {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
         {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
         {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
+        # ─ BM / RM AOP Scheme (L3 = BM, L4 = RM) ─────────────────────────────
+        {"Parameter": "CSD_BM_AOP_Rate_%",          "Value": 1.00,  "Description": "CSD BM (L3) base rate: % of Net Deal Value"},
+        {"Parameter": "CSD_RM_AOP_Rate_%",          "Value": 0.70,  "Description": "CSD RM (L4) base rate: % of Net Deal Value"},
+        {"Parameter": "CSD_BM_AOP_Cap_%",           "Value": 5.00,  "Description": "CSD BM max payout as % of Deal Value"},
+        {"Parameter": "CSD_RM_AOP_Cap_%",           "Value": 4.00,  "Description": "CSD RM max payout as % of Deal Value"},
+        {"Parameter": "KCD_BM_AOP_Rate_%",          "Value": 0.50,  "Description": "KCD BM (L3) base rate: % of Net Deal Value"},
+        {"Parameter": "KCD_RM_AOP_Rate_%",          "Value": 0.35,  "Description": "KCD RM (L4) base rate: % of Net Deal Value"},
+        {"Parameter": "KCD_BM_AOP_Cap_%",           "Value": 2.00,  "Description": "KCD BM max payout as % of Deal Value"},
+        {"Parameter": "KCD_RM_AOP_Cap_%",           "Value": 2.00,  "Description": "KCD RM max payout as % of Deal Value"},
+        {"Parameter": "AOP_Min_Achievement_%",       "Value": 95,    "Description": "Minimum AOP achievement % to be eligible"},
+        {"Parameter": "AOP_Mult_95_100_%",           "Value": 100,   "Description": "AOP multiplier for 95-100% achievement"},
+        {"Parameter": "AOP_Mult_100_105_%",          "Value": 110,   "Description": "AOP multiplier for 100-105% achievement"},
+        {"Parameter": "AOP_Mult_105_110_%",          "Value": 120,   "Description": "AOP multiplier for 105-110% achievement"},
+        {"Parameter": "AOP_Mult_110_Plus_%",         "Value": 130,   "Description": "AOP multiplier for 110%+ achievement"},
+        {"Parameter": "CSD_BM_CMR_Min_%",           "Value": 53,    "Description": "CSD BM/RM min CMR% to be eligible"},
+        {"Parameter": "CSD_BM_CMR_Slab1_%",         "Value": 60,    "Description": "CSD BM/RM CMR: 50% payout (53-60%)"},
+        {"Parameter": "CSD_BM_CMR_Slab2_%",         "Value": 65,    "Description": "CSD BM/RM CMR: 100% (60-65%), 120% above"},
+        {"Parameter": "KCD_BM_CMR_Min_%",           "Value": 72,    "Description": "KCD BM/RM min CMR% to be eligible"},
+        {"Parameter": "KCD_BM_CMR_Slab1_%",         "Value": 75,    "Description": "KCD BM/RM CMR: 75% payout (72-75%)"},
+        {"Parameter": "KCD_BM_CMR_Slab2_%",         "Value": 80,    "Description": "KCD BM/RM CMR: 100% (75-80%), 120% above"},
+        {"Parameter": "KCD_BM_SS_Plus_Min_%",        "Value": 72,    "Description": "KCD BM/RM SS+ gate: ≥ this → 100%, else 50%"},
     ])
 
     return {
@@ -510,6 +531,27 @@ def parse_slabs(cfg):
     _hc_hvri         = int(_p("KCD_HC_Mult_HVRI",     17000))
     _hc_nagpur       = int(_p("KCD_HC_Mult_Nagpur",   32000))
     _hc_sam          = int(_p("KCD_HC_Mult_SAM",      17000))
+    # BM/RM AOP scheme params
+    _csd_bm_rate     = _p("CSD_BM_AOP_Rate_%",  1.00) / 100
+    _csd_rm_rate     = _p("CSD_RM_AOP_Rate_%",  0.70) / 100
+    _csd_bm_cap      = _p("CSD_BM_AOP_Cap_%",   5.00) / 100
+    _csd_rm_cap      = _p("CSD_RM_AOP_Cap_%",   4.00) / 100
+    _kcd_bm_rate     = _p("KCD_BM_AOP_Rate_%",  0.50) / 100
+    _kcd_rm_rate     = _p("KCD_RM_AOP_Rate_%",  0.35) / 100
+    _kcd_bm_cap      = _p("KCD_BM_AOP_Cap_%",   2.00) / 100
+    _kcd_rm_cap      = _p("KCD_RM_AOP_Cap_%",   2.00) / 100
+    _aop_min         = _p("AOP_Min_Achievement_%",    95)
+    _aop_m1          = _p("AOP_Mult_95_100_%",       100) / 100
+    _aop_m2          = _p("AOP_Mult_100_105_%",      110) / 100
+    _aop_m3          = _p("AOP_Mult_105_110_%",      120) / 100
+    _aop_m4          = _p("AOP_Mult_110_Plus_%",     130) / 100
+    _csd_bm_cmr_min  = _p("CSD_BM_CMR_Min_%",         53)
+    _csd_bm_cmr_s1   = _p("CSD_BM_CMR_Slab1_%",       60)
+    _csd_bm_cmr_s2   = _p("CSD_BM_CMR_Slab2_%",       65)
+    _kcd_bm_cmr_min  = _p("KCD_BM_CMR_Min_%",         72)
+    _kcd_bm_cmr_s1   = _p("KCD_BM_CMR_Slab1_%",       75)
+    _kcd_bm_cmr_s2   = _p("KCD_BM_CMR_Slab2_%",       80)
+    _kcd_bm_ss_min   = _p("KCD_BM_SS_Plus_Min_%",     72)
 
     # ── CSD New (April or March slabs) ───────────────────────
     _new_slab_key   = ("CSD_New_Slabs_Apr" if "CSD_New_Slabs_Apr" in cfg
@@ -875,6 +917,27 @@ def parse_slabs(cfg):
         "hc_mult_hvri":        _hc_hvri,
         "hc_mult_nagpur":      _hc_nagpur,
         "hc_mult_sam":         _hc_sam,
+        # BM/RM AOP scheme
+        "CSD_BM_AOP_Rate_%":   _csd_bm_rate,
+        "CSD_RM_AOP_Rate_%":   _csd_rm_rate,
+        "CSD_BM_AOP_Cap_%":    _csd_bm_cap,
+        "CSD_RM_AOP_Cap_%":    _csd_rm_cap,
+        "KCD_BM_AOP_Rate_%":   _kcd_bm_rate,
+        "KCD_RM_AOP_Rate_%":   _kcd_rm_rate,
+        "KCD_BM_AOP_Cap_%":    _kcd_bm_cap,
+        "KCD_RM_AOP_Cap_%":    _kcd_rm_cap,
+        "AOP_Min_Achievement_%": _aop_min,
+        "AOP_Mult_95_100_%":   _aop_m1,
+        "AOP_Mult_100_105_%":  _aop_m2,
+        "AOP_Mult_105_110_%":  _aop_m3,
+        "AOP_Mult_110_Plus_%": _aop_m4,
+        "CSD_BM_CMR_Min_%":    _csd_bm_cmr_min,
+        "CSD_BM_CMR_Slab1_%":  _csd_bm_cmr_s1,
+        "CSD_BM_CMR_Slab2_%":  _csd_bm_cmr_s2,
+        "KCD_BM_CMR_Min_%":    _kcd_bm_cmr_min,
+        "KCD_BM_CMR_Slab1_%":  _kcd_bm_cmr_s1,
+        "KCD_BM_CMR_Slab2_%":  _kcd_bm_cmr_s2,
+        "KCD_BM_SS_Plus_Min_%":_kcd_bm_ss_min,
     }
 
 
@@ -1230,11 +1293,29 @@ def build_may_slab_config():
             {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
             {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
             {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
+            # ─ BM / RM AOP Scheme (L3 = BM, L4 = RM) ────────────────────────────
+            {"Parameter": "CSD_BM_AOP_Rate_%",          "Value": 1.00,  "Description": "CSD BM (L3) base rate: % of Net Deal Value"},
+            {"Parameter": "CSD_RM_AOP_Rate_%",          "Value": 0.70,  "Description": "CSD RM (L4) base rate: % of Net Deal Value"},
+            {"Parameter": "CSD_BM_AOP_Cap_%",           "Value": 5.00,  "Description": "CSD BM max payout as % of Deal Value"},
+            {"Parameter": "CSD_RM_AOP_Cap_%",           "Value": 4.00,  "Description": "CSD RM max payout as % of Deal Value"},
+            {"Parameter": "KCD_BM_AOP_Rate_%",          "Value": 0.50,  "Description": "KCD BM (L3) base rate: % of Net Deal Value"},
+            {"Parameter": "KCD_RM_AOP_Rate_%",          "Value": 0.35,  "Description": "KCD RM (L4) base rate: % of Net Deal Value"},
+            {"Parameter": "KCD_BM_AOP_Cap_%",           "Value": 2.00,  "Description": "KCD BM/RM max payout as % of Deal Value"},
+            {"Parameter": "KCD_RM_AOP_Cap_%",           "Value": 2.00,  "Description": "KCD RM max payout as % of Deal Value"},
+            {"Parameter": "AOP_Min_Achievement_%",       "Value": 95,    "Description": "Minimum AOP achievement % to be eligible"},
+            {"Parameter": "AOP_Mult_95_100_%",           "Value": 100,   "Description": "AOP multiplier % for 95-100% achievement"},
+            {"Parameter": "AOP_Mult_100_105_%",          "Value": 110,   "Description": "AOP multiplier % for 100-105% achievement"},
+            {"Parameter": "AOP_Mult_105_110_%",          "Value": 120,   "Description": "AOP multiplier % for 105-110% achievement"},
+            {"Parameter": "AOP_Mult_110_Plus_%",         "Value": 130,   "Description": "AOP multiplier % for 110%+ achievement"},
+            {"Parameter": "CSD_BM_CMR_Min_%",           "Value": 53,    "Description": "CSD BM/RM min CMR% to be eligible"},
+            {"Parameter": "CSD_BM_CMR_Slab1_%",         "Value": 60,    "Description": "CSD BM/RM CMR Slab1: 50% payout (53-60%)"},
+            {"Parameter": "CSD_BM_CMR_Slab2_%",         "Value": 65,    "Description": "CSD BM/RM CMR Slab2: 100% (60-65%), 120% above"},
+            {"Parameter": "KCD_BM_CMR_Min_%",           "Value": 72,    "Description": "KCD BM/RM min CMR% to be eligible"},
+            {"Parameter": "KCD_BM_CMR_Slab1_%",         "Value": 75,    "Description": "KCD BM/RM CMR: 75% payout (72-75%)"},
+            {"Parameter": "KCD_BM_CMR_Slab2_%",         "Value": 80,    "Description": "KCD BM/RM CMR: 100% (75-80%), 120% above"},
+            {"Parameter": "KCD_BM_SS_Plus_Min_%",        "Value": 72,    "Description": "KCD BM/RM SS+ gate: ≥ this → 100%, else 50%"},
         ]),
     }
-
-
-def build_march_slab_config():
     """March 2026 scheme slabs (PCR-based)."""
     import pandas as pd
 
@@ -3970,54 +4051,59 @@ def calc_bm_rm_aop(net_deal_val, aop_target, cmr_pct, ss_cmr_pct,
     if aop_target <= 0 or net_deal_val <= 0:
         return 0.0, "No AOP target or no Deal Value"
 
-    aop_pct = (net_deal_val / aop_target) * 100  # achievement %
+    aop_pct = (net_deal_val / aop_target) * 100
 
-    # AOP gate and multiplier
-    if aop_pct < 95:
-        return 0.0, f"AOP {aop_pct:.1f}% < 95% — not eligible"
+    # AOP gate and multiplier — from Scheme_Params
+    _aop_min = S.get("AOP_Min_Achievement_%", 95)
+    if aop_pct < _aop_min:
+        return 0.0, f"AOP {aop_pct:.1f}% < {_aop_min:.0f}% — not eligible"
     elif aop_pct < 100:
-        aop_mult = 1.00
+        aop_mult = S.get("AOP_Mult_95_100_%", 100) / 100
     elif aop_pct < 105:
-        aop_mult = 1.10
+        aop_mult = S.get("AOP_Mult_100_105_%", 110) / 100
     elif aop_pct < 110:
-        aop_mult = 1.20
+        aop_mult = S.get("AOP_Mult_105_110_%", 120) / 100
     else:
-        aop_mult = 1.30
+        aop_mult = S.get("AOP_Mult_110_Plus_%", 130) / 100
 
     v_up = str(vertical).upper()
     l_up = str(level).upper()
+    is_bm = "BM" in l_up or "L3" in l_up
 
-    # CSD vs KCD base rate
     if "CSD" in v_up:
-        base_rate = 0.01 if "BM" in l_up or "L3" in l_up else 0.007
-        cap_rate  = 0.05 if "BM" in l_up or "L3" in l_up else 0.04
-        # CMR eligibility
+        base_rate = S.get("CSD_BM_AOP_Rate_%", 1.00) / 100 if is_bm else S.get("CSD_RM_AOP_Rate_%", 0.70) / 100
+        cap_rate  = S.get("CSD_BM_AOP_Cap_%",  5.00) / 100 if is_bm else S.get("CSD_RM_AOP_Cap_%",  4.00) / 100
+        cmr_min   = S.get("CSD_BM_CMR_Min_%", 53)
+        cmr_s1    = S.get("CSD_BM_CMR_Slab1_%", 60)
+        cmr_s2    = S.get("CSD_BM_CMR_Slab2_%", 65)
         cmr_v = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
-        if cmr_v < 53:
-            return 0.0, f"CMR {cmr_v:.1f}% < 53% — not eligible"
-        elif cmr_v < 60:
+        if cmr_v < cmr_min:
+            return 0.0, f"CMR {cmr_v:.1f}% < {cmr_min:.0f}% — not eligible"
+        elif cmr_v < cmr_s1:
             cmr_mult = 0.50
-        elif cmr_v < 65:
+        elif cmr_v < cmr_s2:
             cmr_mult = 1.00
         else:
             cmr_mult = 1.20
         ss_mult = 1.0
     else:  # KCD
-        base_rate = 0.005 if "BM" in l_up or "L3" in l_up else 0.0035
-        cap_rate  = 0.02
-        # CMR eligibility
+        base_rate = S.get("KCD_BM_AOP_Rate_%", 0.50) / 100 if is_bm else S.get("KCD_RM_AOP_Rate_%", 0.35) / 100
+        cap_rate  = S.get("KCD_BM_AOP_Cap_%",  2.00) / 100 if is_bm else S.get("KCD_RM_AOP_Cap_%",  2.00) / 100
+        cmr_min   = S.get("KCD_BM_CMR_Min_%", 72)
+        cmr_s1    = S.get("KCD_BM_CMR_Slab1_%", 75)
+        cmr_s2    = S.get("KCD_BM_CMR_Slab2_%", 80)
+        ss_gate   = S.get("KCD_BM_SS_Plus_Min_%", 72)
         cmr_v = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
-        if cmr_v < 72:
-            return 0.0, f"CMR {cmr_v:.1f}% < 72% — not eligible"
-        elif cmr_v < 75:
+        if cmr_v < cmr_min:
+            return 0.0, f"CMR {cmr_v:.1f}% < {cmr_min:.0f}% — not eligible"
+        elif cmr_v < cmr_s1:
             cmr_mult = 0.75
-        elif cmr_v < 80:
+        elif cmr_v < cmr_s2:
             cmr_mult = 1.00
         else:
             cmr_mult = 1.20
-        # SS+ gate
         ss_v = ss_cmr_pct * 100 if ss_cmr_pct <= 1 else ss_cmr_pct
-        ss_mult = 1.0 if ss_v >= 72 else 0.5
+        ss_mult = 1.0 if ss_v >= ss_gate else 0.5
 
     raw_incentive = net_deal_val * base_rate * aop_mult * cmr_mult * ss_mult
     cap           = net_deal_val * cap_rate
@@ -4914,6 +5000,9 @@ with st.expander("📊 Active Scheme Parameters (click to verify before calculat
         ("⭐ IM Star Pro+ spot rate (₹)",          f"₹{S.get('im_star_rate',1000)} from day {S.get('im_star_from_day',28)}"),
         ("🏔️ KCD HC mult Regular / ROI / HVRI / Nagpur / SAM",
          f"×{S.get('hc_mult_regular',21000):,} / ×{S.get('hc_mult_roi',14000):,} / ×{S.get('hc_mult_hvri',17000):,} / ×{S.get('hc_mult_nagpur',32000):,} / ×{S.get('hc_mult_sam',17000):,}"),
+        ("📐 CSD BM/RM AOP rates (% of DV)",  f"BM={S.get('CSD_BM_AOP_Rate_%',0.01):.2%}  RM={S.get('CSD_RM_AOP_Rate_%',0.007):.2%}  |  Cap: BM={S.get('CSD_BM_AOP_Cap_%',0.05):.0%} RM={S.get('CSD_RM_AOP_Cap_%',0.04):.0%}"),
+        ("📐 KCD BM/RM AOP rates (% of DV)",  f"BM={S.get('KCD_BM_AOP_Rate_%',0.005):.3%}  RM={S.get('KCD_RM_AOP_Rate_%',0.0035):.3%}  |  Cap: {S.get('KCD_BM_AOP_Cap_%',0.02):.0%}"),
+        ("📊 AOP achievement multipliers",     f"95-100%→{S.get('AOP_Mult_95_100_%',1.0):.0%}  100-105%→{S.get('AOP_Mult_100_105_%',1.1):.0%}  105-110%→{S.get('AOP_Mult_105_110_%',1.2):.0%}  110%+→{S.get('AOP_Mult_110_Plus_%',1.3):.0%}"),
     ]
     col1, col2 = st.columns(2)
     for i, (label, val) in enumerate(_sp_display):
