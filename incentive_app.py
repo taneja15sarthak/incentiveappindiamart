@@ -3939,6 +3939,98 @@ def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
     return l1_name or cfg_name or rec_name or ""
 
 
+def calc_bm_rm_aop(net_deal_val, aop_target, cmr_pct, ss_cmr_pct,
+                   vertical, level, S):
+    """
+    AOP-based incentive for L3 (BM) and L4 (RM) employees.
+
+    CSD BM  : 1.00% of DV × AOP mult × CMR mult; cap 5% DV
+    CSD RM  : 0.70% of DV × AOP mult × CMR mult; cap 4% DV
+    KCD BM  : 0.50% of DV × AOP mult × CMR mult × SS+ mult; cap 2% DV
+    KCD RM  : 0.35% of DV × AOP mult × CMR mult × SS+ mult; cap 2% DV
+
+    CMR eligibility (CSD):
+      <53%  → 0%
+      53-60% → 50%  60-65% → 100%  65%+ → 120%
+
+    CMR eligibility (KCD):
+      <72%  → 0%
+      72-75% → 75%  75-80% → 100%  80%+ → 120%
+
+    AOP achievement multiplier:
+      <95%    → not eligible (0)
+      95-100% → 100%
+      100-105%→ 110%
+      105-110%→ 120%
+      ≥110%   → 130%
+
+    SS+ multiplier (KCD only):
+      ≥72% → 100%; <72% → 50%
+    """
+    if aop_target <= 0 or net_deal_val <= 0:
+        return 0.0, "No AOP target or no Deal Value"
+
+    aop_pct = (net_deal_val / aop_target) * 100  # achievement %
+
+    # AOP gate and multiplier
+    if aop_pct < 95:
+        return 0.0, f"AOP {aop_pct:.1f}% < 95% — not eligible"
+    elif aop_pct < 100:
+        aop_mult = 1.00
+    elif aop_pct < 105:
+        aop_mult = 1.10
+    elif aop_pct < 110:
+        aop_mult = 1.20
+    else:
+        aop_mult = 1.30
+
+    v_up = str(vertical).upper()
+    l_up = str(level).upper()
+
+    # CSD vs KCD base rate
+    if "CSD" in v_up:
+        base_rate = 0.01 if "BM" in l_up or "L3" in l_up else 0.007
+        cap_rate  = 0.05 if "BM" in l_up or "L3" in l_up else 0.04
+        # CMR eligibility
+        cmr_v = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
+        if cmr_v < 53:
+            return 0.0, f"CMR {cmr_v:.1f}% < 53% — not eligible"
+        elif cmr_v < 60:
+            cmr_mult = 0.50
+        elif cmr_v < 65:
+            cmr_mult = 1.00
+        else:
+            cmr_mult = 1.20
+        ss_mult = 1.0
+    else:  # KCD
+        base_rate = 0.005 if "BM" in l_up or "L3" in l_up else 0.0035
+        cap_rate  = 0.02
+        # CMR eligibility
+        cmr_v = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
+        if cmr_v < 72:
+            return 0.0, f"CMR {cmr_v:.1f}% < 72% — not eligible"
+        elif cmr_v < 75:
+            cmr_mult = 0.75
+        elif cmr_v < 80:
+            cmr_mult = 1.00
+        else:
+            cmr_mult = 1.20
+        # SS+ gate
+        ss_v = ss_cmr_pct * 100 if ss_cmr_pct <= 1 else ss_cmr_pct
+        ss_mult = 1.0 if ss_v >= 72 else 0.5
+
+    raw_incentive = net_deal_val * base_rate * aop_mult * cmr_mult * ss_mult
+    cap           = net_deal_val * cap_rate
+    incentive     = min(raw_incentive, cap)
+
+    notes = (f"{vertical} {'BM' if 'BM' in l_up or 'L3' in l_up else 'RM'} | "
+             f"AOP:{aop_pct:.1f}% | DV:{net_deal_val:,.0f} | Rate:{base_rate:.2%} | "
+             f"AOPMult:{aop_mult:.0%} | CMR:{cmr_v:.1f}%→{cmr_mult:.0%} | "
+             f"SS+:{ss_mult:.0%} | Raw:{raw_incentive:,.0f} | Cap:{cap:,.0f} | "
+             f"Final:{incentive:,.0f}")
+    return round(incentive, 0), notes
+
+
 def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
                svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None, cmr_plus1_pct=0.0,
@@ -5452,7 +5544,181 @@ if calc_btn:
             if not kcd_l2.empty:
                 write_sheet(kcd_l2[sam_cols], "KCD-SAM", header_fmt=org)
 
-        # ── Sheet 4: CMR Validation -- renewal CMR details ────────────────────
+        # ── Sheets: BM-CSD, RM-CSD, BM-KCD, RM-KCD (L3/L4 AOP scheme) ─────────
+        # Columns matching sir's BM/RM FSF layout
+        # Need to compute AOP incentive from the structure dump data (aop_target from L3/L4 rows)
+        bm_rm_cols_csd = [
+            "Employee ID","Employee Name","Designation",
+            "L4 ID","L4 Name","L5 ID","L5 Name",
+            "Joining Date","Vertical",
+            "Client-A","Client-C","L1 Count","L2 Count","HC",
+            "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV",
+            "AOP Target (₹)","AOP Achievement %","AOP Multiplier",
+            "CMR%","CMR Multiplier",
+            "Incentive (₹)","Gross Incentive (₹)","Paid Incentive (₹)","Balance Incentive (₹)",
+            "Renewals Sent","Renewals Received","CMR (Ren%)",
+            "CMR+1 Sent","CMR+1 Recd","CMR+1 Ren%",
+            "Total Incentive (₹)","Scheme",
+        ]
+        bm_rm_cols_kcd = [
+            "Employee ID","Employee Name","Designation",
+            "L4 ID","L4 Name","L5 ID","L5 Name",
+            "Joining Date","Vertical",
+            "Client-A","Client-C","L1 Count","L2 Count","HC",
+            "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV",
+            "AOP Target (₹)","AOP Achievement %","AOP Multiplier",
+            "SS+ CMR%","SS+ Multiplier","CMR%","CMR Multiplier",
+            "Incentive (₹)","Gross Incentive (₹)","Paid Incentive (₹)","Balance Incentive (₹)",
+            "Renewals Sent (Non SS+)","Renewals Received (Non SS+)","CMR (Ren%)",
+            "CMR+1 Sent","CMR+1 Recd","CMR+1 Ren%",
+            "Total Incentive (₹)","Scheme",
+        ]
+
+        # Build BM/RM rows from structure map (L3=BM, L4=RM)
+        def build_bm_rm_rows(vertical_filter, level_filter):
+            rows = []
+            for eid, s in struct_map.items():
+                v = str(s.get("Vertical","")).upper()
+                d = str(s.get("Designation","")).upper().strip()
+                if vertical_filter not in v: continue
+                if d != level_filter: continue
+
+                # Get aggregated financials from res (already computed L1 totals flow up)
+                # For BM/RM: sum up their L1/L2 subordinates' financials from the main res
+                # Use the CMR data from renewal file aggregated for this manager
+                emp_cmr = cmr_map.get(eid, {})
+                cmr_pct_v  = float(emp_cmr.get("cmr_pct", 0) or 0)
+                ss_cmr_v   = float(emp_cmr.get("ss_cmr_pct", 0) or 0)
+                rnl_sent   = int(emp_cmr.get("renewal_sent", 0) or 0)
+                rnl_recd   = int(emp_cmr.get("renewal_received", 0) or 0)
+                ss_sent    = int(emp_cmr.get("ss_sent", 0) or 0)
+                ss_recd    = int(emp_cmr.get("ss_received", 0) or 0)
+                mdc1_data  = mdc1_cmr_map.get(eid, {})
+                mdc1_pct   = float(mdc1_data.get("mdc1_cmr_pct", 0) or 0) * 100
+                mdc1_sent  = int(mdc1_data.get("mdc1_sent", 0) or 0)
+                mdc1_recd  = int(mdc1_data.get("mdc1_recd", 0) or 0)
+
+                # Financials: sum subordinates' data from get_transactions per-employee
+                # We use the pre-computed res dataframe subordinate rows
+                emp_name_clean = str(s.get("Employee Name","")).strip()
+                # BM=L3 → their name appears in res["L3"]; RM=L4 → in res["L4"]
+                hier_col_res = "L3" if level_filter == "L3" else "L4"
+                if hier_col_res in res.columns:
+                    subs = res[res[hier_col_res].astype(str).str.strip() == emp_name_clean]
+                else:
+                    subs = pd.DataFrame()
+
+                gross_coll  = int(subs["Collection (₹)"].sum())     if not subs.empty and "Collection (₹)" in subs.columns else 0
+                total_ref   = int(subs["Refund (₹)"].sum())          if not subs.empty and "Refund (₹)" in subs.columns else 0
+                net_coll    = gross_coll - total_ref
+                dv          = int(subs["Deal Value (₹)"].sum())      if not subs.empty and "Deal Value (₹)" in subs.columns else 0
+                dl          = int(subs["Deal Loss (₹)"].sum())       if not subs.empty and "Deal Loss (₹)" in subs.columns else 0
+                net_dv_bm   = dv - dl
+                client_a    = float(s.get("Client Count", 0) or 0)
+                client_c    = float(s.get("Client-C", 0) or 0)
+                pcr         = round(net_coll / client_c, 1) if client_c > 0 else 0
+                pcdv        = round(net_dv_bm / client_c, 1) if client_c > 0 else 0
+                l1_cnt      = int(s.get("L1 Count", 0) or 0)
+                l2_cnt      = 0  # L2 count not tracked separately yet
+                hc          = max(l1_cnt, 0)  # head count
+
+                # AOP target: from structure dump or targets file
+                aop_target  = float(s.get("Collection Target", 0) or 0) or float(s.get("PCR Target", 0) or 0) * client_a
+
+                inc, scheme_note = calc_bm_rm_aop(
+                    net_deal_val=net_dv_bm, aop_target=aop_target,
+                    cmr_pct=cmr_pct_v, ss_cmr_pct=ss_cmr_v,
+                    vertical=v, level=level_filter, S=S,
+                )
+                cmr_v = cmr_pct_v * 100 if cmr_pct_v <= 1 else cmr_pct_v
+                ss_v  = ss_cmr_v  * 100 if ss_cmr_v  <= 1 else ss_cmr_v
+                aop_pct = (net_dv_bm / aop_target * 100) if aop_target > 0 else 0
+                aop_mult_str = ("" if aop_pct < 95 else
+                                "100%" if aop_pct < 100 else
+                                "110%" if aop_pct < 105 else
+                                "120%" if aop_pct < 110 else "130%")
+                if "CSD" in v:
+                    cmr_mult_str = ("0%" if cmr_v < 53 else "50%" if cmr_v < 60 else "100%" if cmr_v < 65 else "120%")
+                else:
+                    cmr_mult_str = ("0%" if cmr_v < 72 else "75%" if cmr_v < 75 else "100%" if cmr_v < 80 else "120%")
+                ss_mult_str = "100%" if ss_v >= 72 else "50%"
+
+                row = {
+                    "Employee ID":      eid,
+                    "Employee Name":    s.get("Employee Name",""),
+                    "Designation":      s.get("Designation",""),
+                    "Joining Date":     s.get("Joining Date",""),
+                    "Vertical":         s.get("Vertical",""),
+                    "Client-A":         int(client_a),
+                    "Client-C":         client_c,
+                    "L1 Count":         l1_cnt,
+                    "L2 Count":         l2_cnt,
+                    "HC":               hc,
+                    "Collection (₹)":   gross_coll,
+                    "Refund (₹)":       total_ref,
+                    "Net Collection (₹)": net_coll,
+                    "PCR":              pcr,
+                    "Deal Value (₹)":   dv,
+                    "Deal Loss (₹)":    dl,
+                    "Net Deal Value (₹)": net_dv_bm,
+                    "PCDV":             pcdv,
+                    "AOP Target (₹)":   int(aop_target),
+                    "AOP Achievement %": round(aop_pct, 1),
+                    "AOP Multiplier":   aop_mult_str,
+                    "SS+ CMR%":         round(ss_v, 1),
+                    "SS+ Multiplier":   ss_mult_str,
+                    "CMR%":             round(cmr_v, 1),
+                    "CMR Multiplier":   cmr_mult_str,
+                    "Incentive (₹)":    int(inc),
+                    "Gross Incentive (₹)": int(inc),
+                    "Paid Incentive (₹)":  0,
+                    "Balance Incentive (₹)": int(inc),
+                    "Renewals Sent":    rnl_sent,
+                    "Renewals Received": rnl_recd,
+                    "CMR (Ren%)":       round(cmr_v / 100, 4) if cmr_v > 1 else round(cmr_pct_v, 4),
+                    "Renewals Sent (Non SS+)": mdc1_sent,
+                    "Renewals Received (Non SS+)": mdc1_recd,
+                    "CMR+1 Sent":       mdc1_sent,
+                    "CMR+1 Recd":       mdc1_recd,
+                    "CMR+1 Ren%":       round(mdc1_pct / 100, 4),
+                    "Total Incentive (₹)": int(inc),
+                    "Scheme":           scheme_note,
+                }
+                # Add hierarchy IDs from struct (fallback)
+                row["L4 ID"]   = s.get("L2 Name","")  # proxy
+                row["L4 Name"] = s.get("L2 Name","")
+                row["L5 ID"]   = s.get("L3 Name","")
+                row["L5 Name"] = s.get("L3 Name","")
+                rows.append(row)
+            return pd.DataFrame(rows)
+
+        # Generate and write the 4 BM/RM sheets
+        pur = wb.add_format({"bold": True, "bg_color": "#7030A0",
+                              "font_color": "#FFFFFF", "border": 1, "font_size": 10})
+        teal = wb.add_format({"bold": True, "bg_color": "#006471",
+                               "font_color": "#FFFFFF", "border": 1, "font_size": 10})
+
+        bm_csd = build_bm_rm_rows("CSD", "L3")
+        if not bm_csd.empty:
+            out_cols = [c for c in bm_rm_cols_csd if c in bm_csd.columns]
+            write_sheet(bm_csd[out_cols], "BM-CSD", header_fmt=pur)
+
+        rm_csd = build_bm_rm_rows("CSD", "L4")
+        if not rm_csd.empty:
+            out_cols = [c for c in bm_rm_cols_csd if c in rm_csd.columns]
+            write_sheet(rm_csd[out_cols], "RM-CSD", header_fmt=pur)
+
+        bm_kcd = build_bm_rm_rows("KCD", "L3")
+        if not bm_kcd.empty:
+            out_cols = [c for c in bm_rm_cols_kcd if c in bm_kcd.columns]
+            write_sheet(bm_kcd[out_cols], "BM-KCD", header_fmt=teal)
+
+        rm_kcd = build_bm_rm_rows("KCD", "L4")
+        if not rm_kcd.empty:
+            out_cols = [c for c in bm_rm_cols_kcd if c in rm_kcd.columns]
+            write_sheet(rm_kcd[out_cols], "RM-KCD", header_fmt=teal)
         cmr_cols = [c for c in [
             "Employee ID","Employee Name","Vertical","Vintage","Team","Location",
             "CMR Slab1 Target","CMR Slab2 Target",
