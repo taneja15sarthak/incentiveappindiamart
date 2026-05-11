@@ -4012,6 +4012,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _im_insta_spot        = 0   # KCD only
     _mcats_spot           = 0   # KCD only
     _im_star_pro_spot_kcd = 0   # KCD SAM only (28-30 Apr IM Star Pro+)
+    _wk1_spot             = 0   # KCD WK-1 Power of Productivity (01-09 May)
+    _excellent_spot       = 0   # Excellent Incentive Spot (04 May)
     kcd_base_only   = 0   # KCD: base incentive before incremental
     kcd_incremental = 0   # KCD: incremental DV amount
     notes = cmr_note = ""
@@ -5109,7 +5111,10 @@ if calc_btn:
             "Employee Name":      emp_name,
             "Designation":        s.get("Designation", ""),
         "Client-A (aggregated)": int(s.get("Client Count", 0) or 0),
-        "Client-C (aggregated)": round(float(s.get("Client-C", 0) or 0), 0),
+        "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 0)
+                                   if (str(s.get("Designation","")).upper().strip() == "L2"
+                                       and "CSD" in str(s.get("Vertical","")).upper())
+                                   else ""),
         "Catalog Client":       int(float(s.get("Catalog Clients", 0) or 0)),
         "Listing Client":       int(float(s.get("Listing Clients", 0) or 0)),
         "Effective Team Size":  int(s.get("Effective Team Size", 0) or 0),
