@@ -357,7 +357,62 @@ def build_default_slab_config():
         "KCD_Listing_Rates":    kcd_listing_rates,
         "KCD_Catalog_Slabs":    kcd_catalog,
         "KCD_Spot":             kcd_spot,
+        "Scheme_Params":        scheme_params,
     }
+
+    # Build scheme_params here (before return) so all defaults are correct
+    scheme_params = pd.DataFrame([
+        # ─ CSD New Joiner ─────────────────────────────────────────────────────
+        {"Parameter": "CSD_NewJoiner_Cap",         "Value": 20000, "Description": "Max PCDV+PoP incentive for 0-90D employees (₹)"},
+        {"Parameter": "CSD_PoP_Min_CMR_Pct",       "Value": 55.0,  "Description": "Min CMR% to earn PoP (0-90D)"},
+        {"Parameter": "CSD_NewJoiner_Incr_Rate_%",  "Value": 3.0,   "Description": "% of incremental DV above top PCDV slab (0-90D)"},
+        {"Parameter": "CSD_PoP_Min_Txn_0_30D",     "Value": 2,     "Description": "Min productivity count to qualify PoP (0-30D)"},
+        {"Parameter": "CSD_PoP_Min_Txn_31_90D",    "Value": 3,     "Description": "Min productivity count to qualify PoP (31-90D)"},
+        # ─ CSD SPS MDC-1 Multiplier ───────────────────────────────────────────
+        {"Parameter": "CSD_MDC1_High_Threshold_%",  "Value": 35,   "Description": "MDC-1 CMR% above this → High_Mult"},
+        {"Parameter": "CSD_MDC1_Mid_Threshold_%",   "Value": 25,   "Description": "MDC-1 CMR% between Mid and High → Mid_Mult; below → Low_Mult"},
+        {"Parameter": "CSD_MDC1_High_Mult_%",       "Value": 120,  "Description": "MDC-1 multiplier (%) when above High threshold"},
+        {"Parameter": "CSD_MDC1_Mid_Mult_%",        "Value": 100,  "Description": "MDC-1 multiplier (%) when between thresholds"},
+        {"Parameter": "CSD_MDC1_Low_Mult_%",        "Value": 50,   "Description": "MDC-1 multiplier (%) when below Mid threshold"},
+        # ─ CSD SPS Booster ────────────────────────────────────────────────────
+        {"Parameter": "CSD_Booster_TAT_Below",      "Value": 1,    "Description": "SPS Booster: Ext Ticket TAT must be below this"},
+        {"Parameter": "CSD_Booster_60D_Below_%",    "Value": 10,   "Description": "SPS Booster: 60D Not Met must be below this %"},
+        {"Parameter": "CSD_Booster_Mult_%",         "Value": 120,  "Description": "SPS Booster multiplier when both criteria met (%)"},
+        # ─ CSD RM CMR Eligibility ─────────────────────────────────────────────
+        {"Parameter": "CSD_RM_CMR_Min_%",           "Value": 53,   "Description": "CSD RM min CMR% to be eligible (below = no incentive)"},
+        {"Parameter": "CSD_RM_CMR_Slab1_%",         "Value": 60,   "Description": "CSD RM Slab1 CMR threshold (100% payout)"},
+        {"Parameter": "CSD_RM_CMR_Slab2_%",         "Value": 65,   "Description": "CSD RM Slab2 CMR threshold (120% payout)"},
+        # ─ KCD SS+ CMR ────────────────────────────────────────────────────────
+        {"Parameter": "KCD_SS_Plus_Threshold_%",    "Value": 72,   "Description": "KCD SS+ gate: ≥ this CMR% → 100% payout, else 50%"},
+        {"Parameter": "KCD_CMR_Slab2_%",            "Value": 80,   "Description": "KCD higher CMR slab for top per-txn rate"},
+        # ─ KCD Productivity Gate ──────────────────────────────────────────────
+        {"Parameter": "KCD_Min_Prod_Week",          "Value": 2,    "Description": "Min productivity per week to unlock base incentive"},
+        {"Parameter": "KCD_Min_Prod_Month",         "Value": 8,    "Description": "Min monthly productivity (established employees)"},
+        {"Parameter": "KCD_Min_Prod_Month_New",     "Value": 6,    "Description": "Min monthly productivity (CSD-to-KCD / new joiners)"},
+        # ─ KCD Incremental Rates ──────────────────────────────────────────────
+        {"Parameter": "KCD_Incr_Rate_Regular_%",    "Value": 1.4,  "Description": "KCD incremental % above threshold (Regular/ROI/HVRI/Listing)"},
+        {"Parameter": "KCD_Incr_Rate_Nagpur_%",     "Value": 0.85, "Description": "KCD Nagpur L1 incremental % above 32K PCDV"},
+        {"Parameter": "KCD_SAM_Incr_Rate_%",        "Value": 0.65, "Description": "KCD SAM (L2) incremental % above threshold"},
+        {"Parameter": "KCD_SAM_Nagpur_Incr_%",      "Value": 0.45, "Description": "KCD SAM Nagpur incremental % above 32K PCDV"},
+        # ─ IM Insta Spot ──────────────────────────────────────────────────────
+        {"Parameter": "IM_Insta_L1_Rate",           "Value": 300,  "Description": "IM Insta spot per qualifying sale (L1, ₹)"},
+        {"Parameter": "IM_Insta_L2_Rate",           "Value": 150,  "Description": "IM Insta spot per qualifying sale (L2 SAM, ₹)"},
+        {"Parameter": "IM_Insta_Min_Week",          "Value": 2,    "Description": "Min IM Insta prods in any one week to qualify"},
+        {"Parameter": "IM_Insta_Min_Month",         "Value": 7,    "Description": "Min IM Insta prods total in the month to qualify"},
+        # ─ MCATs Renewals Spot ────────────────────────────────────────────────
+        {"Parameter": "MCATs_L1_Rate",              "Value": 1000, "Description": "MCATs spot per MCAT from 3rd onwards (L1, ₹)"},
+        {"Parameter": "MCATs_L2_Rate",              "Value": 500,  "Description": "MCATs spot per MCAT from 3rd onwards (L2 SAM, ₹)"},
+        {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts (spot from count+1)"},
+        # ─ IM Star Pro+ Spot ──────────────────────────────────────────────────
+        {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Leader Pro/Pref spot per new sale (₹)"},
+        {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
+        # ─ KCD Highest Collection Multipliers ─────────────────────────────────
+        {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular / Listing / Catalog L1)"},
+        {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
+        {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
+        {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
+        {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
+    ])
 
 
 def load_slab_config(uploaded_file):
@@ -396,6 +451,56 @@ def load_slab_config(uploaded_file):
 def parse_slabs(cfg):
     """Convert loaded config DataFrames into the tuples the calculation functions expect."""
 
+    # ── Scheme_Params: single source of truth for all key numbers ────────────
+    _sp_df = cfg.get("Scheme_Params", pd.DataFrame())
+    _sp = {}
+    if len(_sp_df) > 0 and "Parameter" in _sp_df.columns:
+        _sp = _sp_df.set_index("Parameter")["Value"].to_dict()
+    def _p(key, default):
+        """Read a param from Scheme_Params with a fallback default."""
+        return float(_sp[key]) if key in _sp else float(default)
+
+    # Extract all scheme parameters (used throughout the S dict and calculations)
+    _nj_cap          = _p("CSD_NewJoiner_Cap",         20000)
+    _pop_cmr_floor   = _p("CSD_PoP_Min_CMR_Pct",        55.0)
+    _nj_incr_rate    = _p("CSD_NewJoiner_Incr_Rate_%",    3.0) / 100
+    _pop_min_0_30    = int(_p("CSD_PoP_Min_Txn_0_30D",    2))
+    _pop_min_31_90   = int(_p("CSD_PoP_Min_Txn_31_90D",   3))
+    _mdc1_hi_thr     = _p("CSD_MDC1_High_Threshold_%",   35)
+    _mdc1_mid_thr    = _p("CSD_MDC1_Mid_Threshold_%",    25)
+    _mdc1_hi_mult    = _p("CSD_MDC1_High_Mult_%",       120) / 100
+    _mdc1_mid_mult   = _p("CSD_MDC1_Mid_Mult_%",        100) / 100
+    _mdc1_low_mult   = _p("CSD_MDC1_Low_Mult_%",         50) / 100
+    _boost_tat       = _p("CSD_Booster_TAT_Below",        1)
+    _boost_60d       = _p("CSD_Booster_60D_Below_%",     10)
+    _boost_mult      = _p("CSD_Booster_Mult_%",         120) / 100
+    _rm_cmr_min      = _p("CSD_RM_CMR_Min_%",           53)
+    _rm_cmr_s1       = _p("CSD_RM_CMR_Slab1_%",         60)
+    _rm_cmr_s2       = _p("CSD_RM_CMR_Slab2_%",         65)
+    _kcd_ss_thr      = _p("KCD_SS_Plus_Threshold_%",    72)
+    _kcd_cmr_s2      = _p("KCD_CMR_Slab2_%",            80)
+    _kcd_min_w       = int(_p("KCD_Min_Prod_Week",        2))
+    _kcd_min_m       = int(_p("KCD_Min_Prod_Month",       8))
+    _kcd_min_m_new   = int(_p("KCD_Min_Prod_Month_New",   6))
+    _kcd_incr_reg    = _p("KCD_Incr_Rate_Regular_%",    1.4) / 100
+    _kcd_incr_nag    = _p("KCD_Incr_Rate_Nagpur_%",    0.85) / 100
+    _kcd_sam_incr    = _p("KCD_SAM_Incr_Rate_%",       0.65) / 100
+    _kcd_sam_nag_i   = _p("KCD_SAM_Nagpur_Incr_%",     0.45) / 100
+    _insta_l1        = int(_p("IM_Insta_L1_Rate",       300))
+    _insta_l2        = int(_p("IM_Insta_L2_Rate",       150))
+    _insta_min_w     = int(_p("IM_Insta_Min_Week",        2))
+    _insta_min_m     = int(_p("IM_Insta_Min_Month",       7))
+    _mcats_l1        = int(_p("MCATs_L1_Rate",         1000))
+    _mcats_l2        = int(_p("MCATs_L2_Rate",          500))
+    _mcats_min       = int(_p("MCATs_Min_Count",          2))
+    _star_rate       = int(_p("IM_Star_Pro_Spot_Rate",  1000))
+    _star_from_day   = int(_p("IM_Star_Pro_From_Day",    28))
+    _hc_regular      = int(_p("KCD_HC_Mult_Regular",  21000))
+    _hc_roi          = int(_p("KCD_HC_Mult_ROI",      14000))
+    _hc_hvri         = int(_p("KCD_HC_Mult_HVRI",     17000))
+    _hc_nagpur       = int(_p("KCD_HC_Mult_Nagpur",   32000))
+    _hc_sam          = int(_p("KCD_HC_Mult_SAM",      17000))
+
     # ── CSD New (April or March slabs) ───────────────────────
     _new_slab_key    = "CSD_New_Slabs_Apr"  if "CSD_New_Slabs_Apr"  in cfg else "CSD_New_Slabs"
     _new_params_key  = "CSD_New_Params_Apr" if "CSD_New_Params_Apr" in cfg else "CSD_New_Params"
@@ -405,19 +510,22 @@ def parse_slabs(cfg):
     ]
     params = cfg[_new_params_key].set_index("Parameter")["Value"].to_dict()
     csd_new_incr_thresh  = float(params.get("Incremental_Threshold", 2800))
-    csd_new_incr_rate    = float(params.get("Incremental_Rate_%", 3.0)) / 100
+    # Incr rate and cap come from Scheme_Params if available, else CSD_New_Params sheet
+    csd_new_incr_rate    = _nj_incr_rate if "CSD_NewJoiner_Incr_Rate_%" in _sp else float(params.get("Incremental_Rate_%", 3.0)) / 100
     csd_slab2_mult       = float(params.get("Slab2_CMR_Multiplier_%", 120)) / 100
-    min_txn_0_30         = int(params.get("Min_Txn_0_30D", 2))
-    min_txn_31_90        = int(params.get("Min_Txn_31_90D", 3))
-    new_joiner_cap       = float(params.get("Max_Incentive", 20000))
+    min_txn_0_30         = _pop_min_0_30 if "CSD_PoP_Min_Txn_0_30D" in _sp else int(params.get("Min_Txn_0_30D", 2))
+    min_txn_31_90        = _pop_min_31_90 if "CSD_PoP_Min_Txn_31_90D" in _sp else int(params.get("Min_Txn_31_90D", 3))
+    new_joiner_cap       = _nj_cap
 
     # ── CSD SPS (April or March slabs) ──────────────────────
-    def _csd_sps_slabs(may_key, apr_key, mar_key):
-        k = may_key if may_key in cfg else (apr_key if apr_key in cfg else mar_key)
+    def _csd_sps_slabs(apr_key, mar_key):
+        k = apr_key if apr_key in cfg else mar_key
         return [(int(r["PCDV_Threshold"]), int(r["Slab1_Per_Txn"]), int(r["Slab2_Per_Txn"]))
                 for _, r in cfg[k].iterrows()]
-    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May", "CSD_SPS_91_270_Apr", "CSD_SPS_91_270D")
-    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",    "CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus")
+    csd_sps_91_270 = _csd_sps_slabs("CSD_SPS_91_270_May",
+                         _csd_sps_slabs("CSD_SPS_91_270_Apr", "CSD_SPS_91_270D"))
+    csd_sps_270p   = _csd_sps_slabs("CSD_SPS_270_May",
+                         _csd_sps_slabs("CSD_SPS_270_Apr",    "CSD_SPS_270D_Plus"))
     # CSD RM: May → Apr → default
     _rm_df = cfg.get("CSD_RM_May", cfg.get("CSD_RM", cfg.get("CSD_SPS_91_270D", pd.DataFrame())))
     _rm_thresh_col = ("PCR_Threshold" if "PCR_Threshold" in _rm_df.columns
@@ -437,14 +545,15 @@ def parse_slabs(cfg):
 
     # ── CSD SPS Multipliers ──────────────────────────────────
     mult_rows = cfg["CSD_SPS_Multipliers"].set_index("Parameter")
-    mdc1_above  = float(mult_rows.loc["MDC1_Above_%",   "Value"])
-    mdc1_between= float(mult_rows.loc["MDC1_Between_%", "Value"])
-    mdc1_mult_hi= float(mult_rows.loc["MDC1_Above_%",   "Multiplier_%"]) / 100
-    mdc1_mult_md= float(mult_rows.loc["MDC1_Between_%", "Multiplier_%"]) / 100
-    mdc1_mult_lo= float(mult_rows.loc["MDC1_Below_%",   "Multiplier_%"]) / 100
-    boost_tat   = float(mult_rows.loc["Booster_TAT_Below", "Value"])
-    boost_d60   = float(mult_rows.loc["Booster_60D_Below", "Value"])
-    boost_mult  = float(mult_rows.loc["Booster_TAT_Below", "Multiplier_%"]) / 100
+    # MDC-1 multiplier thresholds now come from Scheme_Params
+    mdc1_above   = _mdc1_hi_thr
+    mdc1_between = _mdc1_mid_thr
+    mdc1_mult_hi = _mdc1_hi_mult
+    mdc1_mult_md = _mdc1_mid_mult
+    mdc1_mult_lo = _mdc1_low_mult
+    boost_tat    = _boost_tat
+    boost_d60    = _boost_60d
+    boost_mult   = _boost_mult
 
     # ── CSD Spot ─────────────────────────────────────────────
     spot_params = cfg["CSD_Spot"].set_index("Parameter")["Value"].to_dict()
@@ -612,8 +721,6 @@ def parse_slabs(cfg):
     sam_catalog_slabs = _sam_listing_slabs("KCD_SAM_Catalog_May", "KCD_SAM_Catalog")
 
 
-    _roi_key = _kcd_key("KCD_ROI_May", "KCD_ROI_Apr", "KCD_ROI")
-
     return {
         # CSD New
         "csd_new_slabs":       csd_new_slabs,
@@ -652,8 +759,12 @@ def parse_slabs(cfg):
         "kcd_nagpur_slabs":    kcd_nagpur_slabs,
         "kcd_incr":            kcd_incr,
         # KCD ROI (lower PCDV thresholds, same per-txn rates as Regular)
-        "kcd_roi_270_slabs":    to_kcd_slabs(_roi_key) if _roi_key in cfg else kcd_270_slabs,
-        "kcd_roi_91_270_slabs": to_kcd_slabs(_roi_key) if _roi_key in cfg else kcd_91_270_slabs,
+        "kcd_roi_270_slabs":   to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
+                               if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
+                               else kcd_270_slabs,
+        "kcd_roi_91_270_slabs": to_kcd_slabs(_kcd_key("KCD_ROI_Apr", "KCD_ROI"))
+                                if (_kcd_key("KCD_ROI_Apr", "KCD_ROI")) in cfg
+                                else kcd_91_270_slabs,
         # KCD Listing/Catalog
         "kcd_listing_slabs":   kcd_listing_slabs,
         "kcd_listing_rates":   kcd_listing_rates,
@@ -678,6 +789,46 @@ def parse_slabs(cfg):
                                   else float(r.get("Incentive_Rate_%", 0)))
                                  for r in cfg.get("KCD_SAM_ILP", pd.DataFrame()).to_dict("records")]
                                 or [(120, 0.008), (100, 0.0075), (95, 0.0065)],
+        # ── All scheme params — derived from Scheme_Params sheet ───────────────
+        # CSD
+        "new_joiner_cap":      _nj_cap,
+        "pop_cmr_floor":       _pop_cmr_floor,
+        "mdc1_hi_thr":         _mdc1_hi_thr,
+        "mdc1_mid_thr":        _mdc1_mid_thr,
+        "mdc1_hi_mult":        _mdc1_hi_mult,
+        "mdc1_mid_mult":       _mdc1_mid_mult,
+        "mdc1_low_mult":       _mdc1_low_mult,
+        "boost_tat_thr":       _boost_tat,
+        "boost_60d_thr":       _boost_60d,
+        "rm_cmr_min":          _rm_cmr_min,
+        # KCD
+        "kcd_ss_threshold":    _kcd_ss_thr,
+        "kcd_slab2_target":    _kcd_cmr_s2,
+        "kcd_min_prod_week":   _kcd_min_w,
+        "kcd_min_prod_month":  _kcd_min_m,
+        "kcd_min_prod_new":    _kcd_min_m_new,
+        "kcd_incr_rate":       _kcd_incr_reg,
+        "kcd_incr_nagpur":     _kcd_incr_nag,
+        "kcd_sam_incr_rate":   _kcd_sam_incr,
+        "kcd_sam_nagpur_incr": _kcd_sam_nag_i,
+        # IM Insta
+        "insta_l1_rate":       _insta_l1,
+        "insta_l2_rate":       _insta_l2,
+        "insta_min_week":      _insta_min_w,
+        "insta_min_month":     _insta_min_m,
+        # MCATs
+        "mcats_l1_rate":       _mcats_l1,
+        "mcats_l2_rate":       _mcats_l2,
+        "mcats_min_count":     _mcats_min,
+        # IM Star Pro+
+        "im_star_rate":        _star_rate,
+        "im_star_from_day":    _star_from_day,
+        # KCD HC multipliers
+        "hc_mult_regular":     _hc_regular,
+        "hc_mult_roi":         _hc_roi,
+        "hc_mult_hvri":        _hc_hvri,
+        "hc_mult_nagpur":      _hc_nagpur,
+        "hc_mult_sam":         _hc_sam,
     }
 
 
@@ -986,6 +1137,48 @@ def build_may_slab_config():
         "KCD_SAM_Catalog_May":    kcd_sam_catalog_may,
         "KCD_WK1_Spot_May":       kcd_wk1_spot,
         "KCD_Incr_Rates_May":     kcd_incr_may,
+        "Scheme_Params":          pd.DataFrame([
+            # Copy all params from default — user edits values for May
+            {"Parameter": "CSD_NewJoiner_Cap",         "Value": 20000, "Description": "Max PCDV+PoP incentive for 0-90D employees (₹)"},
+            {"Parameter": "CSD_PoP_Min_CMR_Pct",       "Value": 55.0,  "Description": "Min CMR% to earn PoP (0-90D)"},
+            {"Parameter": "CSD_NewJoiner_Incr_Rate_%",  "Value": 3.0,   "Description": "% of incr DV above top PCDV slab (0-90D)"},
+            {"Parameter": "CSD_PoP_Min_Txn_0_30D",     "Value": 2,     "Description": "Min productivity count to qualify PoP (0-30D)"},
+            {"Parameter": "CSD_PoP_Min_Txn_31_90D",    "Value": 3,     "Description": "Min productivity count to qualify PoP (31-90D)"},
+            {"Parameter": "CSD_MDC1_High_Threshold_%",  "Value": 35,   "Description": "MDC-1 CMR% above this → High_Mult"},
+            {"Parameter": "CSD_MDC1_Mid_Threshold_%",   "Value": 25,   "Description": "MDC-1 CMR% between Mid and High → Mid_Mult; below → Low_Mult"},
+            {"Parameter": "CSD_MDC1_High_Mult_%",       "Value": 120,  "Description": "MDC-1 multiplier (%) when above High threshold"},
+            {"Parameter": "CSD_MDC1_Mid_Mult_%",        "Value": 100,  "Description": "MDC-1 multiplier (%) when between thresholds"},
+            {"Parameter": "CSD_MDC1_Low_Mult_%",        "Value": 50,   "Description": "MDC-1 multiplier (%) when below Mid threshold"},
+            {"Parameter": "CSD_Booster_TAT_Below",      "Value": 1,    "Description": "SPS Booster: Ext Ticket TAT must be below this"},
+            {"Parameter": "CSD_Booster_60D_Below_%",    "Value": 10,   "Description": "SPS Booster: 60D Not Met must be below this %"},
+            {"Parameter": "CSD_Booster_Mult_%",         "Value": 120,  "Description": "SPS Booster multiplier when both criteria met (%)"},
+            {"Parameter": "CSD_RM_CMR_Min_%",           "Value": 53,   "Description": "CSD RM min CMR% to be eligible"},
+            {"Parameter": "CSD_RM_CMR_Slab1_%",         "Value": 60,   "Description": "CSD RM Slab1 CMR threshold (100% payout)"},
+            {"Parameter": "CSD_RM_CMR_Slab2_%",         "Value": 65,   "Description": "CSD RM Slab2 CMR threshold (120% payout)"},
+            {"Parameter": "KCD_SS_Plus_Threshold_%",    "Value": 72,   "Description": "KCD SS+ gate: ≥ this CMR% → 100%, else 50%"},
+            {"Parameter": "KCD_CMR_Slab2_%",            "Value": 80,   "Description": "KCD higher CMR slab for top per-txn rate"},
+            {"Parameter": "KCD_Min_Prod_Week",          "Value": 2,    "Description": "Min weekly productivity to unlock base incentive"},
+            {"Parameter": "KCD_Min_Prod_Month",         "Value": 8,    "Description": "Min monthly productivity (established)"},
+            {"Parameter": "KCD_Min_Prod_Month_New",     "Value": 6,    "Description": "Min monthly productivity (new / CSD-to-KCD)"},
+            {"Parameter": "KCD_Incr_Rate_Regular_%",    "Value": 1.4,  "Description": "KCD incremental % (Regular/ROI/HVRI/Listing)"},
+            {"Parameter": "KCD_Incr_Rate_Nagpur_%",     "Value": 0.85, "Description": "KCD Nagpur L1 incremental % above 32K"},
+            {"Parameter": "KCD_SAM_Incr_Rate_%",        "Value": 0.65, "Description": "KCD SAM incremental %"},
+            {"Parameter": "KCD_SAM_Nagpur_Incr_%",      "Value": 0.45, "Description": "KCD SAM Nagpur incremental %"},
+            {"Parameter": "IM_Insta_L1_Rate",           "Value": 300,  "Description": "IM Insta spot per qualifying sale (L1, ₹)"},
+            {"Parameter": "IM_Insta_L2_Rate",           "Value": 150,  "Description": "IM Insta spot per qualifying sale (L2, ₹)"},
+            {"Parameter": "IM_Insta_Min_Week",          "Value": 2,    "Description": "Min IM Insta prods in a week to qualify"},
+            {"Parameter": "IM_Insta_Min_Month",         "Value": 7,    "Description": "Min IM Insta prods in month to qualify"},
+            {"Parameter": "MCATs_L1_Rate",              "Value": 1000, "Description": "MCATs spot per MCAT from 3rd onwards (L1, ₹)"},
+            {"Parameter": "MCATs_L2_Rate",              "Value": 500,  "Description": "MCATs spot per MCAT from 3rd onwards (L2, ₹)"},
+            {"Parameter": "MCATs_Min_Count",            "Value": 2,    "Description": "MCATs count before spot starts"},
+            {"Parameter": "IM_Star_Pro_Spot_Rate",      "Value": 1000, "Description": "IM Star Pro+/Pref spot per new sale (₹)"},
+            {"Parameter": "IM_Star_Pro_From_Day",       "Value": 28,   "Description": "Day-of-month from which IM Star Pro+ spot is active"},
+            {"Parameter": "KCD_HC_Mult_Regular",        "Value": 21000,"Description": "HC = Client-A × this (Regular/Listing/Catalog L1)"},
+            {"Parameter": "KCD_HC_Mult_ROI",            "Value": 14000,"Description": "HC multiplier for ROI L1"},
+            {"Parameter": "KCD_HC_Mult_HVRI",           "Value": 17000,"Description": "HC multiplier for HVRI L1"},
+            {"Parameter": "KCD_HC_Mult_Nagpur",         "Value": 32000,"Description": "HC multiplier for Nagpur L1"},
+            {"Parameter": "KCD_HC_Mult_SAM",            "Value": 17000,"Description": "HC multiplier for SAM / L2 (all teams)"},
+        ]),
     }
 
 
@@ -2306,9 +2499,9 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
     # Booster: FSF AN = IF(AND(SPS, ext_tat<1, 60D<10%, base>=1), base*1.2, base)
     # Must be SPS group AND meet BOTH criteria. Non-SPS (90+ Days) never get booster.
     if (is_sps
-            and ext_tat is not None and float(ext_tat) < S["boost_tat"]
-            and d60 is not None     and float(d60)     < S["boost_d60"]):
-        booster = S["boost_mult"]
+            and ext_tat is not None and float(ext_tat) < S.get("boost_tat_thr", 1)
+            and d60 is not None     and float(d60)     < S.get("boost_60d_thr", 10)):
+        booster = S.get("boost_mult", 1.2)
     else:
         booster = 1.0
 
@@ -2509,11 +2702,12 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
                 per_txn = r2 if is_cmr80 else r1
                 break
 
-        # Incremental = IF(PCR% > 140%, (Net_DV - CT) * 0.65%, 0)
+        # Incremental = IF(PCR% > 140%, (Net_DV - CT) * SAM_incr_rate, 0)
         incr_rate = next((float(r.get("Incr_Rate_%",0.65))/100
                           for r in S.get("kcd_sam_incr",[])
                           if str(r.get("Team","")).upper() in
-                          ("LISTING" if is_listing else "CATALOG")), 0.0065)
+                          ("LISTING" if is_listing else "CATALOG")),
+                         S.get("kcd_sam_incr_rate", 0.0065))
         incremental = round(max(0, net_dv - collection_target) * incr_rate, 0) \
                       if pcr_pct_val > 140 else 0
 
@@ -2534,7 +2728,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
         # SS+ mult: FSF BA=AY then BB=IF(sent>=3, BA*AZ, BA)
         if ss_sent >= 3:
-            ss_mult = 1.0 if ss_cmr_pct >= 72 else 0.5
+            ss_mult = 1.0 if ss_cmr_pct >= S.get("kcd_ss_threshold", 72) else 0.5
         else:
             ss_mult = 1.0
         total = round(base_before_ss * ss_mult, 0)
@@ -2585,7 +2779,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
     # SS+ mult: FSF AZ = IF(SS_sent>=3, IF(CMR>=70%, 100%, 50%), 0)
     #           BA = IF(SS_sent>=3, AY*AZ, AY)
     if ss_sent >= 3:
-        ss_mult = 1.0 if ss_cmr_pct >= 72 else 0.5
+        ss_mult = 1.0 if ss_cmr_pct >= S.get("kcd_ss_threshold", 72) else 0.5
     else:
         ss_mult = 1.0
     total = round(base_before_ss * ss_mult, 0)
@@ -2632,7 +2826,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
                         for t, r1, r2 in slabs if pcdv >= t), 0)
 
     # SS+ multiplier
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -2642,9 +2836,9 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
     base = round(per_txn * txn_count * ss_mult * btl_m, 0)
 
-    # Incremental: 0.65% or 0.45% depending on team
+    # Incremental: from Scheme_Params (SAM Nagpur uses separate rate)
     _sam_incr = S.get("kcd_sam_incr", [])
-    incr_rate = 0.0065  # default 0.65%
+    incr_rate = S.get("kcd_sam_nagpur_incr", 0.0045) if is_nagpur else S.get("kcd_sam_incr_rate", 0.0065)
     incr_thresh_pcdv = 0
     incr_thresh_pct  = 0
     for rec in _sam_incr:
@@ -2682,7 +2876,7 @@ def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
              "91-270D": S.get("kcd_roi_91_270_slabs", S["kcd_91_270_slabs"])}.get(
         vintage, S["kcd_0_90_slabs"])
     _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
-    ss_mult = 0.5 if (ss_sent >= 3 and ss_cmr_pct < 72) else 1.0
+    ss_mult = 0.5 if (ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72)) else 1.0
     base = per_txn * txn_count * ss_mult
     return round(base, 0),            f"KCD ROI {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}"
 
@@ -2708,7 +2902,7 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
 
     # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 70%
     # ss_sent <= 2 → no penalty (not enough data to penalise)
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -2742,8 +2936,8 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     achv    = (net_dv / collection_target) * 100
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S["kcd_listing_slabs"] if achv >= t), 0)
-    incr    = max(0, net_dv - collection_target) * 0.014
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    incr    = max(0, net_dv - collection_target) * S.get("kcd_incr_rate", 0.014)
+    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -2777,7 +2971,7 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
                     for t, r1, r2 in S["kcd_catalog_slabs"] if achv >= t), 0)
     # Incremental computed separately in route_calc (needs PCR% gate not NDV% gate)
     btl_mult = 1.2 if btl_sales >= 2 else 1.0
-    if ss_sent >= 3 and ss_cmr_pct < 72:
+    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
         ss_mult = 0.5
     else:
         ss_mult = 1.0
@@ -3112,16 +3306,12 @@ def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct=0, cmr_sent=0, cmr_recd=0,
 
 
 def calc_mcats_renewal(im_star_amr_count, S, is_l2=False):
-    """
-    KCD 'More MCATs on Renewals' scheme (Apr'26).
-    L1: ₹1000/MCAT from 3rd onwards. L2 SAM: ₹500/MCAT from 3rd onwards.
-    Applicable on renewals where >2 MCATs renewal is generated in client ledger.
-    Requires Monthly PCDV & CMR% qualification.
-    """
-    if im_star_amr_count < 3:
+    """KCD 'More MCATs on Renewals' spot. Rates and min count from Scheme_Params."""
+    _min = int(S.get("mcats_min_count", 2))
+    if im_star_amr_count <= _min:
         return 0
-    rate = 500 if is_l2 else 1000
-    return (im_star_amr_count - 2) * rate
+    rate = int(S.get("mcats_l2_rate", 500) if is_l2 else S.get("mcats_l1_rate", 1000))
+    return (im_star_amr_count - _min) * rate
 
 
 def calc_spot_kcd(pcdv, spot_key, mult_met, S):
@@ -3551,21 +3741,19 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         elif vintage == "270D+":
             pcr_target_v = 32000.0
         # KCD Highest Collection per April FSF — team-specific multiplier:
-        # Regular/Listing/Catalog L1: 21K  |  ROI L1: 14K  |  HVRI L1: 17K  |  Nagpur L1: 32K
-        # SAM (L2): 17K for all team types
+        # HC multipliers from Scheme_Params sheet (editable per month)
         _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
         _t_up_hc = str(team).upper()
         if _is_kcd_sam:
-            _hc_mult = 17000
+            _hc_mult = S.get("hc_mult_sam", 17000)
         elif "ROI" in _t_up_hc:
-            _hc_mult = 14000
+            _hc_mult = S.get("hc_mult_roi", 14000)
         elif any(h in _t_up_hc for h in ["HVRI","HYDERABAD","VASHI","RAIPUR","INDORE"]):
-            _hc_mult = 17000
+            _hc_mult = S.get("hc_mult_hvri", 17000)
         elif "NAGPUR" in _t_up_hc or "PHARMA" in _t_up_hc:
-            _hc_mult = 32000
+            _hc_mult = S.get("hc_mult_nagpur", 32000)
         else:
-            _hc_mult = 21000
-        # Highest Collection = Client-A × multiplier (fixed per April FSF)
+            _hc_mult = S.get("hc_mult_regular", 21000)
         highest_coll = client_cnt * _hc_mult
 
     # Derive Collection Target if still 0
@@ -3675,7 +3863,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
                     is_rm=True, monthly_base_inc=base_inc,
                     team_size=cfg_row.get("Effective Team Size", 1))
-                _im_star_spot = int(im_star_pro_count * 1000)
+                _im_star_spot = int(im_star_pro_count * S.get("im_star_rate", 1000))
                 spot_inc = int(spot_inc) + _im_star_spot
         elif vintage == "0-30D":
             # 0-30D: fixed slab base + PoP, combined cap = 20,000
@@ -3739,7 +3927,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
                     is_rm=True, monthly_base_inc=base_inc,
                     team_size=cfg_row.get("Effective Team Size", 1))
-                _im_star_spot = int(im_star_pro_count * 1000)
+                _im_star_spot = int(im_star_pro_count * S.get("im_star_rate", 1000))
                 spot_inc = int(spot_inc) + _im_star_spot
         else:
             # SPS -- no PoP; Insta = 0.5; productivity from receipt
@@ -3791,7 +3979,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     team_size=cfg_row.get("Effective Team Size", 1) if _desig_str == "L2" else 1)
                 # IM Star Pro+ New Sale Spot (28-30 Apr): Rel Mgr only, ₹1000/sale
                 if _desig_str == "L2":
-                    _im_star_spot = int(im_star_pro_count * 1000)
+                    _im_star_spot = int(im_star_pro_count * S.get("im_star_rate", 1000))
                     spot_inc = int(spot_inc) + _im_star_spot
             elif S.get("has_mar_spot"):
                 _wdv = weekly_dv if weekly_dv else {1:0,2:0,3:0,4:0}
@@ -3904,7 +4092,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_list_c)
             # Incremental: gate on PCR% > 140% (collection-based), compute on Net DV
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) \
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
@@ -3920,7 +4108,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
                 sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
-            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * 0.014, 0) \
+            kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
@@ -3933,7 +4121,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_roi(
                 pcdv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * S.get("kcd_incr_rate", 0.014), 0) \
                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
@@ -3943,7 +4131,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_regular(
                 pcdv, kcd_txn, kcd_col, vintage, location,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * 0.014, 0) \
+            # Nagpur uses 0.85% incremental, all others use regular rate
+            _incr_rate = (S.get("kcd_incr_nagpur", 0.0085)
+                          if ("NAGPUR" in team_up or "PHARMA" in team_up)
+                          else S.get("kcd_incr_rate", 0.014))
+            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * _incr_rate, 0) \
                               if (pcr_pct * 100 > 140 and collection_target > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
@@ -3955,16 +4147,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # ── IM Star Pro+ New Sale Spot (28-30 Apr): SAM only ₹1000/sale ─────────
         # Products: IM Star Pro / IM Leader Pro / Preferred Leader Pro / Preferred Star Pro
         # Computed in get_transactions as im_star_pro_count (entry date day >= 28)
-        _im_star_pro_spot_kcd = int(im_star_pro_count * 1000) if _is_sam else 0
+        _im_star_pro_spot_kcd = int(im_star_pro_count * S.get("im_star_rate", 1000)) if _is_sam else 0
 
-        # ── KCD IM Insta Spot (L1=₹300/sale, L2 SAM=₹150/sale) ─────────────
-        # Eligibility: weekly≥2 OR monthly≥7 im_var productivity
-        _insta_elig = (any(v >= 2 for v in weekly_prod_counts.values())
-                       or (prod_score_receipt or 0) >= 7)
-        _insta_rate   = 150 if _is_sam else 300
+        # ── KCD IM Insta Spot ─────────────────────────────────────────────────
+        _insta_min_w = S.get("insta_min_week", 2); _insta_min_m = S.get("insta_min_month", 7)
+        _insta_elig = (any(v >= _insta_min_w for v in weekly_prod_counts.values())
+                       or (prod_score_receipt or 0) >= _insta_min_m)
+        _insta_rate   = S.get("insta_l2_rate", 150) if _is_sam else S.get("insta_l1_rate", 300)
         _im_insta_spot = int(insta_cnt_receipt * _insta_rate) if (_insta_elig and insta_cnt_receipt) else 0
 
-        # ── KCD MCATs Renewals Spot (L1=₹1000, L2=₹500 from 3rd MCAT) ────────
+        # ── KCD MCATs Renewals Spot ───────────────────────────────────────────
         _mcats_spot = calc_mcats_renewal(int(sb.get("btl_sales", 0)), S, is_l2=_is_sam)
 
         # ── KCD Min Productivity Gate (L1 only) ──────────────────────────────
@@ -4018,8 +4210,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # Fallback: derive from mdc1_cmr_pct -- only for SPS (91D+), not new joiners
         if _mdc1_mult_val == 0.0 and _is_csd and _is_sps_vintage:
             _mdc1_pct_raw = mdc1_cmr_pct if mdc1_cmr_pct is not None else 0.0
-            _mdc1_mult_val = (1.2 if _mdc1_pct_raw > 35 else
-                              1.0 if _mdc1_pct_raw >= 25 else 0.5)
+            _mdc1_mult_val = (S.get("mdc1_hi_mult", 1.2) if _mdc1_pct_raw > S.get("mdc1_hi_thr", 35)
+                              else S.get("mdc1_mid_mult", 1.0) if _mdc1_pct_raw >= S.get("mdc1_mid_thr", 25)
+                              else S.get("mdc1_low_mult", 0.5))
         elif not _is_sps_vintage:
             _mdc1_mult_val = 0.0  # N/A for 0-30D new joiners
 
@@ -4045,7 +4238,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # KCD breakdown -- extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
     _kcd_incr   = int(kcd_incremental) if "KCD" in vertical else 0
-    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < 72) else 1.0) if "KCD" in vertical else 1.0
+    _kcd_ss_mult = (0.5 if (cmr_data.get("ss_sent", 0) >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72)) else 1.0) if "KCD" in vertical else 1.0
     # Total productive txns used (same variable used in KCD calc)
     _kcd_prod   = (prod_score_receipt or txn_count) if "KCD" in vertical else 0
     # Per-txn rate: extract from scheme notes "₹{rate}/txn×"
@@ -4282,13 +4475,49 @@ with col_c:
 slab_cfg_raw = load_slab_config(slab_cfg_file)
 S = parse_slabs(slab_cfg_raw)
 
-if slab_cfg_file:
-    _is_apr_cfg = "CSD_Spot_Apr" in slab_cfg_raw
-    _cfg_label = "April 2026 (April spot & slabs)" if _is_apr_cfg else "March 2026 (March slabs)"
-    st.success(f"✅ Slab Config loaded -- **{_cfg_label}** values in use.")
+# ── Detect which month config is loaded ──────────────────────────────────────
+_is_may_cfg = "CSD_SPS_91_270_May" in slab_cfg_raw or "CSD_Spot_May" in slab_cfg_raw
+_is_apr_cfg = "CSD_Spot_Apr" in slab_cfg_raw or "CSD_SPS_91_270_Apr" in slab_cfg_raw
+if _is_may_cfg:
+    _cfg_label = "May 2026"
+elif _is_apr_cfg:
+    _cfg_label = "April 2026"
 else:
-    st.info("📋 Using **built-in March 2026** slabs. "
-            "Download the April config below and upload it to switch to April calculations.", icon="ℹ️")
+    _cfg_label = "March 2026 (default)"
+
+if slab_cfg_file:
+    st.success(f"✅ Slab Config loaded — **{_cfg_label}** scheme values active.")
+else:
+    st.info(f"📋 No config uploaded — using built-in **{_cfg_label}** defaults. "
+            "Download the May 2026 config above, edit if needed, then upload.", icon="ℹ️")
+
+with st.expander("📊 Active Scheme Parameters (click to verify before calculating)", expanded=False):
+    st.caption("These are the values currently being used in calculations. "
+               "Edit the **Scheme_Params** sheet in your Slab Config to change any of these.")
+    _sp_display = [
+        ("🏦 CSD New Joiner Cap (₹)",            S.get("new_joiner_cap", 20000)),
+        ("📊 CSD PoP min CMR% gate",              S.get("pop_cmr_floor", 55)),
+        ("📈 CSD New Joiner Incremental Rate",    f"{S.get('new_joiner_cap', 20000) and '3%'} above top PCDV slab"),
+        ("🎯 CSD MDC-1 High threshold%",          S.get("mdc1_hi_thr", 35)),
+        ("🎯 CSD MDC-1 Mid threshold%",           S.get("mdc1_mid_thr", 25)),
+        ("✖️ CSD MDC-1 High / Mid / Low mult",    f"{S.get('mdc1_hi_mult',1.2):.0%} / {S.get('mdc1_mid_mult',1.0):.0%} / {S.get('mdc1_low_mult',0.5):.0%}"),
+        ("🚀 CSD SPS Booster (TAT < / 60D <)",   f"{S.get('boost_tat_thr',1)} / {S.get('boost_60d_thr',10)}%  → {S.get('boost_mult',1.2):.0%}"),
+        ("💼 CSD RM CMR min / Slab1 / Slab2",    f"{S.get('rm_cmr_min',53):.0f}% / {S.get('rm_cmr_slab1',60):.0f}% / {S.get('rm_cmr_slab2',65):.0f}%"),
+        ("🟢 KCD SS+ threshold%",                 S.get("kcd_ss_threshold", 72)),
+        ("🟢 KCD CMR Slab2 threshold%",           S.get("kcd_slab2_target", 80)),
+        ("📦 KCD Min Prod / week / month / new",  f"{S.get('kcd_min_prod_week',2)} / {S.get('kcd_min_prod_month',8)} / {S.get('kcd_min_prod_new',6)}"),
+        ("📈 KCD Incremental rate (Regular / Nagpur)", f"{S.get('kcd_incr_rate',0.014):.2%} / {S.get('kcd_incr_nagpur',0.0085):.2%}"),
+        ("📈 KCD SAM Incremental (Regular / Nagpur)",  f"{S.get('kcd_sam_incr_rate',0.0065):.2%} / {S.get('kcd_sam_nagpur_incr',0.0045):.2%}"),
+        ("⚡ IM Insta L1 / L2 rate (₹)",          f"₹{S.get('insta_l1_rate',300)} / ₹{S.get('insta_l2_rate',150)}"),
+        ("⚡ IM Insta min week / month",           f"{S.get('insta_min_week',2)} / {S.get('insta_min_month',7)}"),
+        ("🏆 MCATs L1 / L2 rate (₹)",             f"₹{S.get('mcats_l1_rate',1000)} / ₹{S.get('mcats_l2_rate',500)}  from {S.get('mcats_min_count',2)+1}th MCAT"),
+        ("⭐ IM Star Pro+ spot rate (₹)",          f"₹{S.get('im_star_rate',1000)} from day {S.get('im_star_from_day',28)}"),
+        ("🏔️ KCD HC mult Regular / ROI / HVRI / Nagpur / SAM",
+         f"×{S.get('hc_mult_regular',21000):,} / ×{S.get('hc_mult_roi',14000):,} / ×{S.get('hc_mult_hvri',17000):,} / ×{S.get('hc_mult_nagpur',32000):,} / ×{S.get('hc_mult_sam',17000):,}"),
+    ]
+    col1, col2 = st.columns(2)
+    for i, (label, val) in enumerate(_sp_display):
+        (col1 if i % 2 == 0 else col2).metric(label, val)
 
 
 # ── Step 1: Structure Dump info ──────────────────────────────
