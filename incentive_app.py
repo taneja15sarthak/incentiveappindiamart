@@ -1948,10 +1948,12 @@ def load_structure_dump(uploaded_file):
     # Listing/Catalog client counts (for KCD)
     list_c_col  = find_col(df, ["Listing Client", "Listing\nClient", "ListingClient",
                                 "Listing Clients", "listing", "Listing", "L_Client",
-                                "Pref Star Client", "Preferred Star Client"])
+                                "Listing C", "Pref Star Client", "Preferred Star Client",
+                                "list_client", "listing_client"])
     cat_c_col   = find_col(df, ["Catalog Client", "Catalog\nClient", "CatalogClient",
                                 "Catalog Clients", "catalog", "Catalog", "C_Client",
-                                "Base Client", "BaseClient"])
+                                "Catalog C", "Base Client", "BaseClient",
+                                "cat_client", "catalog_client"])
     l2_col      = find_col(df, ["L2 Name", "L2Name", "L2",
                                 "level2_name", "emp_manager_name"])
     l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
@@ -4195,26 +4197,20 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     metric_label = "PCR"  if use_pcr else "PCDV"
     pcdv = slab_metric   # internal name kept for compatibility with calc functions
 
-    # PCDV Target per client = Collection Target / Client-A  (sir's FSF col AF / AB)
-    # collection_target is already derived from slab thresholds × Client-A above
-    # so pcr_target_v (PCDV Target per client) = collection_target / client_cnt
-    if "KCD" in vertical:
-        pcr_target_v = (collection_target / client_cnt) if client_cnt > 0 else pcr_target_v
-        # KCD Highest Collection per April FSF — team-specific multiplier:
-        # HC multipliers from Scheme_Params sheet (editable per month)
-        _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
-        _t_up_hc = str(team).upper()
-        if _is_kcd_sam:
-            _hc_mult = S.get("hc_mult_sam", 17000)
-        elif "ROI" in _t_up_hc:
-            _hc_mult = S.get("hc_mult_roi", 14000)
-        elif any(h in _t_up_hc for h in ["HVRI","HYDERABAD","VASHI","RAIPUR","INDORE"]):
-            _hc_mult = S.get("hc_mult_hvri", 17000)
-        elif "NAGPUR" in _t_up_hc or "PHARMA" in _t_up_hc:
-            _hc_mult = S.get("hc_mult_nagpur", 32000)
-        else:
-            _hc_mult = S.get("hc_mult_regular", 21000)
-        highest_coll = client_cnt * _hc_mult
+    # KCD Highest Collection: team-specific multiplier from Scheme_Params
+    _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
+    _t_up_hc = str(team).upper()
+    if _is_kcd_sam:
+        _hc_mult = S.get("hc_mult_sam", 17000)
+    elif "ROI" in _t_up_hc:
+        _hc_mult = S.get("hc_mult_roi", 14000)
+    elif any(h in _t_up_hc for h in ["HVRI","HYDERABAD","VASHI","RAIPUR","INDORE"]):
+        _hc_mult = S.get("hc_mult_hvri", 17000)
+    elif "NAGPUR" in _t_up_hc or "PHARMA" in _t_up_hc:
+        _hc_mult = S.get("hc_mult_nagpur", 32000)
+    else:
+        _hc_mult = S.get("hc_mult_regular", 21000)
+    highest_coll = client_cnt * _hc_mult
 
     # Derive Collection Target from scheme slab thresholds when not provided by target file
     # KCD Collection Target = Client-A × per-client target (lowest slab threshold for that team)
@@ -4276,6 +4272,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             collection_target = client_cnt * _slab_thresh
 
     # PCR% = PCR / PCR_Target (achievement % of per-client collection target)
+    # PCDV Target per client = Collection Target / Client-A (sir's FSF col AF/AB)
+    # Update AFTER derivation block so collection_target is always populated for KCD
+    if "KCD" in vertical and client_cnt > 0:
+        pcr_target_v = collection_target / client_cnt
     # PCDV% (KCD) = PCDV / PCDV_Target  — deal-value based achievement
     # PCR%  (CSD) = PCR  / PCR_Target   — collection based achievement
     pcr_pct = ((pcdv_val / pcr_target_v) if "KCD" in vertical
@@ -4809,20 +4809,18 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Insta Txns (0.5×)":   insta_cnt_sps,
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
-        # MDC1 CMR+1% = MDC-1 CMR% for current month (same data, different scheme reference)
-        # cmr_plus1 is the previous month's MDC-1, but for current month it's the same mdc1_cmr_pct
+        # MDC1 CMR+1% = PREVIOUS month's MDC-1 CMR% (April data when running May)
+        # Only populated when a separate CMR+1/previous-month renewal file is uploaded
+        # When cmr_plus1_sent=0 (no separate file), show blank — NOT same as current MDC-1%
         "MDC1 CMR+1%":         (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                          if (cmr_plus1_sent > 0 and _is_csd)
-                         # fallback: use mdc1_cmr_pct (same month MDC-1 data) when no separate CMR+1 file
-                         else (round(float(mdc1_cmr_pct) * 100 if float(mdc1_cmr_pct) <= 1 else float(mdc1_cmr_pct), 1)
-                               if (mdc1_cmr_pct is not None and float(mdc1_cmr_pct) > 0 and _is_csd)
-                               else "")),
+                         else ""),
         "CMR+1 Multiplier":    _inc_payout_mult if _is_csd else "",
         "Inc. Payout Mult":    _inc_payout_mult if _is_csd else "",
         "Inc. Per Txn (₹)":    int(_per_txn_rate) if _is_csd and _prod_score > 0 else "",
         "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd else "",
-        # SPS Booster: only show when > 1.0 (boost actually applied); blank otherwise
-        "SPS Booster":         (_boost_val if (_is_csd and _boost_val > 1.0) else ("" if not _is_csd else "")),
+        # SPS Booster: show for all CSD SPS employees (1.0 = no boost; 1.2 = boosted)
+        "SPS Booster":         _boost_val if (_is_csd and _is_sps_vintage) else "",
         "Gross Inc w/ Boost (₹)": int(base_inc) if _is_csd else "",
         # ── KCD columns matching sir's kcd_calc.xlsx layout ────────
         "KCD Collection Target (₹)": int(collection_target) if "KCD" in vertical else "",
@@ -5433,8 +5431,7 @@ if calc_btn:
             "Designation":        s.get("Designation", ""),
         "Client-A (aggregated)": int(float(s.get("Client Count", 0) or 0)),
         "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 1)
-                                   if ("CSD" in str(s.get("Vertical","")).upper()
-                                       and float(s.get("Client-C", 0) or 0) > 0)
+                                   if float(s.get("Client-C", 0) or 0) > 0
                                    else ""),
         "Catalog Client":        int(float(s.get("Catalog Clients", 0) or 0)) if float(s.get("Catalog Clients", 0) or 0) > 0 else "",
         "Listing Client":        int(float(s.get("Listing Clients", 0) or 0)) if float(s.get("Listing Clients", 0) or 0) > 0 else "",
@@ -5593,8 +5590,8 @@ if calc_btn:
             # CMR
             "CMR Slab1 Target","CMR Slab2 Target",
             "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
-            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier",
             "MDC1 Sent","MDC1 Recd",
+            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier",
             # Base incentive (SPS 90+D section)
             "Inc. Payout Mult","Productivity Score","Insta Txns (0.5×)","Receipt Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
@@ -5623,7 +5620,7 @@ if calc_btn:
                 # CMR (matches sir's CMR / CMR+1 / MDC-1 CMR sections)
                 "CMR Slab1 Target","CMR Slab2 Target",
                 "Renewals Sent","Renewals Received","CMR% (auto)",
-                "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","MDC1 Sent","MDC1 Recd",
+                "MDC1 Sent","MDC1 Recd","MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier",
                 # Base incentive
                 "Inc. Payout Mult","Productivity Score","Receipt Txns",
                 "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
@@ -5769,10 +5766,18 @@ if calc_btn:
                     try: return float(v) if v is not None else 0.0
                     except (TypeError, ValueError): return 0.0
 
-                aop_target = (_sum("Collection Target (₹)") or
-                              _sum("KCD Collection Target (₹)") or
-                              _safe_float(s.get("Collection Target")) or
-                              _safe_float(s.get("PCR Target")) * client_a)
+                # AOP Target: annual deal value target for BM/RM
+                # For CSD: sum of subordinates' monthly collection targets × 12 (annualized proxy)
+                # For KCD: sum of monthly KCD targets × 12 (annualized proxy)
+                # Note: True AOP = annual DV target assigned by management (upload separately)
+                _monthly_target = (_sum("Collection Target (₹)") or
+                                   _sum("KCD Collection Target (₹)") or
+                                   _safe_float(s.get("Collection Target")) or
+                                   _safe_float(s.get("PCR Target")) * client_a)
+                # Use actual monthly sum if available, else 0 (no AOP data)
+                # KCD monthly targets are per-month based on slab × client_a, not annual AOP
+                # For mid-month May: AOP achievement will always be < 95% → ₹0 (correct)
+                aop_target = _monthly_target
 
                 pcr  = round(net_coll  / client_a, 1) if client_a > 0 else 0
                 pcdv = round(net_dv_bm / client_a, 1) if client_a > 0 else 0
@@ -5876,7 +5881,7 @@ if calc_btn:
             "CMR Slab1 Target","CMR Slab2 Target",
             "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
             "SS+ Sent","SS+ Received","SS+ CMR% (auto)",
-            "MDC-1 CMR%","MDC1 Sent","MDC1 Recd",
+            "MDC1 Sent","MDC1 Recd","MDC-1 CMR%",
         ] if c in res.columns]
         write_sheet(res[cmr_cols], "CMR Validation")
 
