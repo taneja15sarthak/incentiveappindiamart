@@ -1976,8 +1976,13 @@ def load_structure_dump(uploaded_file):
     desig_col   = find_col(df, ["Designation", "designation", "Role",
                                 "Employee Role", "emp_designation"])
 
+    # New FSF_TA format (May 2026+): Group and Sub Group columns
+    group_col    = find_col(df, ["Group", "group", "EmpGroup"])
+    subgroup_col = find_col(df, ["Sub Group", "SubGroup", "sub_group", "Sub_Group"])
+    # Move/Joining date (used for vintage calculation in new format)
+    move_join_col = find_col(df, ["Move/Joining", "Move/Join", "MoveJoining", "Joining"])
+
     # Determine vertical from emp_vertical_name or emp_fun_area_name
-    # (Delhi structure uses emp_fun_area_name = "Client Servicing" + emp_vertical_name = "KCD/CSD")
     if vertical_col is None:
         vertical_col = find_col(df, ["emp_vertical_name", "emp_fun_area_name"])
 
@@ -2028,49 +2033,174 @@ def load_structure_dump(uploaded_file):
                     vintage = v
                     break
 
-        # ── Remarks column (Listing/Catalog/- for KCD) ──────────
-        # Delhi structure uses "Team" column with Listing/Catalog
-        team_from_file = str(row[remarks_col]).strip() if remarks_col else ""
-        remarks = team_from_file  # alias used when building result dict
-        rem_up = team_from_file.upper()
+        # ── Read Group and Sub Group (new May 2026 format) ─────────────────────
+        grp_val    = str(row[group_col]).strip()    if group_col    else ""
+        subgrp_val = str(row[subgroup_col]).strip() if subgroup_col else ""
+        grp_up     = grp_val.upper()
+        sub_up     = subgrp_val.upper()
 
-        # ── Derive Team from Vertical + Vintage Bucket + Remarks + Location ──
-        if "CSD" in vertical:
-            # Vintage column takes priority: 0-30D/31-90D always use new-joiner scheme
-            if vintage in ("0-30D", "31-90D"):
-                team = "0-90 Days (CSD new)"
-            elif any(x in vbucket_up for x in ["SPS", "90+ DAYS", "90+DAYS", "CSD ROI"]):
-                team = "SPS (CSD 91D+)"
-            elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS"]):
-                team = "0-90 Days (CSD new)"
-            else:
-                team = "SPS (CSD 91D+)"
-        elif "KCD" in vertical:
-            if rem_up == "LISTING" or "LISTING" in vbucket_up:
-                team = "Listing (KCD)"
-            elif rem_up == "CATALOG" or "CATALOG" in vbucket_up:
-                team = "Catalog (KCD)"
-            elif "ROI" in vbucket_up or "ROI" in loc_up:
-                team = "ROI KCD"
-            elif any(c in loc_up for c in ["HYDERABAD", "VASHI", "RAIPUR", "INDORE"]):
-                team = "HVRI KCD"
-            elif "NAGPUR" in loc_up:
-                team = "Nagpur Pharma KCD"
-            else:
-                # Fallback: use Listing/Catalog client count ratio
-                _lc_raw  = _safe_float(row[list_c_col], 0) if list_c_col and str(row[list_c_col]).strip() not in ("nan","") else 0
-                _cat_raw = _safe_float(row[cat_c_col], 0) if cat_c_col and str(row[cat_c_col]).strip() not in ("nan","") else 0
-                _ca_raw  = _safe_float(row[client_a], 0) if client_a and str(row[client_a]).strip() not in ("nan","") else 0
-                if _ca_raw > 0 and _lc_raw / _ca_raw >= 0.60:
-                    team = "Listing (KCD)"
-                elif _ca_raw > 0 and _cat_raw / _ca_raw >= 0.60:
-                    team = "Catalog (KCD)"
+        # ── Derive Team and Vintage from Group + Sub Group when present ─────────
+        # Group/SubGroup mapping (from actual FSF_TA data):
+        #
+        # CSD:
+        #   Group=SPS,  SubGroup=270D+    → CSD SPS 270D+ (with booster)
+        #   Group=SPS,  SubGroup=91-270D  → CSD SPS 91-270D (with booster)
+        #   Group=90+D, SubGroup=270D+    → CSD SPS 270D+ (no booster, 90+ Days)
+        #   Group=90+D, SubGroup=91-270D  → CSD SPS 91-270D (no booster)
+        #   Group=0-90D,SubGroup=31-90D   → CSD New Joiner 31-90D
+        #   Group=0-90D,SubGroup=0-30D    → CSD New Joiner 0-30D
+        #
+        # KCD:
+        #   Group=DAP,       SubGroup=Catalog   → KCD Catalog
+        #   Group=DAP,       SubGroup=Listing   → KCD Listing
+        #   Group=DAP 0-90D, SubGroup=Catalog   → KCD Catalog 0-90D
+        #   Group=DAP 0-90D, SubGroup=Listing   → KCD Listing 0-90D
+        #   Group=90+D,      SubGroup=270D+     → KCD Regular 270D+
+        #   Group=90+D,      SubGroup=91-270D   → KCD Regular 91-270D
+        #   Group=0-90,      SubGroup=CSD to KCD→ KCD Regular 0-90D
+        #   Group=ROI        → KCD ROI
+        #   Group=HVRI       → KCD HVRI
+        #   Group=Pharma     → KCD Nagpur Pharma
+        #   Group=Non Pharma → KCD Non-Pharma
+        #   Group=SAM-ILP    → KCD SAM ILP
+        #   Group=- (Tele Annual) → skip
+
+        _has_group_data = bool(grp_val and grp_val not in ("-",""))
+
+        # Helper: derive vintage from date when both Sub Group and Vintage are "-"
+        def _vintage_from_date():
+            """Calculate vintage bucket from Move/Joining date → Joining Date fallback."""
+            _ref_date = None
+            if move_join_col:
+                _mv = row.get(move_join_col)
+                try:
+                    _ref_date = pd.to_datetime(_mv, errors='coerce')
+                    if pd.isna(_ref_date): _ref_date = None
+                except Exception:
+                    pass
+            if _ref_date is None:
+                _jd = row.get("Joining Date") or row.get("Move/Joining")
+                try:
+                    _ref_date = pd.to_datetime(_jd, errors='coerce')
+                except Exception:
+                    pass
+            if _ref_date is None or pd.isna(_ref_date):
+                return "270D+"   # safe default for 90+D/SPS employees
+            _days = (pd.Timestamp.today() - _ref_date).days
+            if _days >= 270:   return "270D+"
+            elif _days >= 91:  return "91-270D"
+            elif _days >= 31:  return "31-90D"
+            else:              return "0-30D"
+
+        def _resolve_vintage(sub_grp_val, fallback_vintage):
+            """Use Sub Group value if valid, else fallback, else compute from date."""
+            _VALID = ("270D+", "91-270D", "31-90D", "0-30D")
+            if sub_grp_val.strip() in _VALID:
+                return sub_grp_val.strip()
+            if fallback_vintage.strip() in _VALID:
+                return fallback_vintage.strip()
+            return _vintage_from_date()
+
+        if _has_group_data:
+            # ── CSD routing from Group ──────────────────────────────────────────
+            if "CSD" in vertical:
+                if grp_up == "SPS":
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = "SPS"
+                    team    = "SPS (CSD 91D+)"
+                elif grp_up == "90+D":
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = "90+ Days"
+                    team    = "SPS (CSD 91D+)"
+                elif grp_up in ("0-90D", "0-90"):
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    if vintage not in ("0-30D","31-90D"): vintage = "31-90D"
+                    vbucket = vintage
+                    team    = "0-90 Days (CSD new)"
                 else:
-                    team = "Regular KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    team    = "SPS (CSD 91D+)"
+            # ── KCD routing from Group ──────────────────────────────────────────
+            elif "KCD" in vertical:
+                _is_0_90 = "0-90" in grp_up
+                if "DAP" in grp_up:
+                    team    = "Catalog (KCD)" if "CATALOG" in sub_up else ("Listing (KCD)" if "LISTING" in sub_up else "Catalog (KCD)")
+                    vintage = "31-90D" if _is_0_90 else _resolve_vintage(subgrp_val, vintage)
+                    vbucket = "0-90D" if _is_0_90 else vintage
+                elif grp_up == "ROI":
+                    team    = "ROI KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = vintage
+                elif grp_up == "HVRI":
+                    team    = "HVRI KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = vintage
+                elif grp_up in ("PHARMA","NON PHARMA"):
+                    team    = "Nagpur Pharma KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    if vintage not in ("270D+","91-270D"): vintage = "270D+"
+                    vbucket = vintage
+                elif grp_up in ("SAM-ILP","SAM ILP"):
+                    team    = "KCD SAM ILP"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = vintage
+                elif grp_up == "0-90":
+                    team    = "Regular KCD"
+                    vintage = "31-90D"
+                    vbucket = "0-90D"
+                elif grp_up == "90+D":
+                    team    = "Regular KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = vintage
+                else:
+                    team    = "Regular KCD"
+                    vintage = _resolve_vintage(subgrp_val, vintage)
+                    vbucket = vintage
         else:
-            team = "Regular KCD"
+            # ── Fallback: old derivation (Remarks/Location/Vintage columns) ───────
+            # ── Remarks column (Listing/Catalog/- for KCD) ──────────────────────
+            team_from_file = str(row[remarks_col]).strip() if remarks_col else ""
+            remarks = team_from_file
+            rem_up  = team_from_file.upper()
 
-        # ── Client Count ──────────────────────────────────────
+            if "CSD" in vertical:
+                if vintage in ("0-30D", "31-90D"):
+                    team = "0-90 Days (CSD new)"
+                elif any(x in vbucket_up for x in ["SPS", "90+ DAYS", "90+DAYS", "CSD ROI"]):
+                    team = "SPS (CSD 91D+)"
+                elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS"]):
+                    team = "0-90 Days (CSD new)"
+                else:
+                    team = "SPS (CSD 91D+)"
+            elif "KCD" in vertical:
+                if rem_up == "LISTING" or "LISTING" in vbucket_up:
+                    team = "Listing (KCD)"
+                elif rem_up == "CATALOG" or "CATALOG" in vbucket_up:
+                    team = "Catalog (KCD)"
+                elif "ROI" in vbucket_up or "ROI" in loc_up:
+                    team = "ROI KCD"
+                elif any(c in loc_up for c in ["HYDERABAD", "VASHI", "RAIPUR", "INDORE"]):
+                    team = "HVRI KCD"
+                elif "NAGPUR" in loc_up:
+                    team = "Nagpur Pharma KCD"
+                else:
+                    _lc_raw  = _safe_float(row[list_c_col], 0) if list_c_col and str(row[list_c_col]).strip() not in ("nan","") else 0
+                    _cat_raw = _safe_float(row[cat_c_col], 0) if cat_c_col and str(row[cat_c_col]).strip() not in ("nan","") else 0
+                    _ca_raw  = _safe_float(row[client_a], 0) if client_a and str(row[client_a]).strip() not in ("nan","") else 0
+                    if _ca_raw > 0 and _lc_raw / _ca_raw >= 0.60:
+                        team = "Listing (KCD)"
+                    elif _ca_raw > 0 and _cat_raw / _ca_raw >= 0.60:
+                        team = "Catalog (KCD)"
+                    else:
+                        team = "Regular KCD"
+            else:
+                team = "Regular KCD"
+
+        # remarks for display (show Group+SubGroup when available, else raw remarks col)
+        if _has_group_data:
+            remarks = f"{grp_val}/{subgrp_val}" if subgrp_val and subgrp_val != "-" else grp_val
+        else:
+            remarks = team_from_file if 'team_from_file' in dir() else ""
         def _safe_float(val, default=0):
             try:
                 v = float(val)
@@ -2170,6 +2300,8 @@ def load_structure_dump(uploaded_file):
             "L5 Name":           str(row[l5_col]).strip() if l5_col else "",
             "Vintage Bucket":    vbucket,
             "Remarks":           remarks,
+            "Group":             grp_val,
+            "Sub Group":         subgrp_val,
             "MDC Client Count":  mdc_client_cnt,
         }
 
@@ -5303,6 +5435,19 @@ if calc_btn:
     for i, emp_id in enumerate(emp_ids):
         s = struct_map[emp_id]          # all employee details from structure dump
 
+        # ── Exclude employees that don't run through L1/L2 incentive scheme ──
+        _desig_main = str(s.get("Designation","")).upper().strip()
+        _vert_main  = str(s.get("Vertical","")).upper()
+
+        # L3 (BM) and L4 (RM) are handled by build_bm_rm_rows separately
+        if _desig_main in ("L3","L4"):
+            continue
+
+        # Tele Annual, Inside Sales, etc. — no incentive scheme
+        if any(excl in _vert_main for excl in
+               ["TELE ANNUAL","TELEANNUAL","INSIDE SALES","TELESALES","INBOUND"]):
+            continue
+
         emp_cmr = cmr_map.get(emp_id, {
             "cmr_pct": 0.0, "ss_cmr_pct": 0.0,
             "renewal_sent": 0, "renewal_received": 0,
@@ -5340,11 +5485,14 @@ if calc_btn:
 
         # ── KCD team re-routing after client counts are resolved ─────────────
         # Listing/Catalog columns may not exist in structure file by name.
-        # Re-route based on client ratios if current team is Regular/ROI/default.
+        # Re-route based on client ratios ONLY when Group didn't already set a specific team
         if s.get("Vertical","") == "KCD":
             _cur_team = str(s.get("Team","")).upper()
-            _is_default_team = not any(k in _cur_team for k in ["LISTING","CATALOG","HVRI","NAGPUR","ROI"])
-            if _is_default_team:
+            # If Group already gave us a specific team, don't override
+            _grp_set  = bool(s.get("Group","") and s.get("Group","") not in ("-",""))
+            _is_default_team = not any(k in _cur_team
+                                        for k in ["LISTING","CATALOG","HVRI","NAGPUR","ROI"])
+            if _is_default_team and not _grp_set:
                 _lc_rt  = float(s.get("Listing Clients", 0) or 0)
                 _cat_rt = float(s.get("Catalog Clients", 0) or 0)
                 _ca_rt  = float(s.get("Client Count", 1) or 1)
@@ -6000,38 +6148,175 @@ if calc_btn:
 
         export_cols = fsf_cols   # keep for compatibility
 
-        # ── Source data sheets -- raw input files used for calculation ──────────
+        # ── Source data sheets — enriched to match sir's FSF extra columns ─────
         grey = wb.add_format({"bold": True, "bg_color": "#595959",
                                "font_color": "#FFFFFF", "border": 1, "font_size": 10})
 
-        # Receipt Data (month-filtered, enriched columns stripped)
+        # ── Build a hierarchy lookup from struct_map (EID → L2/L3/L4/L5/L6) ──
+        def _hier(emp_id_str):
+            s = struct_map.get(str(emp_id_str).split('.')[0], {})
+            return {
+                "L2 ID":   s.get("L2 ID",""),   "L2 Name": s.get("L2 Name",""),
+                "L3 ID":   s.get("L3 ID",""),   "L3 Name": s.get("L3 Name",""),
+                "L4 ID":   s.get("L4 ID",""),   "L4 Name": s.get("L4 Name",""),
+                "L5 ID":   s.get("L5 ID",""),   "L5 Name": s.get("L5 Name",""),
+                "L6 ID":   s.get("L6 ID",""),   "L6 Name": s.get("L6 Name",""),
+            }
+
+        def _week_fnt(day):
+            try:
+                d = int(day)
+                wk  = "WK-1" if d < 10 else "WK-2" if d < 17 else "WK-3" if d < 24 else "WK-4"
+                fnt = "FNT-1" if d <= 16 else "FNT-2"
+                return wk, fnt, d
+            except Exception:
+                return "", "", 0
+
+        # ── Receipt Data ─────────────────────────────────────────────────────
         try:
             rec_exp = receipt_df.copy()
             rec_exp = rec_exp.drop(columns=[c for c in
                 ["Productivity","Service_Tier","_is_upsell",
                  "_is_pure_renewal","_has_upsell_on_receipt"]
                 if c in rec_exp.columns])
-            if len(rec_exp) > 100_000:
-                rec_exp = rec_exp.head(100_000)
+
+            _date_c  = find_col(rec_exp, ["Entry Date","Receipt Date","Clear Date","Date"])
+            _empid_c = find_col(rec_exp, ["Sales Exec ID","EMP ID","Sales Rep ID","L1 ID"])
+            _unique_c= find_col(rec_exp, ["Unique","UNIQUE","Product","Prod"])
+            _amt_c   = find_col(rec_exp, ["WT AMT","WTAMT","Deal Val (WOT)","WT_AMT"])
+            _mode_c  = find_col(rec_exp, ["Mode","MODE","mode","Payment Terms"])
+            _rem_c   = find_col(rec_exp, ["Rem","Remarks","AL","CMR-C+1-C+2","MYR Remarks"])
+            _base_ct = find_col(rec_exp, ["Base Client Type","CustType","Cust Type"])
+            _vert_c  = find_col(rec_exp, ["Vertical","AB","vertical"])
+
+            # Day / Week / FNT
+            if _date_c:
+                _days = pd.to_datetime(rec_exp[_date_c], errors='coerce').dt.day
+                rec_exp["Day"]   = _days
+                rec_exp["Week"]  = _days.apply(lambda d: "WK-1" if d<10 else "WK-2" if d<17 else "WK-3" if d<24 else "WK-4")
+                rec_exp["FNT"]   = _days.apply(lambda d: "FNT-1" if d<=16 else "FNT-2")
+
+            # Total Sale: 1 if Unique is not blank/TS
+            if _unique_c:
+                rec_exp["Total Sale"] = rec_exp[_unique_c].apply(
+                    lambda v: 0 if (str(v).strip() in ("","nan","TS")) else 1)
+
+            # Productivity: 1 if total_sale=1, or if renewal with no sale mapping
+            rec_exp["Productivity"] = rec_exp.get("Total Sale", pd.Series(0, index=rec_exp.index)).apply(
+                lambda v: 1 if v == 1 else 0)
+
+            # AMR: "Yes" if Rem/CMR col not in retention/others exclusions
+            if _rem_c:
+                _excl = {"OTHERS","RETENTION","CMR+3"}
+                rec_exp["AMR"] = rec_exp[_rem_c].apply(
+                    lambda v: "No" if str(v).strip().upper() in _excl else "Yes")
+
+            # CSD Spot NR Upsell/AMR
+            if _vert_c and _rem_c:
+                rec_exp["NR Upsell/AMR"] = rec_exp.apply(
+                    lambda r: "Yes" if (str(r.get(_vert_c,"")).upper()=="CSD" and
+                                        (str(r.get("AMR","No"))=="Yes" or
+                                         str(r.get(_rem_c,"")).strip()=="Upsell-NR")) else "No", axis=1)
+
+            # SAM ILP slab (WT AMT based)
+            if _amt_c:
+                rec_exp["SAM ILP Slab"] = rec_exp[_amt_c].apply(
+                    lambda v: "10L+" if _safe_float(v,0)>=1000000 else
+                              "5L+"  if _safe_float(v,0)>=500000  else
+                              "2L+"  if _safe_float(v,0)>=200000  else 0)
+
+            # Base to List Sale: "No" if base client type is Leader/Star
+            if _base_ct:
+                rec_exp["Base to List Sale"] = rec_exp[_base_ct].apply(
+                    lambda v: "No" if str(v).strip().upper() in ("LEADER","STAR") else "Yes")
+
+            # Collection: "Yes" if payment method != Nach/ECS
+            if _mode_c:
+                rec_exp["Collection"] = rec_exp[_mode_c].apply(
+                    lambda v: "No" if "NACH" in str(v).upper() or "ECS" in str(v).upper() else "Yes")
+
+            # L2-L6 hierarchy from struct_map
+            if _empid_c:
+                _hier_df = rec_exp[_empid_c].apply(lambda v: pd.Series(_hier(v)))
+                for col in _hier_df.columns:
+                    if col not in rec_exp.columns:
+                        rec_exp[col] = _hier_df[col]
+
+            if len(rec_exp) > 100_000: rec_exp = rec_exp.head(100_000)
             write_sheet(rec_exp, "Receipt Data", header_fmt=grey)
-        except Exception:
+        except Exception as _e:
             pass
 
-        # Refund Data
+        # ── Refund Data ──────────────────────────────────────────────────────
         try:
             ref_exp = refund_df.copy()
-            if len(ref_exp) > 100_000:
-                ref_exp = ref_exp.head(100_000)
+            _date_rf = find_col(ref_exp, ["Clear Date","Date","Refund Date"])
+            _empid_rf= find_col(ref_exp, ["Sales Ex. ID","Sales Exec ID","EMP ID"])
+
+            if _date_rf:
+                _days_rf = pd.to_datetime(ref_exp[_date_rf], errors='coerce').dt.day
+                ref_exp["Day"]  = _days_rf
+                ref_exp["Week"] = _days_rf.apply(lambda d: "WK-1" if d<10 else "WK-2" if d<17 else "WK-3" if d<24 else "WK-4")
+                ref_exp["FNT"]  = _days_rf.apply(lambda d: "FNT-1" if d<=16 else "FNT-2")
+
+            if _empid_rf:
+                _hier_rf = ref_exp[_empid_rf].apply(lambda v: pd.Series(_hier(v)))
+                for col in _hier_rf.columns:
+                    if col not in ref_exp.columns:
+                        ref_exp[col] = _hier_rf[col]
+
+            if len(ref_exp) > 100_000: ref_exp = ref_exp.head(100_000)
             write_sheet(ref_exp, "Refund Data", header_fmt=grey)
         except Exception:
             pass
 
-        # Renewal Data (month-filtered)
+        # ── Renewal Data ─────────────────────────────────────────────────────
         try:
             if renewal_df is not None and len(renewal_df) > 0:
                 rnl_exp = renewal_df.copy()
-                if len(rnl_exp) > 100_000:
-                    rnl_exp = rnl_exp.head(100_000)
+                _empid_rn   = find_col(rnl_exp, ["EMP ID","Emp ID","Employee ID"])
+                _recvd_rn   = find_col(rnl_exp, ["Received Date","Received","Status Received","Renewal Received"])
+                _status_rn  = find_col(rnl_exp, ["Status","STATUS"])
+                _remarks_rn = find_col(rnl_exp, ["Remarks (New)","Remarks(New)","AS","Remarks New"])
+                _vert_rn    = find_col(rnl_exp, ["Vertical","Vertical Final","S"])
+                _loc_rn     = find_col(rnl_exp, ["Location"])
+                _month_rn   = find_col(rnl_exp, ["Month","month"])
+                _remk_rn    = find_col(rnl_exp, ["Remarks","Remarks_Old","P"])  # old remarks col
+
+                # Pending AMR: "Yes" if received date is this month OR received date empty
+                if _recvd_rn and sel_month:
+                    _sel_mo = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                               "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}.get(
+                               sel_month[:3] if sel_month else "", 5)
+                    _yr = 2026
+                    _start_mo = pd.Timestamp(year=_yr, month=_sel_mo, day=1)
+                    _rcv_dates = pd.to_datetime(rnl_exp[_recvd_rn], errors='coerce')
+                    rnl_exp["Pending AMR"] = _rcv_dates.apply(
+                        lambda d: "Yes" if (pd.isna(d) or d >= _start_mo) else "No")
+
+                # AMR Renewal (MDC-1): received this month AND Remarks(New)="MDC-1" AND CSD vertical
+                if _remarks_rn and _vert_rn and "Pending AMR" in rnl_exp.columns:
+                    rnl_exp["AMR Renewal (MDC-1)"] = rnl_exp.apply(
+                        lambda r: "MDC-1" if (r.get("Pending AMR","No")=="Yes" and
+                                              str(r.get(_remarks_rn,"")).strip().upper()=="MDC-1" and
+                                              "CSD" in str(r.get(_vert_rn,"")).upper())
+                                  else ("SAM-ILP" if "SAM" in str(r.get(_remk_rn,"")).upper() else ""),
+                        axis=1)
+
+                # SS+: from Remarks col — "SS+" if remarks contains SS+ keywords
+                if _remarks_rn:
+                    _ss_keywords = {"SS+","PREFERRED","STAR","LEADER"}
+                    rnl_exp["SS+ Client"] = rnl_exp[_remarks_rn].apply(
+                        lambda v: "Yes" if any(k in str(v).upper() for k in _ss_keywords) else "No")
+
+                # L2-L6 hierarchy from struct_map
+                if _empid_rn:
+                    _hier_rn = rnl_exp[_empid_rn].apply(lambda v: pd.Series(_hier(v)))
+                    for col in _hier_rn.columns:
+                        if col not in rnl_exp.columns:
+                            rnl_exp[col] = _hier_rn[col]
+
+                if len(rnl_exp) > 100_000: rnl_exp = rnl_exp.head(100_000)
                 write_sheet(rnl_exp, "Renewal Data", header_fmt=grey)
         except Exception:
             pass
