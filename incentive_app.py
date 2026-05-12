@@ -4175,17 +4175,20 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     use_pcr = sb.get("use_pcr", False)
 
     dv_for_pcdv = net_deal_val if net_deal_val > 0 else net_dv   # prefer deal value
-    # For CSD L2 (Rel Mgr): PCR denominator = Client-C (FSF V = U/L = net_coll/Client-C)
-    # For all others: PCR denominator = Client-A
-    # FIX: read Client-C from cfg_row (employee-specific), not sb (sidebar)
+    # PCR = Net Collection / Client-A (actual clients)
+    # PCDV = Net Deal Value / Client-C (calculated/weighted clients) — ALL CSD employees
+    # KCD: both use Client-A
     _client_c_val = float(cfg_row.get("Client-C", 0) or 0)
-    _is_l2_csd    = (str(designation).upper().strip() == "L2"
-                     and "CSD" in vertical)
-    _pcr_denom    = _client_c_val if (_is_l2_csd and _client_c_val > 0) else client_cnt
-    pcr_val  = (net_dv       / _pcr_denom) if _pcr_denom > 0 else 0
-    # For CSD RM: PCDV also uses Client-C denominator (FSF formula Z = Net_DV / L = Client-C)
-    _pcdv_denom = _pcr_denom if _is_l2_csd else client_cnt
-    pcdv_val = (dv_for_pcdv  / _pcdv_denom) if _pcdv_denom > 0 else 0
+    _is_csd = "CSD" in vertical
+
+    # PCR denominator: always Client-A (actual client count)
+    _pcr_denom  = client_cnt if client_cnt > 0 else 1
+    pcr_val     = (net_dv / _pcr_denom) if _pcr_denom > 0 else 0
+
+    # PCDV denominator: Client-C for ALL CSD (FSF: Z = Net_DV / L = Client-C)
+    #                   Client-A for KCD (KCD uses actual clients)
+    _pcdv_denom = (_client_c_val if (_is_csd and _client_c_val > 0) else client_cnt)
+    pcdv_val    = (dv_for_pcdv / _pcdv_denom) if _pcdv_denom > 0 else 0
 
     # slab_metric = the metric used for incentive slab lookup (sidebar-controlled)
     slab_metric  = pcr_val if use_pcr else pcdv_val
@@ -4723,24 +4726,28 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     import re as _re
 
-    # Extract booster from scheme notes string
-    _bm = _re.search(r'boost:([0-9.]+)', notes)
+    # Extract booster from scheme notes string — try multiple patterns
+    _bm = _re.search(r'boost:([0-9.]+)', notes) or _re.search(r'Booster×([0-9.]+)', notes) or _re.search(r'boost.*?([0-9.]+)', notes)
     _boost_val = float(_bm.group(1)) if _bm else 1.0
+    # Fallback: if booster not in notes, derive from ext_tat/d60 inputs directly
+    if _boost_val == 1.0 and _is_csd and "SPS" in str(team).upper():
+        _ext_tat_val = float(sb.get("ext_tat", S.get("boost_tat_thr", 1)))
+        _d60_val     = float(sb.get("d60",     S.get("boost_60d_thr", 10)))
+        if _ext_tat_val < S.get("boost_tat_thr", 1) and _d60_val < S.get("boost_60d_thr", 10):
+            _boost_val = S.get("boost_mult", 1.2)
 
     # SPS vintage flag: MDC1 multiplier only applies to 91D+ employees, not new joiners
     _is_sps_vintage = vintage not in ("0-30D",)
 
     if _is_csd_rm:
         # ── CSD Rel Mgr output values ──
-        # RM notes format: "CSD RM | ... | PerTxn:1750 | Prod:15.0 | Cross:130% | CMR+1:67% | ..."
-        # "Inc. Payout Mult" = per-txn slab rate (sir's col: Incentive Payout Multiplier)
         _pt_m = _re.search(r'PerTxn:([0-9]+)', notes)
         _inc_payout_mult = int(_pt_m.group(1)) if _pt_m else 0
-        # "Inc. Per Txn" = per_txn × productivity (sir's col: Inc. Per Transaction)
-        _per_txn_rate = int(_inc_payout_mult * _prod_score) if _prod_score > 0 else 0
-        # "Net Incentive" = base before booster
+        # Show the slab rate even if base=0 (helps diagnose why it's 0)
+        # Per Txn = slab_rate × productivity (shows what it would be if CMR met)
+        _per_txn_rate = _inc_payout_mult  # show the base slab rate (before CMR mult)
         _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
-        _mdc1_mult_val = 0.0  # not applicable for RM display
+        _mdc1_mult_val = 0.0
     else:
         # ── CSD L1 (Exec) output values ──
         # Extract MDC1 multiplier from scheme notes string
@@ -4796,19 +4803,24 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "CMR Slab":            cmr_note,
         "SS+ Sent":            cmr_data.get("ss_sent", 0),
         "SS+ Received":        cmr_data.get("ss_received", 0),
-        "MDC-1 CMR%":          round(mdc1_cmr_pct, 1) if mdc1_cmr_pct is not None else "",
+        "MDC-1 CMR%":          (round(float(mdc1_cmr_pct) * 100 if float(mdc1_cmr_pct) <= 1 else float(mdc1_cmr_pct), 1)
+                         if (mdc1_cmr_pct is not None and _is_csd)
+                         else ""),
         "PCR":                 round(pcr_val, 0),
         "PCDV":                round(pcdv_val, 0),
-        "Slab Metric Used":    metric_label,   # which one drove the slab lookup
+        "Slab Metric Used":    metric_label,
         "Productivity Score":  _prod_score,
         "Insta Txns (0.5×)":   insta_cnt_sps,
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
-        # ── CSD SPS columns (match sir's csd_calc.xlsx) ──────────
-        # ── CSD detailed breakdown (matches sir's csd_calc columns) ───
-        "MDC1 CMR+1%":         (round(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct, 1)
+        # MDC1 CMR+1% = MDC-1 CMR% for current month (same data, different scheme reference)
+        # cmr_plus1 is the previous month's MDC-1, but for current month it's the same mdc1_cmr_pct
+        "MDC1 CMR+1%":         (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                          if (cmr_plus1_sent > 0 and _is_csd)
-                         else ("" if not _is_csd else "")),  # blank when no MDC-1 data
+                         # fallback: use mdc1_cmr_pct (same month MDC-1 data) when no separate CMR+1 file
+                         else (round(float(mdc1_cmr_pct) * 100 if float(mdc1_cmr_pct) <= 1 else float(mdc1_cmr_pct), 1)
+                               if (mdc1_cmr_pct is not None and float(mdc1_cmr_pct) > 0 and _is_csd)
+                               else "")),
         "CMR+1 Multiplier":    _inc_payout_mult if _is_csd else "",
         "Inc. Payout Mult":    _inc_payout_mult if _is_csd else "",
         "Inc. Per Txn (₹)":    int(_per_txn_rate) if _is_csd and _prod_score > 0 else "",
@@ -4831,9 +4843,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "KCD CMR Sent":      rnl_sent if "KCD" in vertical else "",
         "KCD CMR Recd":      cmr_data.get("renewal_received", 0) if "KCD" in vertical else "",
         "KCD CMR Ren%":      round(cmr_pct, 1) if "KCD" in vertical else "",
-        "KCD SS+ CMR%":      round(ss_cmr_pct, 1) if "KCD" in vertical else "",
         "KCD SS+ Sent":      cmr_data.get("ss_sent", 0) if "KCD" in vertical else "",
         "KCD SS+ Recd":      cmr_data.get("ss_received", 0) if "KCD" in vertical else "",
+        "KCD SS+ CMR%":      round(ss_cmr_pct, 1) if "KCD" in vertical else "",  # after SS+ Recd (issue 11)
         "KCD SS+Ren Mult":   _kcd_ss_mult if "KCD" in vertical else "",
         "KCD SS+ Penalty Applied": "Yes (50%)" if (_kcd_ss_mult == 0.5) else ("No" if "KCD" in vertical else ""),
         "KCD Incentive Multiplier": int(_kcd_per_txn)  if "KCD" in vertical else "",
@@ -5382,8 +5394,10 @@ if calc_btn:
                              mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
                              all_cmr_pct=all_cmr_map.get(emp_id, {}).get("cmr_pct", None),
                              all_cmr_sent=all_cmr_map.get(emp_id, {}).get("cmr_sent", 0),
-                             cmr_plus1_pct=cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0),
-                             cmr_plus1_sent=cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0),
+                             cmr_plus1_pct=(cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct") or
+                                              mdc1_cmr_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0)),
+                             cmr_plus1_sent=(cmr_plus1_map.get(emp_id, {}).get("mdc1_sent") or
+                                             mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0)),
                              nr_upsell_count=nr_upsell_count,
                              net_deal_val=net_deal_val,
                              collection_target=s.get("Collection Target", 0),
@@ -5428,6 +5442,7 @@ if calc_btn:
                                    else ""),
         "Catalog Client":        int(float(s.get("Catalog Clients", 0) or 0)) if float(s.get("Catalog Clients", 0) or 0) > 0 else "",
         "Listing Client":        int(float(s.get("Listing Clients", 0) or 0)) if float(s.get("Listing Clients", 0) or 0) > 0 else "",
+        "Collection Target (₹)": int(s.get("Collection Target", 0) or 0) if int(s.get("Collection Target", 0) or 0) > 0 else "",
         "Effective Team Size":  int(s.get("Effective Team Size", 0) or 0),
         "L1 Count":             int(s.get("L1 Count", 0) or 0),
             "Calc Month":         sel_month if sel_month else "All",
@@ -5504,7 +5519,8 @@ if calc_btn:
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
         "SS+ CMR% (auto)", "SS+ Sent", "SS+ Received",
         "Renewals Sent", "Renewals Received", "CMR Slab",
-        "MDC-1 CMR%", "MDC1 CMR+1%", "CMR+1 Multiplier", "Inc. Payout Mult", "MDC1 Sent", "MDC1 Recd",
+        "MDC1 Sent", "MDC1 Recd",
+        "MDC-1 CMR%", "MDC1 CMR+1%", "CMR+1 Multiplier", "Inc. Payout Mult",
         "Productivity Score", "Insta Txns (0.5×)", "Receipt Txns", "Renewal Txns",
         "Inc. Per Txn (₹)", "Net Incentive (₹)", "SPS Booster", "Gross Inc w/ Boost (₹)",
         "KCD Base Incentive (₹)", "KCD Incremental (₹)", "KCD SS+Ren Mult", "KCD Gross Incentive (₹)",
@@ -5548,13 +5564,14 @@ if calc_btn:
             "CMR Slab1 Target","CMR Slab2 Target",
             "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
             "Renewals Sent","Renewals Received","CMR Slab",
-            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult","MDC1 Sent","MDC1 Recd",
+            "MDC1 Sent","MDC1 Recd",
+            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult",
             "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
             "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
             "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
-            "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
+            "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
             "KCD Incentive Multiplier",
             "KCD Base Incentive (₹)","KCD Incremental (₹)",
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
@@ -5639,10 +5656,9 @@ if calc_btn:
             "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
             # CMR / SS+
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
-            "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
+            "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
             "Renewals Sent","Renewals Received",
             "Productivity Score","Receipt Txns",
-            # Base incentive (matches sir's "Base Incentive 90+D" section)
             "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
             "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
@@ -5671,7 +5687,7 @@ if calc_btn:
                 "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
                 # CMR / SS+
                 "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
-                "KCD SS+ CMR%","KCD SS+ Sent","KCD SS+ Recd","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
+                "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
                 "Renewals Sent","Renewals Received",
                 "Productivity Score","Receipt Txns",
                 # Base incentive
@@ -5730,6 +5746,8 @@ if calc_btn:
                 d = str(s.get("Designation","")).upper().strip()
                 if vertical_filter.upper() not in v: continue
                 if d != level_filter: continue
+                # Exclude Teleannual, Inside Sales, and other non-field verticals
+                if any(excl in v for excl in ["TELEANNUAL","TELE ANNUAL","INSIDE SALES","TELESALES","INBOUND"]): continue
 
                 emp_name_clean = str(s.get("Employee Name","")).strip()
                 subs = res[res[hier_col_res].astype(str).str.strip() == emp_name_clean] if hier_col_res in res.columns else pd.DataFrame()
@@ -5742,7 +5760,10 @@ if calc_btn:
                 net_coll   = gross_coll - total_ref
                 dv         = _sum("Deal Value (₹)");  dl = _sum("Deal Loss (₹)")
                 net_dv_bm  = dv - dl
-                aop_target = _sum("Collection Target (₹)") or _sum("KCD Collection Target (₹)")
+                aop_target = (_sum("Collection Target (₹)") or
+                              _sum("KCD Collection Target (₹)") or
+                              float(s.get("Collection Target", 0) or 0) or
+                              float(s.get("PCR Target", 0) or 0) * client_a)
 
                 # Client counts: sum from subordinates
                 client_a_sum = int(pd.to_numeric(subs["Client-A (aggregated)"], errors="coerce").fillna(0).sum()) if not subs.empty and "Client-A (aggregated)" in subs.columns else 0
