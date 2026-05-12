@@ -4194,19 +4194,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     slab_metric  = pcr_val if use_pcr else pcdv_val
     metric_label = "PCR"  if use_pcr else "PCDV"
     pcdv = slab_metric   # internal name kept for compatibility with calc functions
-    # PCR Target standard rates for KCD (when not available from structure/kcd_targets file)
-    if pcr_target_v == 0 and "KCD" in vertical:
-        _t_up = str(team).upper()
-        _is_hvri = any(h in location.upper() for h in ["HYDERABAD","VASHI","RAIPUR","INDORE"])
-        _is_hvri = _is_hvri or "HVRI" in _t_up
-        if vintage in ("0-30D", "31-90D"):
-            pcr_target_v = 21000.0
-        elif _is_hvri:
-            pcr_target_v = 30000.0
-        elif vintage == "91-270D":
-            pcr_target_v = 30000.0
-        elif vintage == "270D+":
-            pcr_target_v = 32000.0
+
+    # PCDV Target per client = Collection Target / Client-A  (sir's FSF col AF / AB)
+    # collection_target is already derived from slab thresholds × Client-A above
+    # so pcr_target_v (PCDV Target per client) = collection_target / client_cnt
+    if "KCD" in vertical:
+        pcr_target_v = (collection_target / client_cnt) if client_cnt > 0 else pcr_target_v
         # KCD Highest Collection per April FSF — team-specific multiplier:
         # HC multipliers from Scheme_Params sheet (editable per month)
         _is_kcd_sam = str(designation).upper().strip() == "L2" and "KCD" in vertical
@@ -4283,7 +4276,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             collection_target = client_cnt * _slab_thresh
 
     # PCR% = PCR / PCR_Target (achievement % of per-client collection target)
-    pcr_pct = (pcr_val / pcr_target_v) if pcr_target_v > 0 else 0
+    # PCDV% (KCD) = PCDV / PCDV_Target  — deal-value based achievement
+    # PCR%  (CSD) = PCR  / PCR_Target   — collection based achievement
+    pcr_pct = ((pcdv_val / pcr_target_v) if "KCD" in vertical
+               else (pcr_val / pcr_target_v)) if pcr_target_v > 0 else 0
 
     # spot_client: client count for PCDV Bullet Spot calculation.
     # Must be raw (non-floored) actual client count so weekly DV / spot_client = true weekly PCDV.
@@ -4831,8 +4827,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # ── KCD columns matching sir's kcd_calc.xlsx layout ────────
         "KCD Collection Target (₹)": int(collection_target) if "KCD" in vertical else "",
         "KCD Highest Collection (₹)": int(highest_coll)      if "KCD" in vertical else "",
-        "KCD PCR Target":            round(pcr_target_v, 0)  if "KCD" in vertical else "",
-        "KCD PCR%":                  round(pcr_pct * 100, 2) if "KCD" in vertical else "",
+        "KCD PCDV Target":            round(pcr_target_v, 0)  if "KCD" in vertical else "",
+        "KCD PCDV%":                  round(pcr_pct * 100, 2) if "KCD" in vertical else "",
         # WK productive transaction counts
         "KCD WK-1 DV (₹)":  int(weekly_dv.get(1, 0)) if ("KCD" in vertical and weekly_dv) else "",
         "KCD WK-2 DV (₹)":  int(weekly_dv.get(2, 0)) if ("KCD" in vertical and weekly_dv) else "",
@@ -5568,7 +5564,7 @@ if calc_btn:
             "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult",
             "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
-            "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
+            "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCDV Target","KCD PCDV%",
             "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
@@ -5651,7 +5647,7 @@ if calc_btn:
             # Financial
             "Collection (₹)","Refund (₹)","Net Collection (₹)","KCD Collection Target (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","PCR","Slab Metric Used",
-            "KCD Highest Collection (₹)","KCD PCR Target","KCD PCR%",
+            "KCD Highest Collection (₹)","KCD PCDV Target","KCD PCDV%",
             # Weekly DV
             "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
             # CMR / SS+
@@ -5682,7 +5678,7 @@ if calc_btn:
                 # Financial
                 "Collection (₹)","Refund (₹)","Net Collection (₹)","KCD Collection Target (₹)",
                 "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
-                "KCD Highest Collection (₹)","KCD PCR Target","PCDV","PCR","KCD PCR%",
+                "KCD Highest Collection (₹)","KCD PCDV Target","PCDV","PCR","KCD PCDV%",
                 # Weekly
                 "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
                 # CMR / SS+
@@ -5760,20 +5756,24 @@ if calc_btn:
                 net_coll   = gross_coll - total_ref
                 dv         = _sum("Deal Value (₹)");  dl = _sum("Deal Loss (₹)")
                 net_dv_bm  = dv - dl
-                aop_target = (_sum("Collection Target (₹)") or
-                              _sum("KCD Collection Target (₹)") or
-                              float(s.get("Collection Target", 0) or 0) or
-                              float(s.get("PCR Target", 0) or 0) * client_a)
 
-                # Client counts: sum from subordinates
+                # Client counts first (needed for aop_target fallback)
                 client_a_sum = int(pd.to_numeric(subs["Client-A (aggregated)"], errors="coerce").fillna(0).sum()) if not subs.empty and "Client-A (aggregated)" in subs.columns else 0
                 l1_cnt = len(subs[subs["Designation"].astype(str).str.strip()=="L1"]) if "Designation" in subs.columns else len(subs)
                 l2_cnt = len(subs[subs["Designation"].astype(str).str.strip()=="L2"]) if "Designation" in subs.columns else 0
                 hc     = l1_cnt
-
-                # Use subordinate sum for client_a; struct_map value often 50 (floor) for L3/L4
                 client_a = client_a_sum if client_a_sum > 0 else int(s.get("Client Count", 0) or 0)
                 client_c = float(s.get("Client-C", 0) or 0)
+
+                def _safe_float(v):
+                    try: return float(v) if v is not None else 0.0
+                    except (TypeError, ValueError): return 0.0
+
+                aop_target = (_sum("Collection Target (₹)") or
+                              _sum("KCD Collection Target (₹)") or
+                              _safe_float(s.get("Collection Target")) or
+                              _safe_float(s.get("PCR Target")) * client_a)
+
                 pcr  = round(net_coll  / client_a, 1) if client_a > 0 else 0
                 pcdv = round(net_dv_bm / client_a, 1) if client_a > 0 else 0
 
