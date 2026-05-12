@@ -1500,7 +1500,7 @@ def make_may_slab_config_excel():
 @st.cache_data(show_spinner=False)
 def make_april_slab_config_excel():
     """Generate the downloadable April 2026 Slab_Config.xlsx with April-specific sheets."""
-    march_base = build_march_slab_config()
+    march_base = build_default_slab_config()
     april_ext  = build_april_slab_config()
     combined   = {**march_base, **april_ext}
     buf = io.BytesIO()
@@ -1520,7 +1520,7 @@ def make_april_slab_config_excel():
 @st.cache_data(show_spinner=False)
 def make_march_slab_config_excel():
     """Generate the downloadable March 2026 Slab_Config.xlsx. Cached -- only built once."""
-    defaults = build_march_slab_config()
+    defaults = build_default_slab_config()
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
         hdr_fmt  = w.book.add_format({"bold": True, "bg_color": "#1F4E79", "font_color": "#FFFFFF", "border": 1})
