@@ -408,10 +408,20 @@ def build_default_slab_config():
         {"Parameter": "KCD_BM_CMR_Slab1_%",         "Value": 75,    "Description": "KCD BM/RM CMR: 75% payout (72-75%)"},
         {"Parameter": "KCD_BM_CMR_Slab2_%",         "Value": 80,    "Description": "KCD BM/RM CMR: 100% (75-80%), 120% above"},
         {"Parameter": "KCD_BM_SS_Plus_Min_%",        "Value": 72,    "Description": "KCD BM/RM SS+ gate: ≥ this → 100%, else 50%"},
+        # ─ KCD Collection Target per-client rates (auto-derived when no target file uploaded) ─
+        {"Parameter": "KCD_Target_Regular_91_270",    "Value": 11000, "Description": "KCD Regular 91-270D: target per client (₹) — lowest slab"},
+        {"Parameter": "KCD_Target_Regular_270",       "Value": 13000, "Description": "KCD Regular 270D+: target per client (₹)"},
+        {"Parameter": "KCD_Target_Regular_0_90",      "Value": 8000,  "Description": "KCD Regular 0-90D / New: target per client (₹)"},
+        {"Parameter": "KCD_Target_ROI",               "Value": 8000,  "Description": "KCD ROI: target per client (₹)"},
+        {"Parameter": "KCD_Target_HVRI",              "Value": 10000, "Description": "KCD HVRI: target per client (₹)"},
+        {"Parameter": "KCD_Target_Nagpur",            "Value": 24000, "Description": "KCD Nagpur: target per client (₹)"},
+        {"Parameter": "KCD_Target_Listing_Base",      "Value": 7000,  "Description": "KCD Listing/Catalog: target per base client (₹) 91D+"},
+        {"Parameter": "KCD_Target_Listing_Client",    "Value": 22000, "Description": "KCD Listing/Catalog: target per listing client (₹) 91D+"},
+        {"Parameter": "KCD_Target_Listing_Base_New",  "Value": 5000,  "Description": "KCD Listing/Catalog: target per base client (₹) 0-90D"},
+        {"Parameter": "KCD_Target_Listing_Client_New","Value": 15000, "Description": "KCD Listing/Catalog: target per listing client (₹) 0-90D"},
     ])
 
     return {
-        "CSD_New_Slabs":        csd_new,
         "CSD_New_Params":       csd_new_incr,
         "CSD_SPS_91_270D":      csd_sps_91,
         "CSD_SPS_270D_Plus":    csd_sps_270,
@@ -4210,25 +4220,64 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _hc_mult = S.get("hc_mult_regular", 21000)
         highest_coll = client_cnt * _hc_mult
 
-    # Derive Collection Target if still 0
+    # Derive Collection Target from scheme slab thresholds when not provided by target file
+    # KCD Collection Target = Client-A × per-client target (lowest slab threshold for that team)
+    # Targets per May PPT:
+    #   Regular 91-270D: 11,000/client  |  Regular 270D+: 13,000/client
+    #   ROI: 8,000/client               |  HVRI: 10,000/client
+    #   Nagpur: 24,000/client           |  New/0-90D: 8,000/client
+    #   Listing/Catalog 91D+: lowest slab threshold = 100% of collection target
+    #     → HC × 7,000 (base) + ListingClients × 22,000  (270D+/91D)
+    #     → HC × 5,000 (base) + ListingClients × 15,000  (0-90D)
     if collection_target == 0 and "KCD" in vertical:
         _t_up2 = str(team).upper()
-        _lc2 = float(cfg_row.get("Listing Clients", 0) or 0)
-        _cc2 = float(cfg_row.get("Catalog Clients", 0) or 0)
+        _is_new_kcd = vintage in ("0-30D", "31-90D")
+
         if "LISTING" in _t_up2 or "CATALOG" in _t_up2:
-            # Base×7K + Listing/Catalog×22K (270D+/91D); Base×5K + LC×15K (0-90D)
-            _is_new_kcd = vintage in ("0-30D","31-90D")
-            _base_rate    = 5000 if _is_new_kcd else 7000
-            _listing_rate = 15000 if _is_new_kcd else 22000
+            _base_rate    = int(S.get("KCD_Target_Listing_Base_New",  5000) if _is_new_kcd else S.get("KCD_Target_Listing_Base",  7000))
+            _listing_rate = int(S.get("KCD_Target_Listing_Client_New",15000) if _is_new_kcd else S.get("KCD_Target_Listing_Client",22000))
+            _lc2  = float(cfg_row.get("Listing Clients", 0) or 0)
+            _cc2  = float(cfg_row.get("Catalog Clients",  0) or 0)
             _lc_all = _lc2 + _cc2
-            # If listing/catalog client counts are 0 (not in structure file) but team IS
-            # Listing/Catalog (from Remarks), treat ALL clients as listing clients
-            if _lc_all == 0 and any(k in str(team).upper() for k in ("LISTING","CATALOG")):
+            if _lc_all == 0:
                 _lc_all = client_cnt
             _base_c = max(0, client_cnt - _lc_all)
             collection_target = _base_c * _base_rate + _lc_all * _listing_rate
-        elif pcr_target_v > 0 and not any(k in _t_up2 for k in ("ROI",)):
-            collection_target = pcr_target_v * client_cnt
+
+        elif "NAGPUR" in _t_up2 or "PHARMA" in _t_up2:
+            _slab_thresh = int(S.get("KCD_Target_Nagpur", 24000))
+            _nag_slabs = S.get("kcd_nagpur_slabs", [])
+            if _nag_slabs:
+                _slab_thresh = min(t for t, _, _ in _nag_slabs)
+            collection_target = client_cnt * _slab_thresh
+
+        elif any(h in _t_up2 for h in ("HVRI","HYDERABAD","VASHI","RAIPUR","INDORE")):
+            _slab_thresh = int(S.get("KCD_Target_HVRI", 10000))
+            _hvri_slabs = S.get("kcd_hvri_slabs", [])
+            if _hvri_slabs:
+                _slab_thresh = min(t for t, _, _ in _hvri_slabs)
+            collection_target = client_cnt * _slab_thresh
+
+        elif "ROI" in _t_up2:
+            _slab_thresh = int(S.get("KCD_Target_ROI", 8000))
+            _roi_slabs = S.get("kcd_roi_91_270_slabs", S.get("kcd_91_270_slabs", []))
+            if _roi_slabs:
+                _slab_thresh = min(t for t, _, _ in _roi_slabs)
+            collection_target = client_cnt * _slab_thresh
+
+        else:  # Regular KCD
+            if _is_new_kcd:
+                _slab_thresh = int(S.get("KCD_Target_Regular_0_90", 8000))
+                _reg_slabs = S.get("kcd_0_90_slabs", [])
+            elif vintage == "270D+":
+                _slab_thresh = int(S.get("KCD_Target_Regular_270", 13000))
+                _reg_slabs = S.get("kcd_270_slabs", [])
+            else:
+                _slab_thresh = int(S.get("KCD_Target_Regular_91_270", 11000))
+                _reg_slabs = S.get("kcd_91_270_slabs", [])
+            if _reg_slabs:
+                _slab_thresh = min(t for t, _, _ in _reg_slabs)
+            collection_target = client_cnt * _slab_thresh
 
     # PCR% = PCR / PCR_Target (achievement % of per-client collection target)
     pcr_pct = (pcr_val / pcr_target_v) if pcr_target_v > 0 else 0
