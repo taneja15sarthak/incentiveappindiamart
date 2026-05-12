@@ -1937,7 +1937,8 @@ def load_structure_dump(uploaded_file):
                                 "New Location/ROI Location"])
     # "L2 Promoted 0-90D" carries the sub-bucket label (SPS, 90+ Days, CSD ROI, 0-90 Days …)
     # -- this is the key column for SPS booster detection
-    vintage_bkt = find_col(df, ["Vintage Bucket", "VintageBucket",
+    vintage_bkt = find_col(df, ["Vintage Bucket",
+            "Scheme Type", "VintageBucket",
                                 "L2 Promoted 0-90D", "Remarks", "bucket", "emp_level"])
     remarks_col = find_col(df, ["Rem", "Remarks", "Group", "Team", "rem", "group", "team",
                                 "KCD Group", "Employee Group", "Product Group"])
@@ -2687,9 +2688,10 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
                      If None or sent=0 → 100% (no clients due = no penalty)
     """
     # Use next-month MDC-1 for the multiplier (scheme: "MDC 1- CMR+1% Multiplier")
-    # mdc1_cmr_plus1=None means sent=0 → 100%
+    # mdc1_cmr_plus1=None means sent=0 → 100% (no MDC-1 clients due next month = no penalty)
+    # mdc1_cmr = CURRENT month's MDC-1 CMR% (display only, not used for multiplier)
     _mdc1_for_mult = mdc1_cmr_plus1 if mdc1_cmr_plus1 is not None else 100.0
-    slabs = S["csd_sps_270p"] if vintage == "270D+" else S["csd_sps_91_270"]
+    slabs = S.get("csd_sps_270p", []) if vintage == "270D+" else S.get("csd_sps_91_270", [])
     # cmr_slab=0 means employee is below Slab1 CMR target → no per-txn incentive
     if cmr_slab == 0:
         per_txn = 0
@@ -2698,12 +2700,17 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
 
     eff_txn_count = max(int(prod_score), 0) if prod_score > 0 else txn_count
 
-    if mdc1_cmr > S["mdc1_above"]:
-        mdc1_mult = S["mdc1_mult_hi"]
-    elif mdc1_cmr >= S["mdc1_between"]:
-        mdc1_mult = S["mdc1_mult_md"]
+    # MDC-1 Multiplier is based on mdc1_cmr_plus1 (NEXT month's MDC-1 CMR%)
+    # NOT on mdc1_cmr (current month all-renewals CMR%)
+    hi = S.get("mdc1_above", 35); mid = S.get("mdc1_between", 25)
+    if _mdc1_for_mult > hi:
+        mdc1_mult = S.get("mdc1_mult_hi", 1.2)
+    elif _mdc1_for_mult >= mid:
+        mdc1_mult = S.get("mdc1_mult_md", 1.0)
     else:
-        mdc1_mult = S["mdc1_mult_lo"]
+        mdc1_mult = S.get("mdc1_mult_lo", 0.5)
+
+    mdc1_cmr_display = mdc1_cmr if mdc1_cmr is not None else 0.0  # for scheme notes only
 
     # Booster: FSF AN = IF(AND(SPS, ext_tat<1, 60D<10%, base>=1), base*1.2, base)
     # Must be SPS group AND meet BOTH criteria. Non-SPS (90+ Days) never get booster.
@@ -2736,7 +2743,7 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
         _ba_note = ""
 
     notes = (f"CSD SPS {vintage} | {metric_label}:{round(pcdv)} | CMR slab:{cmr_slab} | "
-             f"₹{per_txn}/txn×{eff_txn_count} | MDC1:{mdc1_mult:.1f}({mdc1_cmr:.0f}%) "
+             f"₹{per_txn}/txn×{eff_txn_count} | MDC1:{mdc1_mult:.1f}(CMR+1:{_mdc1_for_mult:.0f}%|CMR:{mdc1_cmr_display:.0f}%) "
              f"boost:{booster}{_ba_note} | No PoP")
     return round(total, 0), notes
 
@@ -4890,7 +4897,29 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                                if vintage in ("0-30D","31-90D") and "CSD" in vertical
                                else base_inc + pop_inc + spot_inc),
         "Scheme":              notes,
+        "Scheme Type":         _derive_scheme_type(vintage, team, vertical, designation),
     }
+
+
+def _derive_scheme_type(vintage, team, vertical, designation):
+    """Human-readable scheme branch label shown in Scheme Type column."""
+    _t = str(team).upper(); _v = str(vertical).upper(); _d = str(designation).upper().strip()
+    if "CSD" in _v:
+        if vintage in ("0-30D","31-90D"): return f"New Joiner {vintage}"
+        if _d == "L2" or "REL" in _d or "RM-" in _d:
+            return "Rel Mgr SPS" if "SPS" in _t else "Rel Mgr 31-90D"
+        if "SPS" in _t or vintage in ("91-270D","270D+","SPS"):
+            return f"CSD SPS {vintage}"
+        return f"CSD {vintage}"
+    if "KCD" in _v:
+        if "LISTING" in _t:  return f"KCD Listing {vintage}"
+        if "CATALOG" in _t:  return f"KCD Catalog {vintage}"
+        if "NAGPUR" in _t or "PHARMA" in _t: return f"KCD Nagpur {vintage}"
+        if "HVRI" in _t:     return f"KCD HVRI {vintage}"
+        if "ROI" in _t:      return f"KCD ROI {vintage}"
+        if _d == "L2":       return f"KCD SAM {vintage}"
+        return f"KCD Regular {vintage}"
+    return _v or "Unknown"
 # ═══════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════
@@ -5395,7 +5424,8 @@ if calc_btn:
                              nr_upsell_count=nr_upsell_count,
                              net_deal_val=net_deal_val,
                              collection_target=s.get("Collection Target", 0),
-                             vintage_bucket=s.get("Vintage Bucket", ""),
+                             vintage_bucket=s.get("Vintage Bucket",
+            "Scheme Type", ""),
                              designation=s.get("Designation", ""),
                              weekly_dv=weekly_dv,
                              wk1_prod_counts=wk1_prod_counts,
@@ -5442,7 +5472,9 @@ if calc_btn:
             "Vertical":           s.get("Vertical", ""),
             "Vintage":            s.get("Vintage", ""),
             "Team":               s.get("Team", ""),
-            "Vintage Bucket":     s.get("Vintage Bucket", ""),
+            "Vintage Bucket":     s.get("Vintage Bucket",
+            "Scheme Type", ""),
+            "Scheme Type":        inc.get("Scheme Type", ""),
             "Location":           s.get("Location", ""),
             "L2":                 s.get("L2 Name", ""),
             "L3":                 s.get("L3 Name", ""),
@@ -5460,7 +5492,8 @@ if calc_btn:
             "PCR Target (₹)":        int(s.get("PCR Target", 0)),
             "CMR Slab1 Target":   emp_targets["slab1"],
             "CMR Slab2 Target":   emp_targets["slab2"],
-            "SPS Group":  "SPS" if ("SPS" in str(s.get("Vintage Bucket","")).upper() or
+            "SPS Group":  "SPS" if ("SPS" in str(s.get("Vintage Bucket",
+            "Scheme Type","")).upper() or
                                      "SPS" in str(s.get("Team","")).upper()) else "No",
             "MDC1 Sent":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0),
             "MDC1 Recd":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0),
@@ -5504,7 +5537,8 @@ if calc_btn:
 
     display_cols = [c for c in [
         "Employee ID", "Employee Name", "Vertical", "Vintage", "Team",
-        "SPS Group", "Vintage Bucket", "Location", "L2", "Days Since Joining",
+        "SPS Group", "Vintage Bucket",
+            "Scheme Type", "Location", "L2", "Days Since Joining",
         "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
         "Collection Target (₹)",
         "Deal Value (₹)", "Deal Loss (₹)", "Net Deal Value (₹)",
@@ -5536,20 +5570,66 @@ if calc_btn:
         pct_fmt = wb.add_format({"num_format": "0.0%", "font_size": 9})
 
         def write_sheet(df, sheet_name, col_fmt=None, header_fmt=None):
-            """Write df to sheet with blue header row."""
+            """Write df to sheet with header row and Excel formulas for key totals."""
             df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
             ws = w.sheets[sheet_name]
             hf = header_fmt or hdr
-            for ci, col in enumerate(df.columns):
+            cols = list(df.columns)
+
+            # Write headers
+            for ci, col in enumerate(cols):
                 ws.write(1, ci, col, hf)
                 ws.set_column(ci, ci, max(14, len(str(col)) + 2))
-            ws.write(0, 0, f"{sheet_name} -- auto-generated by IndiaMart Incentive Calculator")
-            ws.freeze_panes(2, 0)
+            ws.write(0, 0, f"{sheet_name} — IndiaMart Incentive Calculator (May 2026)")
+            ws.freeze_panes(2, 2)  # freeze first 2 rows and 2 cols (ID + Name)
+
+            # Add Excel formula note row (row 0, separate columns explaining key formulas)
+            formula_notes = {
+                "PCR":                  "=Net Collection / Client-A",
+                "PCDV":                 "=Net Deal Value / Client-C (CSD) or Client-A (KCD)",
+                "CMR% (auto)":          "=Renewals Received / Renewals Sent",
+                "KCD PCDV Target":      "=KCD Collection Target / Client-A",
+                "KCD PCDV%":            "=PCDV / KCD PCDV Target",
+                "Total Incentive (₹)":  "=Base Incentive + PoP Incentive + Spot Incentive",
+            }
+            _note_fmt = wb.add_format({"italic": True, "font_color": "#595959",
+                                        "bg_color": "#FFF2CC", "font_size": 8})
+            for ci, col in enumerate(cols):
+                if col in formula_notes:
+                    ws.write(0, ci, formula_notes[col], _note_fmt)
+
+            # Replace Total Incentive column values with actual Excel SUM formula
+            # so the Excel file is self-validating
+            _ti_col  = cols.index("Total Incentive (₹)") if "Total Incentive (₹)" in cols else None
+            _base_col = cols.index("Base Incentive (₹)")  if "Base Incentive (₹)"  in cols else None
+            _pop_col  = cols.index("PoP Incentive (₹)")   if "PoP Incentive (₹)"   in cols else None
+            _spot_col = cols.index("Spot Incentive (₹)")  if "Spot Incentive (₹)"  in cols else None
+            if _ti_col is not None and any(c is not None for c in [_base_col, _pop_col, _spot_col]):
+                def _xl_col(idx):  # 0-based → Excel letter(s)
+                    s = ""
+                    idx += 1
+                    while idx:
+                        idx, r = divmod(idx - 1, 26)
+                        s = chr(65 + r) + s
+                    return s
+                _ti_letter   = _xl_col(_ti_col)
+                parts = []
+                if _base_col is not None: parts.append(_xl_col(_base_col))
+                if _pop_col  is not None: parts.append(_xl_col(_pop_col))
+                if _spot_col is not None: parts.append(_xl_col(_spot_col))
+                _money_fmt = wb.add_format({"num_format": "#,##0", "font_size": 9,
+                                             "bg_color": "#E2EFDA"})
+                for row_idx in range(len(df)):
+                    excel_row = row_idx + 3  # 1-indexed: row 1=formula note, row 2=header, row 3+=data
+                    formula = "=" + "+".join(f"{p}{excel_row}" for p in parts)
+                    ws.write_formula(excel_row - 1, _ti_col, formula, _money_fmt,
+                                     int(df.iloc[row_idx]["Total Incentive (₹)"] or 0))
 
         # ── Sheet 1: FSF (Final Settlement File) -- all employees ─────────────
         fsf_cols = [c for c in [
             "Employee ID","Employee Name","Calc Month","Vertical","Vintage",
-            "Team","Designation","Vintage Bucket","SPS Group","Location","L2","L3",
+            "Team","Designation","Vintage Bucket",
+            "Scheme Type","SPS Group","Location","L2","L3",
             "Days Since Joining",
             "Collection (₹)","Refund (₹)","Net Collection (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
@@ -5581,7 +5661,8 @@ if calc_btn:
         csd_res = res[res["Vertical"] == "CSD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
         csd_cols = [c for c in [
             # Hierarchy & identity (matches sir's first block)
-            "Employee ID","Employee Name","Location","Vintage Bucket","SPS Group",
+            "Employee ID","Employee Name","Location","Vintage Bucket",
+            "Scheme Type","SPS Group",
             "L2","L3","Client-A (aggregated)","Client-C (aggregated)",
             "Joining Date","Days Since Joining",
             # Financial
@@ -5612,6 +5693,7 @@ if calc_btn:
             rm_cols = [c for c in [
                 # Hierarchy & identity (matches sir's Rel Mgr-CSD first block)
                 "Employee ID","Employee Name","Location","SPS Group","Vintage Bucket",
+            "Scheme Type",
                 "L3","Client-A (aggregated)","Client-C (aggregated)",
                 "Effective Team Size","L1 Count","Joining Date",
                 # Financial
@@ -5967,7 +6049,8 @@ if calc_btn:
                  "Joining Date":     str(v.get("Joining Date",""))[:10],
                  "Vintage":          v.get("Vintage",""),
                  "Team":             v.get("Team",""),
-                 "Vintage Bucket":   v.get("Vintage Bucket",""),
+                 "Vintage Bucket":   v.get("Vintage Bucket",
+            "Scheme Type",""),
                  "Client Count":     v.get("Client Count",0),
                  "Collection Target":v.get("Collection Target",0),
                  "MDC Client Count": v.get("MDC Client Count",0),
