@@ -9,7 +9,7 @@ Changes in this version (v19):
   - Fix 3: CSD Spot -- per-employee NR upsell count from receipt (replaces global sidebar)
   - Fix 4: KCD transaction count -- uses prod_score_receipt (productive rows only)
             not txn_count (all receipt rows) → base incentive now matches sir's calc
-  - Fix 5: KCD SS+ penalty -- only applied when ss_sent ≥ 3 AND ss_cmr < 70%a
+  - Fix 5: KCD SS+ penalty -- only applied when ss_sent ≥ 3 AND ss_cmr < 70%
             (≤2 SS+ sent = no penalty, not enough data)
   - Fix 6: KCD Incremental -- (Net_Deal_Val − Collection_Target) × 1.4%
             Collection_Target = PCR_Target × ClientA from structure dump
@@ -5012,6 +5012,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # MDC1 CMR+1% = PREVIOUS month's MDC-1 CMR% (April data when running May)
         # Only populated when a separate CMR+1/previous-month renewal file is uploaded
         # When cmr_plus1_sent=0 (no separate file), show blank — NOT same as current MDC-1%
+        "CMR+1 Sent":          (cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0)
+                                 if (_is_csd and cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0) > 0)
+                                 else ""),
+        "CMR+1 Recd":          (cmr_plus1_map.get(emp_id, {}).get("mdc1_recd", 0)
+                                 if (_is_csd and cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0) > 0)
+                                 else ""),
         "MDC1 CMR+1%":         (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                          if (cmr_plus1_sent > 0 and _is_csd)
                          else ""),
@@ -5841,7 +5847,7 @@ if calc_btn:
             "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
             "Renewals Sent","Renewals Received","CMR Slab",
             "MDC1 Sent","MDC1 Recd",
-            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult",
+            "MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult",
             "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
             "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCDV Target","KCD PCDV%",
@@ -5979,7 +5985,49 @@ if calc_btn:
                 "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
             ] if c in res.columns]
             if not kcd_l2.empty:
-                write_sheet(kcd_l2[sam_cols], "KCD-SAM", header_fmt=org)
+                # Regular SAM (non-ILP)
+                kcd_sam_regular = kcd_l2[~kcd_l2["Team"].astype(str).str.contains("ILP", na=False)] if "Team" in kcd_l2.columns else kcd_l2
+                if not kcd_sam_regular.empty:
+                    write_sheet(kcd_sam_regular[sam_cols], "KCD-SAM", header_fmt=org)
+
+        # ── KCD-SAM ILP sheet (always created; empty rows if no ILP target uploaded) ─
+        ilp_cols = [c for c in [
+            "Employee ID","Employee Name","Location","Team","Designation","Vintage","Scheme Type",
+            "Client-A (aggregated)","Client-C (aggregated)","Joining Date",
+            "Collection (₹)","Refund (₹)","Net Collection (₹)",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV",
+            "KCD Collection Target (₹)","KCD PCDV Target","KCD PCDV%",
+            "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
+            "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%",
+            "Base Incentive (₹)","Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+        ] if c in res.columns]
+        # Pull SAM-ILP rows from res OR build from struct_map (so sheet exists even with 0 txns)
+        ilp_res = pd.DataFrame()
+        if not res.empty and "Team" in res.columns:
+            ilp_res = res[res["Team"].astype(str).str.contains("ILP", na=False)]
+        # If no ILP results (no receipt data), build skeleton from struct_map
+        if ilp_res.empty:
+            ilp_rows = []
+            for eid, s in struct_map.items():
+                if "ILP" in str(s.get("Team","")).upper() or "ILP" in str(s.get("Group","")).upper():
+                    ilp_rows.append({
+                        "Employee ID":          eid,
+                        "Employee Name":        s.get("Employee Name",""),
+                        "Location":             s.get("Location",""),
+                        "Team":                 s.get("Team","KCD SAM ILP"),
+                        "Designation":          s.get("Designation",""),
+                        "Vintage":              s.get("Vintage",""),
+                        "Scheme Type":          "KCD SAM ILP",
+                        "Client-A (aggregated)":int(s.get("Client Count",0) or 0),
+                        "Total Incentive (₹)":  0,
+                        "Scheme":               "No target uploaded",
+                    })
+            if ilp_rows:
+                ilp_res = pd.DataFrame(ilp_rows)
+        if not ilp_res.empty:
+            _ilp_out_cols = [c for c in ilp_cols if c in ilp_res.columns]
+            write_sheet(ilp_res[_ilp_out_cols] if _ilp_out_cols else ilp_res,
+                        "KCD-SAM ILP", header_fmt=org)
 
         # ── Sheets: BM-CSD, RM-CSD, BM-KCD, RM-KCD (L3/L4 AOP scheme) ─────────
         # Columns matching sir's BM/RM FSF layout
