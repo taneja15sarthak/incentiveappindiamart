@@ -2006,6 +2006,13 @@ def load_structure_dump(uploaded_file):
     l3_col      = find_col(df, ["L3 Name", "L3Name", "L3", "level3_name"])
     l4_col      = find_col(df, ["L4 Name", "L4Name", "L4", "level4_name"])
     l5_col      = find_col(df, ["L5 Name", "L5Name", "L5", "level5_name"])
+    # ID counterparts (separate columns in FSF_TA)
+    l2_id_col_fsf = find_col(df, ["L2 ID", "L2ID", "l2_id", "emp_manager_id"])
+    l3_id_col_fsf = find_col(df, ["L3 ID", "L3ID", "l3_id"])
+    l4_id_col_fsf = find_col(df, ["L4 ID", "L4ID", "l4_id"])
+    l5_id_col_fsf = find_col(df, ["L5 ID", "L5ID", "l5_id"])
+    l6_id_col_fsf = find_col(df, ["L6 ID", "L6ID", "l6_id"])
+    l6_col        = find_col(df, ["L6 Name", "L6Name", "L6", "level6_name"])
     # Warn if this looks like an HRMS dump rather than incentive structure file
     _required_incentive_cols = ["Client-A", "Vintage", "Remarks", "L2 ID"]
     _missing_incentive_cols  = [c for c in _required_incentive_cols
@@ -2340,10 +2347,16 @@ def load_structure_dump(uploaded_file):
             "Catalog Clients":   cat_val,
             "PCR Target":        pcr_target_raw,
             "Collection Target": coll_target,
+            "L2 ID":             str(row[l2_id_col_fsf]).split('.')[0].strip() if l2_id_col_fsf and pd.notna(row[l2_id_col_fsf]) else "",
             "L2 Name":           str(row[l2_col]).strip() if l2_col else "",
+            "L3 ID":             str(row[l3_id_col_fsf]).split('.')[0].strip() if l3_id_col_fsf and pd.notna(row[l3_id_col_fsf]) else "",
             "L3 Name":           str(row[l3_col]).strip() if l3_col else "",
+            "L4 ID":             str(row[l4_id_col_fsf]).split('.')[0].strip() if l4_id_col_fsf and pd.notna(row[l4_id_col_fsf]) else "",
             "L4 Name":           str(row[l4_col]).strip() if l4_col else "",
+            "L5 ID":             str(row[l5_id_col_fsf]).split('.')[0].strip() if l5_id_col_fsf and pd.notna(row[l5_id_col_fsf]) else "",
             "L5 Name":           str(row[l5_col]).strip() if l5_col else "",
+            "L6 ID":             str(row[l6_id_col_fsf]).split('.')[0].strip() if l6_id_col_fsf and pd.notna(row[l6_id_col_fsf]) else "",
+            "L6 Name":           str(row[l6_col]).strip() if l6_col else "",
             "Vintage Bucket":    vbucket,
             "Remarks":           remarks,
             "Group":             grp_val,
@@ -5430,14 +5443,15 @@ if _l2_name_col_rnl and struct_map:
                     mdc1_cmr_map[_eid2] = _l2_name_mdc1[_l2name2]
     except Exception:
         pass
-# CMR+1% = NEXT month's renewals tagged "MDC-1" (sir's formula: Month="May'26" AND Remarks(New)="MDC-1")
-# month_offset=1: looks for next month's data in the same file; falls back to Inv Due Date = month+2
-cmr_plus1_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None,
+# CMR+1% = NEXT month's renewals (sir's formula: Month="Jun'26" when May calc)
+# Use renewal_df_raw (unfiltered) so June rows are visible when renewal_df only has May
+_rnl_for_plus1 = renewal_df_raw if (renewal_df_raw is not None and len(renewal_df_raw) > 0) else renewal_df
+cmr_plus1_map = calc_mdc1_cmr_per_employee(_rnl_for_plus1, mdc_client_counts_map or None,
                                             month_offset=1, sel_month_str=sel_month)
 # Also add L2 RM CMR+1 via L2 name col
 if _l2_name_col_rnl and struct_map and len(cmr_plus1_map) == 0:
     try:
-        _l2_plus1_mdc1 = calc_mdc1_cmr_per_employee(renewal_df,
+        _l2_plus1_mdc1 = calc_mdc1_cmr_per_employee(_rnl_for_plus1,
                                                       emp_col_override=_l2_name_col_rnl,
                                                       month_offset=1, sel_month_str=sel_month)
         for _eid3, _sd3 in struct_map.items():
@@ -5604,10 +5618,8 @@ if calc_btn:
                              mdc1_cmr_pct=emp_mdc1.get("mdc1_cmr_pct", None),
                              all_cmr_pct=all_cmr_map.get(emp_id, {}).get("cmr_pct", None),
                              all_cmr_sent=all_cmr_map.get(emp_id, {}).get("cmr_sent", 0),
-                             cmr_plus1_pct=(cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct") or
-                                              mdc1_cmr_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0)),
-                             cmr_plus1_sent=(cmr_plus1_map.get(emp_id, {}).get("mdc1_sent") or
-                                             mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0)),
+                             cmr_plus1_pct=cmr_plus1_map.get(emp_id, {}).get("mdc1_cmr_pct", 0.0),
+                             cmr_plus1_sent=cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0),
                              nr_upsell_count=nr_upsell_count,
                              net_deal_val=net_deal_val,
                              collection_target=s.get("Collection Target", 0),
@@ -6297,8 +6309,8 @@ if calc_btn:
             ref_exp = refund_df.copy()
             ref_exp = ref_exp.loc[:, ~ref_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
             ref_exp = ref_exp.loc[:, ref_exp.columns.astype(str).str.strip() != ""]
-            _date_rf = find_col(ref_exp, ["Clear Date","Date","Refund Date"])
-            _empid_rf= find_col(ref_exp, ["Sales Ex. ID","Sales Exec ID","EMP ID"])
+            _date_rf  = find_col(ref_exp, ["Clear Date","Date","Refund Date","I"])
+            _empid_rf = find_col(ref_exp, ["Sales Ex. ID","Sales Exec ID","EMP ID","J"])
 
             if _date_rf:
                 _days_rf = pd.to_datetime(ref_exp[_date_rf], errors='coerce').dt.day
@@ -6321,42 +6333,50 @@ if calc_btn:
         try:
             if renewal_df is not None and len(renewal_df) > 0:
                 rnl_exp = renewal_df.copy()
+                # Drop unnamed/blank-header columns
                 rnl_exp = rnl_exp.loc[:, ~rnl_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
                 rnl_exp = rnl_exp.loc[:, rnl_exp.columns.astype(str).str.strip() != ""]
-                _empid_rn   = find_col(rnl_exp, ["EMP ID","Emp ID","Employee ID"])
-                _recvd_rn   = find_col(rnl_exp, ["Received Date","Received","Received.1"])
-                _status_rn  = find_col(rnl_exp, ["Status.1","Status","STATUS"])
-                _remarks_rn = find_col(rnl_exp, ["Remarks (New)","Remarks(New)","AS","Remarks New"])
-                _vert_rn    = find_col(rnl_exp, ["Vertical Final","Vertical","S"])
-                _loc_rn     = find_col(rnl_exp, ["Location"])
+
+                _empid_rn   = find_col(rnl_exp, ["EMP ID","Emp ID","Employee ID","O"])
+                # Status.1 = received/pending status in sir's file
+                _recvd_rn   = find_col(rnl_exp, ["Received Date","Received","Received.1","AK"])
+                _status_rn  = find_col(rnl_exp, ["Status.1","Status","Received","AH"])
+                _remarks_rn = find_col(rnl_exp, ["Remarks (New)","Remarks(New)","Remarks_New","AS"])
+                _vert_rn    = find_col(rnl_exp, ["Vertical Final","Vertical","S","W"])
                 _month_rn   = find_col(rnl_exp, ["Month","month"])
                 _remk_rn    = find_col(rnl_exp, ["Remarks","Remarks_Old","P"])
+                _due_rn     = find_col(rnl_exp, ["Inv Due Date","InvDueDate","Due Date","N"])
+                _loc_rn     = find_col(rnl_exp, ["Location","Q"])
 
-                # Pending AMR: "Yes" if received date is this month OR received date empty
-                if _recvd_rn and sel_month:
-                    _sel_mo = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
-                               "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}.get(
-                               sel_month[:3] if sel_month else "", 5)
-                    _yr = 2026
-                    _start_mo = pd.Timestamp(year=_yr, month=_sel_mo, day=1)
-                    _rcv_dates = pd.to_datetime(rnl_exp[_recvd_rn], errors='coerce')
-                    rnl_exp["Pending AMR"] = _rcv_dates.apply(
-                        lambda d: "Yes" if (pd.isna(d) or d >= _start_mo) else "No")
+                # Pending AMR: clients due in NEXT month (MDC-1 clients for current month)
+                # = Inv Due Date is in next month relative to sel_month
+                if _due_rn and sel_month:
+                    _mo_map = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                               "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+                    _sel_mo = _mo_map.get(str(sel_month).strip()[:3], 5)
+                    _next_mo = (_sel_mo % 12) + 1
+                    _due_dates_rn = pd.to_datetime(rnl_exp[_due_rn], errors='coerce')
+                    rnl_exp["Pending AMR"] = _due_dates_rn.apply(
+                        lambda d: "Yes" if (pd.notna(d) and d.month == _next_mo) else "No")
+                elif _status_rn:
+                    rnl_exp["Pending AMR"] = rnl_exp[_status_rn].apply(
+                        lambda v: "Yes" if "PENDING" in str(v).upper() else "No")
 
-                # AMR Renewal (MDC-1): received this month AND Remarks(New)="MDC-1" AND CSD vertical
-                if _remarks_rn and _vert_rn and "Pending AMR" in rnl_exp.columns:
+                # AMR Renewal (MDC-1): CSD employees with Inv Due Date = next month
+                if "Pending AMR" in rnl_exp.columns and _vert_rn:
                     rnl_exp["AMR Renewal (MDC-1)"] = rnl_exp.apply(
-                        lambda r: "MDC-1" if (r.get("Pending AMR","No")=="Yes" and
-                                              str(r.get(_remarks_rn,"")).strip().upper()=="MDC-1" and
-                                              "CSD" in str(r.get(_vert_rn,"")).upper())
-                                  else ("SAM-ILP" if "SAM" in str(r.get(_remk_rn,"")).upper() else ""),
+                        lambda r: ("MDC-1" if (r.get("Pending AMR","No") == "Yes" and
+                                               "CSD" in str(r.get(_vert_rn,"")).upper())
+                                   else ""),
                         axis=1)
 
-                # SS+: from Remarks col — "SS+" if remarks contains SS+ keywords
-                if _remarks_rn:
-                    _ss_keywords = {"SS+","PREFERRED","STAR","LEADER"}
-                    rnl_exp["SS+ Client"] = rnl_exp[_remarks_rn].apply(
-                        lambda v: "Yes" if any(k in str(v).upper() for k in _ss_keywords) else "No")
+                # SS+ Client: from the Remarks (old) column
+                if _remk_rn:
+                    _ss_keywords = {"SS+","PREFERRED","PREFERRED STAR","PREFERRED LEADER",
+                                    "STAR","LEADER","PL+"}
+                    rnl_exp["SS+ Client"] = rnl_exp[_remk_rn].apply(
+                        lambda v: "Yes" if any(k.upper() == str(v).strip().upper()
+                                               for k in _ss_keywords) else "No")
 
                 # L2-L6 hierarchy from struct_map
                 if _empid_rn:
