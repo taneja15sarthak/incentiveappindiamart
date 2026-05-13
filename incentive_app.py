@@ -1828,59 +1828,105 @@ def calc_all_cmr_per_employee(renewal_df, emp_col_override=None):
     return result
 
 
-def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None, emp_col_override=None):
+def calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts=None, emp_col_override=None,
+                               month_offset=0, sel_month_str=None):
     """
-    Calculate MDC-1 CMR% per employee from renewal file.
+    MDC-1 CMR% and CMR+1% per employee.
 
-    Exact FSF Exec-CSD formula (columns AX/AY/AZ):
-      Sent     = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month,
-                          Renewal."Remarks (New)"="MDC-1")
-      Received = COUNTIFS(Renewal.EmpID, Renewal.Month=sel_month,
-                          Renewal."Remarks (New)"="MDC-1",
-                          Renewal.Status="Received")
-      CMR%     = Received / Sent
+    Sir's exact formula (April FSF):
+      MDC-1 Sent     = COUNTIFS(Renewal.EmpID, EmpID, Renewal.Month, "Apr'26")
+                       → ALL current-month renewals, no extra filter.
+      CMR+1 Sent     = COUNTIFS(Renewal.EmpID, EmpID, Renewal.Month, "May'26",
+                                 Renewal."Remarks(New)", "MDC-1")
+                       → NEXT month's renewals tagged "MDC-1".
 
-    "Remarks (New)" column tags each renewal as MDC-1 / MDC-2+ / MDC-TS etc.
-    Only rows tagged "MDC-1" count for both sent and received.
-    emp_col_override: use a different grouping column (e.g. L2 name for CSD L2).
+    Parameters:
+      month_offset=0  → MDC-1 CMR%:  count ALL rows in sel_month (current month filter only)
+      month_offset=1  → CMR+1%:      next month's rows tagged "MDC-1" (Month = next month AND
+                                      Remarks(New)="MDC-1"; fallback: Inv Due Date = month+2)
 
-    Returns dict: { key_val: {"mdc1_sent", "mdc1_recd", "mdc1_cmr_pct"} }
+    Returns dict: { emp_id_str: {"mdc1_sent", "mdc1_recd", "mdc1_cmr_pct"} }
     """
     if renewal_df is None:
         return {}
 
-    emp_col     = emp_col_override or find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID"])
-    status_col  = find_col(renewal_df, ["Status", "STATUS"])
-    remarks_col = find_col(renewal_df, ["Remarks (New)", "Remarks(New)", "Remarks_New",
-                                        "AS", "Remarks New"])
+    emp_col    = emp_col_override or find_col(renewal_df, ["EMP ID","Emp ID","EmpID","Employee ID"])
+    status_col = find_col(renewal_df, ["Status.1","Status","STATUS"])
+    month_col  = find_col(renewal_df, ["Month","month"])
+    remarks_col= find_col(renewal_df, ["Remarks (New)","Remarks(New)","Remarks_New","AS"])
 
     if not emp_col:
         return {}
 
+    # Month name mapping
+    _MO = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+           "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+    _MO_REV = {v:k for k,v in _MO.items()}
+
+    def _month_num(s):
+        return _MO.get(str(s).strip()[:3], None)
+
+    cur_mo = _month_num(sel_month_str) if sel_month_str else None
+
     df = renewal_df.copy()
     df[emp_col] = df[emp_col].astype(str).str.split('.').str[0].str.strip()
 
-    # Filter to MDC-1 tagged rows only (FSF: AS column = "MDC-1")
-    if remarks_col and remarks_col in df.columns:
-        df_mdc1 = df[df[remarks_col].astype(str).str.strip().str.upper() == "MDC-1"].copy()
+    # ── Filter rows ───────────────────────────────────────────────────────────
+    if month_offset == 0:
+        # MDC-1 CMR%: ALL rows in the current month
+        if cur_mo and month_col and month_col in df.columns:
+            _cur_tag = f"{_MO_REV.get(cur_mo,'')}'26"
+            _cur_tag2 = f"{_MO_REV.get(cur_mo,'')}'2026"
+            df_filtered = df[df[month_col].astype(str).str.upper().str[:3] ==
+                             _MO_REV.get(cur_mo,'').upper()].copy()
+            if len(df_filtered) == 0:  # try full month name
+                df_filtered = df.copy()  # fallback: all rows
+        else:
+            df_filtered = df.copy()   # no month filter: use all rows
     else:
-        # Fallback: use product name filter if no Remarks(New) column
-        product_col = find_col(renewal_df, ["WS/MDC Main", "DCR Services", "Product", "Prod"])
-        if product_col:
-            df_mdc1 = df[df[product_col].apply(
-                lambda p: any(k.upper() in str(p).upper() for k in MDC1_PRODUCTS)
-            )].copy()
+        # CMR+1%: NEXT month's data tagged "MDC-1"
+        # target = current month + month_offset
+        if cur_mo:
+            next_mo = (cur_mo % 12) + 1
+            _next_abbr = _MO_REV.get(next_mo,'')
+            if month_col and month_col in df.columns:
+                df_next = df[df[month_col].astype(str).str.upper().str[:3] ==
+                              _next_abbr.upper()].copy()
+            else:
+                df_next = pd.DataFrame()
+
+            if remarks_col and remarks_col in df_next.columns and len(df_next) > 0:
+                df_filtered = df_next[df_next[remarks_col].astype(str).str.strip().str.upper()
+                                      == "MDC-1"].copy()
+            elif len(df_next) > 0:
+                # Next month rows exist but no MDC-1 tag → use all next-month rows
+                df_filtered = df_next.copy()
+            else:
+                # No next-month data: fall back to Inv Due Date = month+2 in current data
+                due_col = find_col(renewal_df, ["Inv Due Date","InvDueDate","Due Date"])
+                if due_col and due_col in df.columns:
+                    _due_dates = pd.to_datetime(df[due_col], errors='coerce')
+                    _target_mo = ((cur_mo) % 12) + 1   # month+1 (one ahead of next month)
+                    df_filtered = df[_due_dates.dt.month == _target_mo].copy()
+                else:
+                    return {}  # no data available for CMR+1
         else:
             return {}
 
-    if status_col and status_col in df_mdc1.columns:
-        df_mdc1["_recv"] = df_mdc1[status_col].astype(str).str.upper().str.contains(
-            "RECEIVED", na=False)
-    else:
-        df_mdc1["_recv"] = False
+    if len(df_filtered) == 0:
+        return {}
 
+    # ── Received flag ─────────────────────────────────────────────────────────
+    recv_col = status_col
+    if recv_col and recv_col in df_filtered.columns:
+        df_filtered["_recv"] = (df_filtered[recv_col].astype(str).str.upper()
+                                .str.contains("RECEIVED", na=False))
+    else:
+        df_filtered["_recv"] = False
+
+    # ── Aggregate per employee ────────────────────────────────────────────────
     result = {}
-    for emp_id, grp in df_mdc1.groupby(emp_col):
+    for emp_id, grp in df_filtered.groupby(emp_col):
         eid_str = str(emp_id).split('.')[0].strip()
         sent = len(grp)
         recd = int(grp["_recv"].sum())
@@ -5372,7 +5418,8 @@ if _l2_name_col_rnl and struct_map:
     except Exception:
         pass
 
-mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None)
+mdc1_cmr_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None,
+                                           month_offset=0, sel_month_str=sel_month)
 if _l2_name_col_rnl and struct_map:
     try:
         _l2_name_mdc1 = calc_mdc1_cmr_per_employee(renewal_df, emp_col_override=_l2_name_col_rnl)
@@ -5383,31 +5430,23 @@ if _l2_name_col_rnl and struct_map:
                     mdc1_cmr_map[_eid2] = _l2_name_mdc1[_l2name2]
     except Exception:
         pass
-# CMR+1 = April MDC-1 data (used in CSD RM cross-multiplier AK step)
-# For March calc: filter renewal to April; for April calc: same file contains both months
-_cmr_plus1_month = "APR'26" if sel_month and "MAR" in str(sel_month).upper() else (
-                   "MAY'26" if sel_month and "APR" in str(sel_month).upper() else None)
-if _cmr_plus1_month and renewal_df_raw is not None and len(renewal_df_raw) > 0:
-    _rnl_plus1 = renewal_df_raw[
-        renewal_df_raw[find_col(renewal_df_raw,
-            ["Month","MONTH","month"]) or renewal_df_raw.columns[0]
-        ].astype(str).str.upper().str.contains(
-            "APR" if "MAR" in str(sel_month or "").upper() else "MAY", na=False)
-    ] if find_col(renewal_df_raw, ["Month","MONTH"]) else pd.DataFrame()
-    cmr_plus1_map = calc_mdc1_cmr_per_employee(_rnl_plus1, mdc_client_counts_map or None) if len(_rnl_plus1) > 0 else {}
-    # Also add L2 RM May MDC-1 via L2 name col
-    if _l2_name_col_rnl and struct_map and len(_rnl_plus1) > 0:
-        try:
-            _l2_plus1_mdc1 = calc_mdc1_cmr_per_employee(_rnl_plus1, emp_col_override=_l2_name_col_rnl)
-            for _eid3, _sd3 in struct_map.items():
-                if str(_sd3.get("Designation","")).upper() == "L2":
-                    _n3 = str(_sd3.get("Employee Name","")).strip()
-                    if _n3 and _n3 in _l2_plus1_mdc1:
-                        cmr_plus1_map[_eid3] = _l2_plus1_mdc1[_n3]
-        except Exception:
-            pass
-else:
-    cmr_plus1_map = {}
+# CMR+1% = NEXT month's renewals tagged "MDC-1" (sir's formula: Month="May'26" AND Remarks(New)="MDC-1")
+# month_offset=1: looks for next month's data in the same file; falls back to Inv Due Date = month+2
+cmr_plus1_map = calc_mdc1_cmr_per_employee(renewal_df, mdc_client_counts_map or None,
+                                            month_offset=1, sel_month_str=sel_month)
+# Also add L2 RM CMR+1 via L2 name col
+if _l2_name_col_rnl and struct_map and len(cmr_plus1_map) == 0:
+    try:
+        _l2_plus1_mdc1 = calc_mdc1_cmr_per_employee(renewal_df,
+                                                      emp_col_override=_l2_name_col_rnl,
+                                                      month_offset=1, sel_month_str=sel_month)
+        for _eid3, _sd3 in struct_map.items():
+            if str(_sd3.get("Designation","")).upper() == "L2":
+                _n3 = str(_sd3.get("Employee Name","")).strip()
+                if _n3 and _n3 in _l2_plus1_mdc1:
+                    cmr_plus1_map[_eid3] = _l2_plus1_mdc1[_n3]
+    except Exception:
+        pass
 
 # Build emp hierarchy fallback from receipt
 emp_df = build_emp_list(receipt_df)
@@ -6179,6 +6218,9 @@ if calc_btn:
                 ["Productivity","Service_Tier","_is_upsell",
                  "_is_pure_renewal","_has_upsell_on_receipt"]
                 if c in rec_exp.columns])
+            # Drop unnamed/empty columns
+            rec_exp = rec_exp.loc[:, ~rec_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
+            rec_exp = rec_exp.loc[:, rec_exp.columns.astype(str).str.strip() != ""]
 
             _date_c  = find_col(rec_exp, ["Entry Date","Receipt Date","Clear Date","Date"])
             _empid_c = find_col(rec_exp, ["Sales Exec ID","EMP ID","Sales Rep ID","L1 ID"])
@@ -6245,11 +6287,13 @@ if calc_btn:
             if len(rec_exp) > 100_000: rec_exp = rec_exp.head(100_000)
             write_sheet(rec_exp, "Receipt Data", header_fmt=grey)
         except Exception as _e:
-            pass
+            st.warning(f"Receipt Data sheet error: {_e}")
 
         # ── Refund Data ──────────────────────────────────────────────────────
         try:
             ref_exp = refund_df.copy()
+            ref_exp = ref_exp.loc[:, ~ref_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
+            ref_exp = ref_exp.loc[:, ref_exp.columns.astype(str).str.strip() != ""]
             _date_rf = find_col(ref_exp, ["Clear Date","Date","Refund Date"])
             _empid_rf= find_col(ref_exp, ["Sales Ex. ID","Sales Exec ID","EMP ID"])
 
@@ -6274,14 +6318,16 @@ if calc_btn:
         try:
             if renewal_df is not None and len(renewal_df) > 0:
                 rnl_exp = renewal_df.copy()
+                rnl_exp = rnl_exp.loc[:, ~rnl_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
+                rnl_exp = rnl_exp.loc[:, rnl_exp.columns.astype(str).str.strip() != ""]
                 _empid_rn   = find_col(rnl_exp, ["EMP ID","Emp ID","Employee ID"])
-                _recvd_rn   = find_col(rnl_exp, ["Received Date","Received","Status Received","Renewal Received"])
-                _status_rn  = find_col(rnl_exp, ["Status","STATUS"])
+                _recvd_rn   = find_col(rnl_exp, ["Received Date","Received","Received.1"])
+                _status_rn  = find_col(rnl_exp, ["Status.1","Status","STATUS"])
                 _remarks_rn = find_col(rnl_exp, ["Remarks (New)","Remarks(New)","AS","Remarks New"])
-                _vert_rn    = find_col(rnl_exp, ["Vertical","Vertical Final","S"])
+                _vert_rn    = find_col(rnl_exp, ["Vertical Final","Vertical","S"])
                 _loc_rn     = find_col(rnl_exp, ["Location"])
                 _month_rn   = find_col(rnl_exp, ["Month","month"])
-                _remk_rn    = find_col(rnl_exp, ["Remarks","Remarks_Old","P"])  # old remarks col
+                _remk_rn    = find_col(rnl_exp, ["Remarks","Remarks_Old","P"])
 
                 # Pending AMR: "Yes" if received date is this month OR received date empty
                 if _recvd_rn and sel_month:
