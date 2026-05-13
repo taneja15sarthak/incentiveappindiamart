@@ -5076,8 +5076,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Net Deal Value (₹)":  int(net_deal_val) if net_deal_val else 0,
         "Client-A (aggregated)": int(client_cnt) if _is_l2_csd or (_desig_str == "L2" and "KCD" in vertical) else "",
         "Client-C (aggregated)": int(_client_c_val) if (_is_l2_csd and _client_c_val > 0) else "",
-        "Catalog Client":      int(catalog_c) if catalog_c > 0 else "",
-        "Listing Client":      int(listing_c) if listing_c > 0 else "",
+        "Catalog Client":      int(catalog_c) if catalog_c >= 0 else "",
+        "Listing Client":      int(listing_c) if listing_c >= 0 else "",
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
         # ── Spot bifurcation ────────────────────────────────────────
@@ -5558,6 +5558,9 @@ if calc_btn:
                 s = dict(s); s["Listing Clients"] = _ca_total; s["Catalog Clients"] = 0
             elif "CATALOG" in _cur_team and float(s.get("Catalog Clients", 0) or 0) == 0 and _ca_total > 0:
                 s = dict(s); s["Catalog Clients"] = _ca_total; s["Listing Clients"] = 0
+            elif _ca_total > 0 and float(s.get("Catalog Clients", 0) or 0) == 0 and float(s.get("Listing Clients", 0) or 0) == 0:
+                # Regular/ROI/HVRI/Nagpur KCD: all clients are catalog-type by default
+                s = dict(s); s["Catalog Clients"] = _ca_total; s["Listing Clients"] = 0
             if _is_default_team and not _grp_set:
                 _lc_rt  = float(s.get("Listing Clients", 0) or 0)
                 _cat_rt = float(s.get("Catalog Clients", 0) or 0)
@@ -5674,8 +5677,8 @@ if calc_btn:
         "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 1)
                                    if float(s.get("Client-C", 0) or 0) > 0
                                    else ""),
-        "Catalog Client":        int(float(s.get("Catalog Clients", 0) or 0)) if float(s.get("Catalog Clients", 0) or 0) > 0 else "",
-        "Listing Client":        int(float(s.get("Listing Clients", 0) or 0)) if float(s.get("Listing Clients", 0) or 0) > 0 else "",
+        "Catalog Client":        int(float(s.get("Catalog Clients", 0) or 0)),
+        "Listing Client":        int(float(s.get("Listing Clients", 0) or 0)),
         "Collection Target (₹)": int(s.get("Collection Target", 0) or 0) if int(s.get("Collection Target", 0) or 0) > 0 else "",
         "Effective Team Size":  int(s.get("Effective Team Size", 0) or 0),
         "L1 Count":             int(s.get("L1 Count", 0) or 0),
@@ -5756,7 +5759,7 @@ if calc_btn:
         "SS+ CMR% (auto)", "SS+ Sent", "SS+ Received",
         "Renewals Sent", "Renewals Received", "CMR Slab",
         "MDC1 Sent", "MDC1 Recd",
-        "MDC-1 CMR%", "MDC1 CMR+1%", "CMR+1 Multiplier", "Inc. Payout Mult",
+        "MDC-1 CMR%", "CMR+1 Sent", "CMR+1 Recd", "MDC1 CMR+1%", "CMR+1 Multiplier", "Inc. Payout Mult",
         "Productivity Score", "Insta Txns (0.5×)", "Receipt Txns", "Renewal Txns",
         "Inc. Per Txn (₹)", "Net Incentive (₹)", "SPS Booster", "Gross Inc w/ Boost (₹)",
         "KCD Base Incentive (₹)", "KCD Incremental (₹)", "KCD SS+Ren Mult", "KCD Gross Incentive (₹)",
@@ -5911,7 +5914,7 @@ if calc_btn:
                 # CMR (matches sir's CMR / CMR+1 / MDC-1 CMR sections)
                 "CMR Slab1 Target","CMR Slab2 Target",
                 "Renewals Sent","Renewals Received","CMR% (auto)",
-                "MDC1 Sent","MDC1 Recd","MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier",
+                "MDC1 Sent","MDC1 Recd","MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier",
                 # Base incentive
                 "Inc. Payout Mult","Productivity Score","Receipt Txns",
                 "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
