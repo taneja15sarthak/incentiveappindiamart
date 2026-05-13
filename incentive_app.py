@@ -9,7 +9,7 @@ Changes in this version (v19):
   - Fix 3: CSD Spot -- per-employee NR upsell count from receipt (replaces global sidebar)
   - Fix 4: KCD transaction count -- uses prod_score_receipt (productive rows only)
             not txn_count (all receipt rows) → base incentive now matches sir's calc
-  - Fix 5: KCD SS+ penalty -- only applied when ss_sent ≥ 3 AND ss_cmr < 70%
+  - Fix 5: KCD SS+ penalty -- only applied when ss_sent ≥ 3 AND ss_cmr < 70%a
             (≤2 SS+ sent = no penalty, not enough data)
   - Fix 6: KCD Incremental -- (Net_Deal_Val − Collection_Target) × 1.4%
             Collection_Target = PCR_Target × ClientA from structure dump
@@ -4023,35 +4023,37 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     net_collection   = total_dv - total_ref
     net_deal_val     = gross_deal_val - deal_loss
 
-    # Weekly Deal Value sums for March PCDV Bullet Spot
-    # New format has a pre-computed "Week" col ("WK-1".."WK-4")
-    # Old format derives week from Receipt Date (Excel serial)
-    weekly_dv = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    # Weekly Deal Value sums AND productivity transaction counts per week (sir's WK-1/2/3/4)
+    weekly_dv  = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    weekly_txn = {1: 0,   2: 0,   3: 0,   4: 0}   # sir's WK-1..WK-4 = PRODUCTIVITY COUNTS
     _wk_col   = find_col(receipt_df, ["Week", "WEEK"])
     _rcol_w   = find_col(receipt_df, ["Receipt Date", "ReceiptDate"])
-    _dv_col_w = dv_col  # already-found Deal Val (WT) / WOT column
+    _dv_col_w = dv_col
     _wk_map   = {"WK-1":1,"WK-2":2,"WK-3":3,"WK-4":4,"WK1":1,"WK2":2,"WK3":3,"WK4":4}
 
-    if _wk_col and _dv_col_w and len(rec) > 0:
-        # Prefer pre-computed Week column (new receipt file format)
-        for _wlabel, _v in zip(rec[_wk_col].fillna("").values,
-                                rec[_dv_col_w].fillna(0).values):
+    if _wk_col and len(rec) > 0:
+        for _wlabel, _dv_v, _prod_v in zip(
+                rec[_wk_col].fillna("").values,
+                (rec[_dv_col_w].fillna(0).values if _dv_col_w else [0]*len(rec)),
+                rec.get(find_col(receipt_df, ["Productivity","Total Sale"]) or "_DUMMY_",
+                        pd.Series(0, index=rec.index)).fillna(0).values):
             _wn = _wk_map.get(str(_wlabel).strip().upper())
             if _wn:
-                weekly_dv[_wn] += float(_v)
-    elif _rcol_w and _dv_col_w and len(rec) > 0:
-        # Fallback: derive week from Receipt Date (Excel serial number)
+                if _dv_col_w: weekly_dv[_wn] += float(_dv_v)
+                weekly_txn[_wn] += 1   # count every row (productive or not)
+    elif _rcol_w and len(rec) > 0:
         try:
             _rd   = pd.to_numeric(rec[_rcol_w], errors='coerce').fillna(0).astype(int)
-            _dv   = rec[_dv_col_w].fillna(0)
+            _dv   = rec[_dv_col_w].fillna(0) if _dv_col_w else pd.Series(0, index=rec.index)
             _base = pd.Timestamp('1899-12-30')
             for _x, _v in zip(_rd.values, _dv.values):
                 if _x > 0:
                     _dt = _base + pd.Timedelta(days=int(_x))
-                    if _dt.year == 2026 and _dt.month == 3:
-                        _wk = (1 if _dt.day <= 10 else 2 if _dt.day <= 17
-                               else 3 if _dt.day <= 24 else 4)
-                        weekly_dv[_wk] += float(_v)
+                    if _dt.year == 2026:
+                        _wk = (1 if _dt.day <= 9 else 2 if _dt.day <= 16
+                               else 3 if _dt.day <= 23 else 4)
+                        weekly_dv[_wk]  += float(_v)
+                        weekly_txn[_wk] += 1
         except Exception:
             pass
 
@@ -4207,7 +4209,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
             svc_tiers, insta_count_receipt, prod_score_receipt,
             gross_collection, gross_deal_val, deal_loss, net_deal_val,
-            nr_upsell_count, weekly_dv,
+            nr_upsell_count, weekly_dv, weekly_txn,
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
@@ -5026,10 +5028,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "KCD PCDV Target":            round(pcr_target_v, 0)  if "KCD" in vertical else "",
         "KCD PCDV%":                  round(pcr_pct * 100, 2) if "KCD" in vertical else "",
         # WK productive transaction counts
-        "KCD WK-1 DV (₹)":  int(weekly_dv.get(1, 0)) if ("KCD" in vertical and weekly_dv) else "",
-        "KCD WK-2 DV (₹)":  int(weekly_dv.get(2, 0)) if ("KCD" in vertical and weekly_dv) else "",
-        "KCD WK-3 DV (₹)":  int(weekly_dv.get(3, 0)) if ("KCD" in vertical and weekly_dv) else "",
-        "KCD WK-4 DV (₹)":  int(weekly_dv.get(4, 0)) if ("KCD" in vertical and weekly_dv) else "",
+        "KCD WK-1 Txns":  weekly_txn.get(1, 0) if ("KCD" in vertical and weekly_txn) else "",
+        "KCD WK-2 Txns":  weekly_txn.get(2, 0) if ("KCD" in vertical and weekly_txn) else "",
+        "KCD WK-3 Txns":  weekly_txn.get(3, 0) if ("KCD" in vertical and weekly_txn) else "",
+        "KCD WK-4 Txns":  weekly_txn.get(4, 0) if ("KCD" in vertical and weekly_txn) else "",
         "KCD WK Total Txns": round(_kcd_prod, 1)       if "KCD" in vertical else "",
         "KCD BTL":           int(sb.get("btl_sales", 0)) if "KCD" in vertical else "",
         "KCD CMR Sent":      rnl_sent if "KCD" in vertical else "",
@@ -5539,12 +5541,17 @@ if calc_btn:
         # ── KCD team re-routing after client counts are resolved ─────────────
         # Listing/Catalog columns may not exist in structure file by name.
         # Re-route based on client ratios ONLY when Group didn't already set a specific team
-        if s.get("Vertical","") == "KCD":
+        if "KCD" in str(s.get("Vertical","")).upper():
             _cur_team = str(s.get("Team","")).upper()
-            # If Group already gave us a specific team, don't override
             _grp_set  = bool(s.get("Group","") and s.get("Group","") not in ("-",""))
             _is_default_team = not any(k in _cur_team
                                         for k in ["LISTING","CATALOG","HVRI","NAGPUR","ROI"])
+            # Derive Catalog/Listing client counts from Group/Sub Group when not in target file
+            _ca_total = float(s.get("Client Count", 0) or 0)
+            if "LISTING" in _cur_team and float(s.get("Listing Clients", 0) or 0) == 0 and _ca_total > 0:
+                s = dict(s); s["Listing Clients"] = _ca_total; s["Catalog Clients"] = 0
+            elif "CATALOG" in _cur_team and float(s.get("Catalog Clients", 0) or 0) == 0 and _ca_total > 0:
+                s = dict(s); s["Catalog Clients"] = _ca_total; s["Listing Clients"] = 0
             if _is_default_team and not _grp_set:
                 _lc_rt  = float(s.get("Listing Clients", 0) or 0)
                 _cat_rt = float(s.get("Catalog Clients", 0) or 0)
@@ -5570,7 +5577,7 @@ if calc_btn:
          rnl_count, total_ref, all_rnl_count,
          svc_tiers, insta_cnt_receipt, prod_score_receipt,
          gross_collection, gross_deal_val, deal_loss, net_deal_val,
-         nr_upsell_count, weekly_dv,
+         nr_upsell_count, weekly_dv, weekly_txn,
             fnt1_prod_count, fnt2_prod_count,
             pref_ss_count, btl_count, im_var_count,
             fnt1_pcdv, fnt2_pcdv,
@@ -5838,7 +5845,7 @@ if calc_btn:
             "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
             "KCD Collection Target (₹)","KCD Highest Collection (₹)","KCD PCDV Target","KCD PCDV%",
-            "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+            "KCD WK-1 Txns","KCD WK-2 Txns","KCD WK-3 Txns","KCD WK-4 Txns","KCD WK Total Txns","KCD BTL",
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
             "KCD Incentive Multiplier",
@@ -5924,7 +5931,7 @@ if calc_btn:
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","PCR","Slab Metric Used",
             "KCD Highest Collection (₹)","KCD PCDV Target","KCD PCDV%",
             # Weekly DV
-            "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+            "KCD WK-1 Txns","KCD WK-2 Txns","KCD WK-3 Txns","KCD WK-4 Txns","KCD WK Total Txns","KCD BTL",
             # CMR / SS+
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
@@ -5955,7 +5962,7 @@ if calc_btn:
                 "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
                 "KCD Highest Collection (₹)","KCD PCDV Target","PCDV","PCR","KCD PCDV%",
                 # Weekly
-                "KCD WK-1 DV (₹)","KCD WK-2 DV (₹)","KCD WK-3 DV (₹)","KCD WK-4 DV (₹)","KCD WK Total Txns","KCD BTL",
+                "KCD WK-1 Txns","KCD WK-2 Txns","KCD WK-3 Txns","KCD WK-4 Txns","KCD WK Total Txns","KCD BTL",
                 # CMR / SS+
                 "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
                 "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
