@@ -6262,10 +6262,13 @@ if calc_btn:
 
             # SAM ILP slab (WT AMT based)
             if _amt_c:
+                def _sf(v, d=0):
+                    try: return float(v)
+                    except: return d
                 rec_exp["SAM ILP Slab"] = rec_exp[_amt_c].apply(
-                    lambda v: "10L+" if _safe_float(v,0)>=1000000 else
-                              "5L+"  if _safe_float(v,0)>=500000  else
-                              "2L+"  if _safe_float(v,0)>=200000  else 0)
+                    lambda v: "10L+" if _sf(v)>=1000000 else
+                              "5L+"  if _sf(v)>=500000  else
+                              "2L+"  if _sf(v)>=200000  else 0)
 
             # Base to List Sale: "No" if base client type is Leader/Star
             if _base_ct:
