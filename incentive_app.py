@@ -4030,26 +4030,31 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # New receipt format pre-computes this; old format uses enrich_receipt output
     if "Productivity" in rec.columns:
         _prod_vals = rec["Productivity"].fillna(0).astype(float)
-        prod_rows  = rec[_prod_vals > 0]                    # 1.0 and 0.5 both productive
+        prod_rows  = rec[_prod_vals > 0]
         svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
         insta_count_receipt = int((_prod_vals == 0.5).sum())  # rows with 0.5 = Insta
-        prod_score_receipt  = float(_prod_vals.sum())          # 1.0×full + 0.5×insta
-        # Per-week productivity counts (for min-productivity gate)
+        prod_score_receipt  = float(_prod_vals.sum())          # SUMIFS(AR): 1.0×full + 0.5×insta → SPS/KCD
+        # For CSD 0-30D/31-90D: sir uses COUNTIFS(AR="1") — integer count, Insta excluded
+        # (per Exec-CSD col 43 formula: COUNTIFS(Receipt.AR, "1", EmpID, Tagged))
+        prod_score_receipt_int = int((_prod_vals == 1.0).sum())  # rows with exactly AR=1 (non-Insta)
+        # Per-week productivity (SUMIFS on AR per week = weighted count)
         _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
-        weekly_prod_counts = {}  # {week_num: productive_count}
+        weekly_prod_counts = {}
         if _date_col and len(prod_rows) > 0:
             _dates = pd.to_datetime(prod_rows[_date_col], errors='coerce')
-            _weeks = _dates.apply(lambda d: (1 if d.day<=7 else 2 if d.day<=14 else 3 if d.day<=21 else 4)
+            _weeks = _dates.apply(lambda d: (1 if d.day<=7 else 2 if d.day<=14
+                                             else 3 if d.day<=21 else 4)
                                   if pd.notna(d) else 0)
             for w, cnt in _weeks.value_counts().items():
                 if w > 0:
                     weekly_prod_counts[int(w)] = int(cnt)
     else:
-        prod_rows           = rec
-        svc_tiers           = []
-        insta_count_receipt = 0
-        prod_score_receipt  = txn_count
-        weekly_prod_counts  = {}
+        prod_rows              = rec
+        svc_tiers              = []
+        insta_count_receipt    = 0
+        prod_score_receipt     = txn_count
+        prod_score_receipt_int = txn_count
+        weekly_prod_counts     = {}
     ref_id_col = find_col(refund_df, ["Sales Ex. ID", "Sales Exec ID", "EMP ID"])
     if is_l2:
         # For ALL L2 employees: sum L1 refunds via L2 NAME column in refund file
@@ -4095,37 +4100,41 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     net_collection   = total_dv - total_ref
     net_deal_val     = gross_deal_val - deal_loss
 
-    # Weekly Deal Value sums AND productivity transaction counts per week (sir's WK-1/2/3/4)
+    # Weekly productivity (AR values) and transaction counts per week (sir's WK-1/2/3/4)
+    # Sir's formula: SUMIFS(Receipt.AR, EmpID, Tagged, Vertical, Week=WK-x)
+    # AR = 1.0 for regular, 0.5 for Insta → WK columns = weighted productivity per week
     weekly_dv  = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
-    weekly_txn = {1: 0,   2: 0,   3: 0,   4: 0}   # sir's WK-1..WK-4 = PRODUCTIVITY COUNTS
-    _wk_col   = find_col(receipt_df, ["Week", "WEEK"])
-    _rcol_w   = find_col(receipt_df, ["Receipt Date", "ReceiptDate"])
-    _dv_col_w = dv_col
-    _wk_map   = {"WK-1":1,"WK-2":2,"WK-3":3,"WK-4":4,"WK1":1,"WK2":2,"WK3":3,"WK4":4}
+    weekly_txn = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}   # sum of AR values per week (sir's formula)
+    _wk_col    = find_col(receipt_df, ["Week", "WEEK"])
+    _rcol_w    = find_col(receipt_df, ["Receipt Date", "ReceiptDate", "Entry Date"])
+    _dv_col_w  = dv_col
+    _wk_map    = {"WK-1":1,"WK-2":2,"WK-3":3,"WK-4":4,"WK1":1,"WK2":2,"WK3":3,"WK4":4}
+    # AR (Productivity weight) column
+    _ar_col    = find_col(receipt_df, ["Productivity"]) if "Productivity" in receipt_df.columns else None
 
     if _wk_col and len(rec) > 0:
-        for _wlabel, _dv_v, _prod_v in zip(
-                rec[_wk_col].fillna("").values,
-                (rec[_dv_col_w].fillna(0).values if _dv_col_w else [0]*len(rec)),
-                rec.get(find_col(receipt_df, ["Productivity","Total Sale"]) or "_DUMMY_",
-                        pd.Series(0, index=rec.index)).fillna(0).values):
+        _ar_vals = rec[_ar_col].fillna(1.0).astype(float).values if _ar_col and _ar_col in rec.columns else None
+        for _wi, _wlabel in enumerate(rec[_wk_col].fillna("").values):
             _wn = _wk_map.get(str(_wlabel).strip().upper())
             if _wn:
-                if _dv_col_w: weekly_dv[_wn] += float(_dv_v)
-                weekly_txn[_wn] += 1   # count every row (productive or not)
+                _ar = float(_ar_vals[_wi]) if _ar_vals is not None else 1.0
+                weekly_txn[_wn] += _ar  # sum of AR weights (sir's SUMIFS)
+                if _dv_col_w and _dv_col_w in rec.columns:
+                    weekly_dv[_wn] += float(rec.iloc[_wi].get(_dv_col_w, 0) or 0)
     elif _rcol_w and len(rec) > 0:
         try:
             _rd   = pd.to_numeric(rec[_rcol_w], errors='coerce').fillna(0).astype(int)
             _dv   = rec[_dv_col_w].fillna(0) if _dv_col_w else pd.Series(0, index=rec.index)
+            _ar_s = rec[_ar_col].fillna(1.0).astype(float) if _ar_col and _ar_col in rec.columns else pd.Series(1.0, index=rec.index)
             _base = pd.Timestamp('1899-12-30')
-            for _x, _v in zip(_rd.values, _dv.values):
+            for _x, _v, _ar in zip(_rd.values, _dv.values, _ar_s.values):
                 if _x > 0:
                     _dt = _base + pd.Timedelta(days=int(_x))
                     if _dt.year == 2026:
                         _wk = (1 if _dt.day <= 9 else 2 if _dt.day <= 16
                                else 3 if _dt.day <= 23 else 4)
+                        weekly_txn[_wk] += float(_ar)
                         weekly_dv[_wk]  += float(_v)
-                        weekly_txn[_wk] += 1
         except Exception:
             pass
 
@@ -4287,7 +4296,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
             wk1_prod_counts, excellent_txn_count,
-            computed_client_c)
+            computed_client_c, prod_score_receipt_int)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -4987,9 +4996,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 notes           = (notes or "") + f" | MIN_PROD_NOT_MET ({_prod_gate_note})"
 
     # ── Decompose values matching sir's FSF column layout ────────────────────
-    _prod_score = round(prod_score_receipt or (
-                        prod_score_new if "CSD" in vertical and vintage in ("0-30D","31-90D")
-                        else prod_score_sps), 1)
+    # Productivity Score for display — matches sir's FSF formula:
+    #   CSD 0-30D/31-90D : COUNTIFS(AR="1") = integer count, Insta excluded (sir col AP)
+    #   CSD SPS 91D+     : SUMIFS(AR)       = weighted (1.0 + 0.5×Insta)  (sir col BJ)
+    #   KCD / all others : SUMIFS(AR)       = weighted                    (sir col AH/AG)
+    _is_new_joiner = vintage in ("0-30D", "31-90D")
+    _prod_score = round(float(
+        prod_score_receipt_int if _is_new_joiner   # exact int count for 0-90D
+        else (prod_score_receipt or 0)             # weighted SUMIFS for SPS/KCD
+    ), 1)
 
     # CSD breakdown: expose intermediate values to match sir's FSF column layout
     _is_csd_sps = "CSD" in vertical and "SPS" in team
@@ -5067,7 +5082,6 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _kcd_per_txn   = int(_kcd_per_txn_m.group(1)) if _kcd_per_txn_m else 0
 
     return {
-        "Days Since Joining":  days_since_joining,
         "CMR% (auto)":         round(cmr_pct, 1),
         "SS+ CMR% (auto)":     round(ss_cmr_pct, 1),
         "CMR Slab1 Target":    sb.get("csd_slab1_target", sb.get("kcd_slab1_target", "")),
@@ -5084,7 +5098,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "PCDV":                round(pcdv_val, 0),
         "Slab Metric Used":    metric_label,
         "Productivity Score":  _prod_score,
-        "Insta Txns (0.5×)":   insta_cnt_sps,
+        "Insta Txns (0.5×)":   insta_count_receipt,  # receipt-based (sir's col AR Insta rows)
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
         # MDC1 CMR+1% = PREVIOUS month's MDC-1 CMR% (April data when running May)
@@ -5185,6 +5199,9 @@ def _derive_scheme_type(vintage, team, vertical, designation):
         if vintage in ("0-30D","31-90D"): return f"New Joiner {vintage}"
         if _d == "L2" or "REL" in _d or "RM-" in _d:
             return "Rel Mgr SPS" if "SPS" in _t else "Rel Mgr 31-90D"
+        if "90+ DAYS" in _t.replace("_"," ") or "90+D" in _t:
+            # 90+ Days group: uses SPS CALC but NO booster — different label
+            return f"CSD 90+D {vintage}"
         if "SPS" in _t or vintage in ("91-270D","270D+","SPS"):
             return f"CSD SPS {vintage}"
         return f"CSD {vintage}"
@@ -5268,7 +5285,13 @@ with st.sidebar:
         help="All calculations -- PCDV, CMR%, Productivity -- will be for this month only"
     )
     st.divider()
-    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True)
+    col_calc, col_enrich = st.columns(2)
+    with col_calc:
+        calc_btn = st.button("▶ Calculate Incentives", type="primary", use_container_width=True)
+    with col_enrich:
+        enrich_btn = st.button("📋 Generate Enriched Receipt",
+                               use_container_width=True,
+                               help="Generate receipt file with all computed columns (Day, Week, Productivity, AMR etc.) for review/editing. Upload the edited file back as Receipt to recalculate.")
 
 
 # ── Slab Config download ──────────────────────────────────────
@@ -5566,6 +5589,183 @@ with st.expander("Loaded file summary"):
     else:
         st.warning("⚠️ No CMR Targets -- fallback 70%/80% applied")
 
+
+# ── Step 1: Generate Enriched Receipt ─────────────────────────────────────────
+if enrich_btn:
+    if not receipt_file:
+        st.error("Please upload a Receipt file first (sidebar → Input Files → Receipt).")
+    else:
+        with st.spinner("Enriching receipt file with computed columns…"):
+            try:
+                import io as _io
+                rec_raw = _read_file(receipt_file)
+                rec_raw.columns = [str(c).strip() for c in rec_raw.columns]
+
+                # Drop unnamed columns
+                rec_raw = rec_raw.loc[:, ~rec_raw.columns.astype(str).str.lower().str.startswith("unnamed")]
+                rec_raw = rec_raw.loc[:, rec_raw.columns.astype(str).str.strip() != ""]
+
+                # Column detection
+                _d_c  = find_col(rec_raw, ["Entry Date","Clear Date","Receipt Date","Date","O"])
+                _u_c  = find_col(rec_raw, ["Unique","UNIQUE","E"])
+                _ak_c = find_col(rec_raw, ["WT AMT","WTAMT","WT_AMT","AK"])
+                _al_c = find_col(rec_raw, ["MODE","Mode","Payment Terms","AL"])
+                _ah_c = find_col(rec_raw, ["CMR-C+1-C+2","Rem","AH"])
+                _x_c  = find_col(rec_raw, ["Base Client Type","CustType","X"])
+                _ab_c = find_col(rec_raw, ["Vertical","AB","vertical"])
+                _p_c  = find_col(rec_raw, ["Sales Exec ID","Sales Ex. ID","EMP ID","L1 ID","P"])
+                _c_c  = find_col(rec_raw, ["WS/MDC Main","Prod","Product","C"])
+
+                # Day / Week / FNT
+                if _d_c:
+                    _dt = pd.to_datetime(rec_raw[_d_c], errors='coerce', dayfirst=False)
+                    _n  = pd.to_numeric(rec_raw[_d_c], errors='coerce')
+                    _is_s = _n.notna() & _dt.isna()
+                    if _is_s.any():
+                        _bt = pd.Timestamp('1899-12-30')
+                        _dt = _dt.copy()
+                        _dt[_is_s] = _n[_is_s].apply(lambda x: _bt + pd.Timedelta(days=int(x)) if pd.notna(x) else pd.NaT)
+                    _dy = _dt.dt.day.fillna(0).astype(int)
+                    rec_raw["Day"]  = _dy.replace(0,"")
+                    rec_raw["Week"] = _dy.apply(lambda d: "" if d==0 else "WK-4" if d>=24 else "WK-3" if d>=17 else "WK-2" if d>=10 else "WK-1")
+                    rec_raw["FNT"]  = _dy.apply(lambda d: "" if d==0 else "FNT-1" if d<=16 else "FNT-2")
+
+                # IL Sale/CL
+                _IL = {"CATEGORY LEADER","ILP","CATEGORY LEADER INDIA",
+                       "INDUSTRY LEADER","BRAND BILLBOARD","IM IL","PREFERRED IL"}
+                if _u_c:
+                    rec_raw["IL Sale/CL"] = rec_raw[_u_c].apply(
+                        lambda v: "Yes" if str(v).strip().upper() in _IL else "No")
+
+                # Sale Mapping (approx — "Upsell" for TS/IVE/upgrade products)
+                _UPS = {"MDC-TS","IVE","TRUSTSEAL","TS-1","TS-2","TS-3","MDC PLUS","MDC PRO"}
+                if _c_c:
+                    rec_raw["Sale Mapping"] = rec_raw[_c_c].apply(
+                        lambda v: "Upsell" if any(k in str(v).upper() for k in _UPS) else "")
+
+                # Renewal Map (approx — "Renewal" for renewal products)
+                _RNL = {"MDC","MDC-TS","WS","IVE","MYR","MAXI","TRUSTSEAL"}
+                if _c_c and _ah_c:
+                    rec_raw["Renewal Map"] = rec_raw.apply(
+                        lambda r: "NA" if str(r.get(_ah_c,"")).strip()=="Retention"
+                                  else ("Renewal" if any(k in str(r.get(_c_c,"")).upper() for k in _RNL) else "NA"),
+                        axis=1)
+
+                # Total Sale (sir: IF(OR(E3="",E3="TS"),0,1))
+                if _u_c:
+                    rec_raw["Total Sale"] = rec_raw[_u_c].apply(
+                        lambda v: 0 if str(v).strip() in ("","nan","TS") else 1)
+                else:
+                    rec_raw["Total Sale"] = 1
+
+                # Productivity (sir: IF(AQ=1,1,IF(AND(BH="Renewal",BG=""),1,"")))
+                if "Renewal Map" in rec_raw.columns and "Sale Mapping" in rec_raw.columns:
+                    rec_raw["Productivity"] = rec_raw.apply(
+                        lambda r: (1 if r["Total Sale"]==1
+                                   else (1 if (r.get("Renewal Map","")=="Renewal" and
+                                               r.get("Sale Mapping","")=="") else "")),
+                        axis=1)
+                else:
+                    rec_raw["Productivity"] = rec_raw["Total Sale"]
+
+                # AMR
+                if _ah_c:
+                    rec_raw["AMR"] = rec_raw[_ah_c].apply(
+                        lambda v: "No" if str(v).strip().upper() in {"OTHERS","RETENTION","CMR+3"} else "Yes")
+
+                # NR Upsell/AMR (sir: CSD AND (AMR=Yes OR AL=Upsell-NR))
+                if "AMR" in rec_raw.columns and _ab_c:
+                    rec_raw["NR Upsell/AMR"] = rec_raw.apply(
+                        lambda r: "Yes" if (str(r.get(_ab_c,"")).upper()=="CSD" and
+                                            (r.get("AMR","No")=="Yes" or
+                                             str(r.get(_al_c,"")).strip().upper()=="UPSELL-NR"))
+                                  else "No", axis=1)
+
+                # SAM ILP Slab
+                if _ak_c:
+                    def _safe_enrich(v):
+                        try: return float(v)
+                        except: return 0.0
+                    rec_raw["SAM ILP Slab"] = rec_raw[_ak_c].apply(
+                        lambda v: "10L+" if _safe_enrich(v)>=1000000 else
+                                  "5L+"  if _safe_enrich(v)>=500000  else
+                                  "2L+"  if _safe_enrich(v)>=200000  else 0)
+
+                # Base to List Sale
+                if _x_c:
+                    rec_raw["Base to List Sale"] = rec_raw[_x_c].apply(
+                        lambda v: "No" if str(v).strip().upper() in ("LEADER","STAR") else "Yes")
+
+                # Collection (sir: AL<>"Nach/ECS" → Yes)
+                if _al_c:
+                    rec_raw["Collection"] = rec_raw[_al_c].apply(
+                        lambda v: "No" if str(v).strip()=="Nach/ECS" else "Yes")
+
+                # L2-L6 from struct_map
+                if _p_c and 'struct_map' in dir() and struct_map:
+                    def _h(v):
+                        s = struct_map.get(str(v).split('.')[0].strip(), {})
+                        return {"L2 ID": s.get("L2 ID",""), "L2 Name": s.get("L2 Name",""),
+                                "L3 ID": s.get("L3 ID",""), "L3 Name": s.get("L3 Name",""),
+                                "L4 ID": s.get("L4 ID",""), "L4 Name": s.get("L4 Name","")}
+                    _hdf = rec_raw[_p_c].apply(lambda v: pd.Series(_h(v)))
+                    for _hc in _hdf.columns:
+                        if _hc not in rec_raw.columns:
+                            rec_raw[_hc] = _hdf[_hc]
+
+                # Write to Excel
+                _buf = _io.BytesIO()
+                with pd.ExcelWriter(_buf, engine="xlsxwriter") as _w:
+                    rec_raw.to_excel(_w, sheet_name="Receipt Data", index=False, startrow=1)
+                    _ws  = _w.sheets["Receipt Data"]
+                    _hf  = _w.book.add_format({"bold":True,"bg_color":"#595959","font_color":"#FFFFFF","font_size":10})
+                    _yel = _w.book.add_format({"italic":True,"bg_color":"#FFF2CC","font_color":"#595959","font_size":8})
+                    _green = _w.book.add_format({"bg_color":"#E2EFDA"})
+                    _ws.write(0, 0, "Receipt Data — Review and edit Productivity/AMR columns as needed, then upload this file back as Receipt to recalculate incentives.")
+                    for _ci, _col in enumerate(rec_raw.columns):
+                        _ws.write(1, _ci, _col, _hf)
+                        _ws.set_column(_ci, _ci, max(14, len(str(_col))+2))
+                        # All computed/derived columns highlighted green — all editable
+                        if _col in ("Day","Week","FNT","IL Sale/CL",
+                                    "Sale Mapping","Renewal Map",
+                                    "Total Sale","Productivity",
+                                    "AMR","NR Upsell/AMR",
+                                    "SAM ILP Slab","Base to List Sale","Collection",
+                                    "L2 ID","L2 Name","L3 ID","L3 Name",
+                                    "L4 ID","L4 Name","L5 ID","L5 Name"):
+                            _ws.write(0, _ci, f"↓ {_col}", _yel)
+                    _ws.freeze_panes(2, 0)
+
+                st.download_button(
+                    label="⬇ Download Enriched Receipt File",
+                    data=_buf.getvalue(),
+                    file_name=f"Receipt_Enriched_{pd.Timestamp.now().strftime('%d%m%Y')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                st.success(f"✅ Enriched receipt file ready ({len(rec_raw):,} rows). "
+                           f"All computed columns are editable. "
+                           f"Upload the edited file back as Receipt and click Calculate.")
+                st.info("💡 **All computed columns can be edited** (marked with ↓ in row 1):\n\n"
+                        "| Column | What to check |\n"
+                        "|---|---|\n"
+                        "| **Total Sale** | 1 = new sale, 0 = not a sale (based on Unique column) |\n"
+                        "| **Productivity** | 1 = productive transaction, blank = not productive |\n"
+                        "| **Renewal Map** | 'Renewal' or 'NA' — fix misclassified products |\n"
+                        "| **Sale Mapping** | 'Upsell' or blank |\n"
+                        "| **IL Sale/CL** | Yes/No — Industry Leader / Category Leader sale |\n"
+                        "| **AMR** | Yes/No — Annual Maintenance Renewal eligibility |\n"
+                        "| **NR Upsell/AMR** | Yes/No — CSD NR Upsell or AMR |\n"
+                        "| **Collection** | Yes/No — Nach/ECS vs collected payment |\n"
+                        "| **SAM ILP Slab** | 2L+/5L+/10L+ |\n"
+                        "| **Base to List Sale** | Yes/No |\n"
+                        "| **Day/Week/FNT** | Date-derived — correct if dates are wrong |\n"
+                        "| **L2-L5 hierarchy** | Correct if employee mapping is wrong |\n\n"
+                        "When you upload the edited file back, the code uses **your values directly** — "
+                        "Productivity especially drives the incentive calculation.")
+            except Exception as _e:
+                st.error(f"Error generating enriched receipt: {_e}")
+
+
 if calc_btn:
     results = []
     prog    = st.progress(0, "Calculating…")
@@ -5670,7 +5870,7 @@ if calc_btn:
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
             wk1_prod_counts, excellent_txn_count,
-            computed_client_c) = \
+            computed_client_c, prod_score_receipt_int) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
@@ -5723,14 +5923,14 @@ if calc_btn:
                              wk1_prod_counts=wk1_prod_counts,
                              excellent_txn_count=excellent_txn_count)
         except Exception as _e:
-            inc = {
-                "Days Since Joining": "", "CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
+            inc = {"CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
                 "CMR Slab1 Target": "", "CMR Slab2 Target": "",
                 "Renewals Sent": 0, "Renewals Received": 0, "CMR Slab": "Error",
                 "SS+ Sent": 0, "SS+ Received": 0,
                 "MDC-1 CMR%": "", "PCR": 0, "PCDV": 0, "Slab Metric Used": "",
                 "Productivity Score": 0, "Insta Txns (0.5×)": 0,
                 "Receipt Txns": 0, "Renewal Txns": 0,
+                "CMR+1 Sent": "", "CMR+1 Recd": "",
                 "MDC1 CMR+1%": "", "CMR+1 Multiplier": "", "Inc. Payout Mult": "",
                 "Inc. Per Txn (₹)": "", "Net Incentive (₹)": "",
                 "SPS Booster": "", "Gross Inc w/ Boost (₹)": "",
@@ -5828,8 +6028,7 @@ if calc_btn:
     display_cols = [c for c in [
         "Employee ID", "Employee Name", "Vertical", "Vintage", "Team",
         "SPS Group", "Vintage Bucket",
-            "Scheme Type", "Location", "L2", "Days Since Joining",
-        "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
+            "Scheme Type", "Location", "L2",         "Collection (₹)", "Refund (₹)", "Net Collection (₹)",
         "Collection Target (₹)",
         "Deal Value (₹)", "Deal Loss (₹)", "Net Deal Value (₹)",
         "PCR", "PCDV", "Slab Metric Used",
@@ -6002,8 +6201,7 @@ if calc_btn:
                  "=Gross Incentive − Paid Incentive", _money)
 
             # ── 10. Days since joining ────────────────────────────────────────
-            rule("Days Since Joining",
-                 '=IF({jd}{R}<>"",TODAY()-{jd}{R},"")',
+            rule(                 '=IF({jd}{R}<>"",TODAY()-{jd}{R},"")',
                  "=TODAY() − Joining Date", _pct1)
 
             # ── 11. Receipt/Refund/Renewal enrichment formulas ───────────────
@@ -6107,8 +6305,7 @@ if calc_btn:
             "Employee ID","Employee Name","Calc Month","Vertical","Vintage",
             "Team","Designation","Vintage Bucket",
             "Scheme Type","SPS Group","Location","L2","L3",
-            "Days Since Joining",
-            "Collection (₹)","Refund (₹)","Net Collection (₹)",
+                        "Collection (₹)","Refund (₹)","Net Collection (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
             "PCR","PCDV","Slab Metric Used",
             "CMR Slab1 Target","CMR Slab2 Target",
@@ -6141,8 +6338,7 @@ if calc_btn:
             "Employee ID","Employee Name","Location","Vintage Bucket",
             "Scheme Type","SPS Group",
             "L2","L3","Client-A (aggregated)","Client-C (aggregated)",
-            "Joining Date","Days Since Joining",
-            # Financial
+            "Joining Date",            # Financial
             "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","Slab Metric Used",
             # CMR
@@ -6199,8 +6395,7 @@ if calc_btn:
             # Hierarchy & identity
             "Employee ID","Employee Name","Location","Team","Vintage",
             "Client-A (aggregated)","Client-C (aggregated)","Catalog Client","Listing Client",
-            "Joining Date","Days Since Joining",
-            # Financial
+            "Joining Date",            # Financial
             "Collection (₹)","Refund (₹)","Net Collection (₹)","KCD Collection Target (₹)",
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","PCR","Slab Metric Used",
             "KCD Highest Collection (₹)","KCD PCDV Target","KCD PCDV%",
@@ -6557,45 +6752,191 @@ if calc_btn:
             rec_exp = rec_exp.loc[:, ~rec_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
             rec_exp = rec_exp.loc[:, rec_exp.columns.astype(str).str.strip() != ""]
 
-            _date_c  = find_col(rec_exp, ["Entry Date","Receipt Date","Clear Date","Date"])
-            _empid_c = find_col(rec_exp, ["Sales Exec ID","EMP ID","Sales Rep ID","L1 ID"])
-            _unique_c= find_col(rec_exp, ["Unique","UNIQUE","Product","Prod"])
-            _amt_c   = find_col(rec_exp, ["WT AMT","WTAMT","Deal Val (WOT)","WT_AMT"])
-            _mode_c  = find_col(rec_exp, ["Mode","MODE","mode","Payment Terms"])
-            _rem_c   = find_col(rec_exp, ["Rem","Remarks","AL","CMR-C+1-C+2","MYR Remarks"])
-            _base_ct = find_col(rec_exp, ["Base Client Type","CustType","Cust Type"])
+            _date_c  = find_col(rec_exp, ["Entry Date","Clear Date","Receipt Date","Date","O"])
+            _empid_c = find_col(rec_exp, ["Sales Exec ID","Sales Ex. ID","EMP ID","L1 ID","P"])
+            _unique_c= find_col(rec_exp, ["Unique","UNIQUE","E"])
+            _amt_c   = find_col(rec_exp, ["WT AMT","WTAMT","WT_AMT","AK"])
+            _mode_al = find_col(rec_exp, ["MODE","Mode","Payment Terms","AL"])
+            _cmr_rem = find_col(rec_exp, ["CMR-C+1-C+2","Rem","AH"])
+            _base_ct = find_col(rec_exp, ["Base Client Type","CustType","Cust Type","X"])
             _vert_c  = find_col(rec_exp, ["Vertical","AB","vertical"])
+            _rnl_col = find_col(rec_exp, ["Renewal Map","Renewal Base","BH"])
+            _sale_map= find_col(rec_exp, ["Sale Mapping","Sale","BG"])
 
-            # Day / Week / FNT
+            # ── Day / Week / FNT (sir: col BC=DAY(O3), BD=Week, BE=FNT) ─────────
+            # Sir's Week: >=24=WK-4, >=17=WK-3, >=10=WK-2, else WK-1
             if _date_c:
-                _days = pd.to_datetime(rec_exp[_date_c], errors='coerce').dt.day
-                rec_exp["Day"]   = _days
-                rec_exp["Week"]  = _days.apply(lambda d: "WK-1" if d<10 else "WK-2" if d<17 else "WK-3" if d<24 else "WK-4")
-                rec_exp["FNT"]   = _days.apply(lambda d: "FNT-1" if d<=16 else "FNT-2")
+                try:
+                    _dt_s = pd.to_datetime(rec_exp[_date_c], errors='coerce', dayfirst=False)
+                    _num  = pd.to_numeric(rec_exp[_date_c], errors='coerce')
+                    _is_s = _num.notna() & _dt_s.isna()
+                    if _is_s.any():
+                        _base_ts = pd.Timestamp('1899-12-30')
+                        _dt_s = _dt_s.copy()
+                        _dt_s[_is_s] = _num[_is_s].apply(
+                            lambda x: _base_ts + pd.Timedelta(days=int(x)) if pd.notna(x) else pd.NaT)
+                    _days = _dt_s.dt.day.fillna(0).astype(int)
+                    rec_exp["Day"]  = _days.replace(0,"")
+                    rec_exp["Week"] = _days.apply(
+                        lambda d: "" if d==0 else "WK-4" if d>=24 else "WK-3" if d>=17 else "WK-2" if d>=10 else "WK-1")
+                    rec_exp["FNT"]  = _days.apply(
+                        lambda d: "" if d==0 else "FNT-1" if d<=16 else "FNT-2")
+                except Exception: pass
 
-            # Total Sale: 1 if Unique is not blank/TS
+            # ── IL Sale/CL (sir col BF) ────────────────────────────────────────
+            # Sir: =IF(OR(E3="Category Leader","ILP","Category Leader India",
+            #            "Industry Leader","Brand Billboard","Im IL","Preferred IL"),"Yes","No")
+            # col E = Unique/Product category
+            _IL_PRODUCTS = {"CATEGORY LEADER","ILP","CATEGORY LEADER INDIA",
+                            "INDUSTRY LEADER","BRAND BILLBOARD","IM IL","PREFERRED IL"}
+            if _unique_c:
+                rec_exp["IL Sale/CL"] = rec_exp[_unique_c].apply(
+                    lambda v: "Yes" if str(v).strip().upper() in _IL_PRODUCTS else "No")
+
+            # ── Sale Mapping (sir col BG) ───────────────────────────────────────
+            # Sir: =IFERROR(VLOOKUP($B3,'For Upsell'!$A:$B,2,0),"")
+            # Depends on 'For Upsell' lookup table (not in our uploads)
+            # Approximation: "Upsell" if product is an upsell type, "" otherwise
+            _UPSELL_PRODS = {"MDC-TS","MDC PLUS","MDC PRO","IVE","TRUSTSEAL","VERIFIED",
+                             "TS1","TS2","TS3","TS-1","TS-2","TS-3","PREMIUM"}
+            if _unique_c:
+                rec_exp["Sale Mapping"] = rec_exp[_unique_c].apply(
+                    lambda v: "Upsell" if any(k in str(v).upper() for k in _UPSELL_PRODS) else "")
+
+            # ── Renewal Map (sir col BH) ────────────────────────────────────────
+            # Sir: =IF(AH3="Retention","NA",IFERROR(VLOOKUP($C3,'For Renewal'!$A:$B,2,0),"NA"))
+            # col C = Product/Prod name, AH = CMR-C+1-C+2 / Rem
+            # Approximation: "Renewal" if product is a renewal type (MDC, WS, IVE etc.)
+            _RENEWAL_PRODS = {"MDC","MDC-TS","WS","IVE","MYR","MAXI","TRUSTSEAL",
+                              "TS-1","TS-2","TS-3","RENEWAL"}
+            _prod_c = find_col(rec_exp, ["WS/MDC Main","Prod","Product","C"])
+            if _prod_c and _cmr_rem:
+                def _renewal_map(r):
+                    rem = str(r.get(_cmr_rem,"")).strip()
+                    if rem == "Retention": return "NA"
+                    prod = str(r.get(_prod_c,"")).strip().upper()
+                    return "Renewal" if any(k in prod for k in _RENEWAL_PRODS) else "NA"
+                rec_exp["Renewal Map"] = rec_exp.apply(_renewal_map, axis=1)
+            elif _prod_c:
+                rec_exp["Renewal Map"] = rec_exp[_prod_c].apply(
+                    lambda v: "Renewal" if any(k in str(v).upper() for k in _RENEWAL_PRODS) else "NA")
+
+            # ── Total Sale (sir col AQ) ─────────────────────────────────────────
+            # Sir: =IF(OR(E3="",E3="TS"),0,1)
             if _unique_c:
                 rec_exp["Total Sale"] = rec_exp[_unique_c].apply(
-                    lambda v: 0 if (str(v).strip() in ("","nan","TS")) else 1)
+                    lambda v: 0 if str(v).strip() in ("","nan","TS") else 1)
+            else:
+                rec_exp["Total Sale"] = 1
 
-            # Productivity: 1 if total_sale=1, or if renewal with no sale mapping
-            rec_exp["Productivity"] = rec_exp.get("Total Sale", pd.Series(0, index=rec_exp.index)).apply(
-                lambda v: 1 if v == 1 else 0)
+            # ── Productivity (sir col AR) ───────────────────────────────────────
+            # Sir: =IF(AQ3=1,1,IF(AND(BH3="Renewal",BG3=""),1,""))
+            # = 1 if TotalSale=1, OR if RenewalMap="Renewal" AND SaleMapping="", else ""
+            if "Renewal Map" in rec_exp.columns and "Sale Mapping" in rec_exp.columns:
+                def _calc_prod(r):
+                    if r.get("Total Sale",0) == 1: return 1
+                    return 1 if (r.get("Renewal Map","") == "Renewal" and
+                                 r.get("Sale Mapping","") == "") else ""
+                rec_exp["Productivity"] = rec_exp.apply(_calc_prod, axis=1)
+            else:
+                rec_exp["Productivity"] = rec_exp["Total Sale"]  # fallback
 
-            # AMR: "Yes" if Rem/CMR col not in retention/others exclusions
-            if _rem_c:
-                _excl = {"OTHERS","RETENTION","CMR+3"}
-                rec_exp["AMR"] = rec_exp[_rem_c].apply(
-                    lambda v: "No" if str(v).strip().upper() in _excl else "Yes")
+            # ── AMR (sir col BR) ────────────────────────────────────────────────
+            # Sir: =IF(OR(AH3="Others",AH3="Retention",AH3="CMR+3"),"No","Yes")
+            _amr_excl = {"OTHERS","RETENTION","CMR+3"}
+            if _cmr_rem:
+                rec_exp["AMR"] = rec_exp[_cmr_rem].apply(
+                    lambda v: "No" if str(v).strip().upper() in _amr_excl else "Yes")
 
-            # CSD Spot NR Upsell/AMR
-            if _vert_c and _rem_c:
+            # ── NR Upsell/AMR (sir col BR) ──────────────────────────────────────
+            # Sir: =IF($AB3="CSD",IF(OR($BR3="Yes",$AL3="Upsell-NR"),"Yes","No"),"No")
+            if "AMR" in rec_exp.columns and _vert_c:
+                _al_c = _mode_al
                 rec_exp["NR Upsell/AMR"] = rec_exp.apply(
                     lambda r: "Yes" if (str(r.get(_vert_c,"")).upper()=="CSD" and
-                                        (str(r.get("AMR","No"))=="Yes" or
-                                         str(r.get(_rem_c,"")).strip()=="Upsell-NR")) else "No", axis=1)
+                              (r.get("AMR","No")=="Yes" or
+                               str(r.get(_al_c,"")).strip().upper()=="UPSELL-NR"))
+                              else "No", axis=1)
 
-            # SAM ILP slab (WT AMT based)
+            # ── SAM ILP Slab (sir col BM) ───────────────────────────────────────
+            # Sir: =IF(AK3>=1000000,"10L+",IF(AK3>=500000,"5L+",IF(AK3>=200000,"2L+",0)))
+            if _amt_c:
+                def _sf(v):
+                    try: return float(v)
+                    except: return 0.0
+                rec_exp["SAM ILP Slab"] = rec_exp[_amt_c].apply(
+                    lambda v: "10L+" if _sf(v)>=1000000 else "5L+" if _sf(v)>=500000 else "2L+" if _sf(v)>=200000 else 0)
+
+            # ── Base to List Sale (sir col BP) ──────────────────────────────────
+            # Sir: =IF(OR(X3="Leader",X3="Star"),"No","Yes")  col X = Base Client Type
+            if _base_ct:
+                rec_exp["Base to List Sale"] = rec_exp[_base_ct].apply(
+                    lambda v: "No" if str(v).strip().upper() in ("LEADER","STAR") else "Yes")
+
+            # ── Collection (sir col BI) ─────────────────────────────────────────
+            # Sir: =IF(AL3<>"Nach/ECS","Yes","No")  — EXACT match "Nach/ECS"
+            if _mode_al:
+                rec_exp["Collection"] = rec_exp[_mode_al].apply(
+                    lambda v: "No" if str(v).strip()=="Nach/ECS" else "Yes")
+
+            # ── L2-L6 hierarchy ─────────────────────────────────────────────────
+            if _empid_c:
+                _hier_df = rec_exp[_empid_c].apply(lambda v: pd.Series(_hier(v)))
+                for _hcol in _hier_df.columns:
+                    if _hcol not in rec_exp.columns:
+                        rec_exp[_hcol] = _hier_df[_hcol]
+
+            # Day / Week / FNT from date column
+            if _date_c:
+                try:
+                    _dt_series = pd.to_datetime(rec_exp[_date_c], errors='coerce', dayfirst=False)
+                    # Handle Excel serial numbers (numeric date)
+                    _num = pd.to_numeric(rec_exp[_date_c], errors='coerce')
+                    _is_serial = _num.notna() & _dt_series.isna()
+                    if _is_serial.any():
+                        _base_ts = pd.Timestamp('1899-12-30')
+                        _dt_series[_is_serial] = _num[_is_serial].apply(
+                            lambda x: _base_ts + pd.Timedelta(days=int(x)) if pd.notna(x) else pd.NaT)
+                    _days = _dt_series.dt.day.fillna(0).astype(int)
+                    rec_exp["Day"]  = _days.replace(0, "")
+                    rec_exp["Week"] = _days.apply(lambda d: "" if d==0 else "WK-1" if d<10 else "WK-2" if d<17 else "WK-3" if d<24 else "WK-4")
+                    rec_exp["FNT"]  = _days.apply(lambda d: "" if d==0 else "FNT-1" if d<=16 else "FNT-2")
+                except Exception:
+                    pass
+
+            # Total Sale: 1 if Unique column = "1" or "Y" or similar (not blank, not "TS")
+            if _unique_c:
+                rec_exp["Total Sale"] = rec_exp[_unique_c].apply(
+                    lambda v: 0 if str(v).strip().upper() in ("","NAN","TS","0","NO","N","FALSE") else 1)
+            else:
+                rec_exp["Total Sale"] = 1  # default: every row is a sale
+
+            # Productivity: same as Total Sale
+            rec_exp["Productivity"] = rec_exp["Total Sale"]
+
+            # AMR: "Yes" if Remarks (AL col) is a renewal-type category
+            # In sir's file: AL col values = "MDC","MDC-TS","WS","CMR+3","OTHERS","RETENTION" etc.
+            # AMR-eligible = MDC, WS, MYR (renewal) products; NOT "OTHERS","RETENTION"
+            if _rem_c:
+                _amr_excl = {"OTHERS","RETENTION","CMR+3","UPSELL","WINBACK",""}
+                rec_exp["AMR"] = rec_exp[_rem_c].apply(
+                    lambda v: "No" if str(v).strip().upper() in _amr_excl else "Yes")
+            elif _prod_col:
+                # Fallback: derive from product name
+                _amr_prods = {"MDC","MDC-TS","WS","IVE","MYR"}
+                rec_exp["AMR"] = rec_exp[_prod_col].apply(
+                    lambda v: "Yes" if any(k in str(v).upper() for k in _amr_prods) else "No")
+
+            # NR Upsell/AMR: CSD employee AND (AMR=Yes OR product=Upsell-NR)
+            if "AMR" in rec_exp.columns:
+                rec_exp["NR Upsell/AMR"] = rec_exp.apply(
+                    lambda r: "Yes" if (
+                        ("CSD" in str(r.get(_vert_c,"") if _vert_c else "").upper()) and
+                        (r.get("AMR","No")=="Yes" or
+                         "UPSELL" in str(r.get(_rem_c,"") if _rem_c else "").upper())
+                    ) else "No", axis=1)
+
+            # SAM ILP Slab from WT AMT
             if _amt_c:
                 def _sf(v, d=0):
                     try: return float(v)
@@ -6603,24 +6944,26 @@ if calc_btn:
                 rec_exp["SAM ILP Slab"] = rec_exp[_amt_c].apply(
                     lambda v: "10L+" if _sf(v)>=1000000 else
                               "5L+"  if _sf(v)>=500000  else
-                              "2L+"  if _sf(v)>=200000  else 0)
+                              "2L+"  if _sf(v)>=200000  else "")
 
-            # Base to List Sale: "No" if base client type is Leader/Star
+            # Base to List Sale: "No" if base client type is Leader/Star (premium)
             if _base_ct:
                 rec_exp["Base to List Sale"] = rec_exp[_base_ct].apply(
-                    lambda v: "No" if str(v).strip().upper() in ("LEADER","STAR") else "Yes")
+                    lambda v: "No" if str(v).strip().upper() in
+                              ("LEADER","STAR","PREFERRED STAR","PREFERRED LEADER") else "Yes")
 
-            # Collection: "Yes" if payment method != Nach/ECS
+            # Collection: "Yes" if not paid via NACH/ECS auto-debit
             if _mode_c:
                 rec_exp["Collection"] = rec_exp[_mode_c].apply(
-                    lambda v: "No" if "NACH" in str(v).upper() or "ECS" in str(v).upper() else "Yes")
+                    lambda v: "No" if ("NACH" in str(v).upper() or "ECS" in str(v).upper())
+                              else "Yes")
 
             # L2-L6 hierarchy from struct_map
             if _empid_c:
                 _hier_df = rec_exp[_empid_c].apply(lambda v: pd.Series(_hier(v)))
-                for col in _hier_df.columns:
-                    if col not in rec_exp.columns:
-                        rec_exp[col] = _hier_df[col]
+                for _hcol in _hier_df.columns:
+                    if _hcol not in rec_exp.columns:
+                        rec_exp[_hcol] = _hier_df[_hcol]
 
             if len(rec_exp) > 100_000: rec_exp = rec_exp.head(100_000)
             write_sheet(rec_exp, "Receipt Data", header_fmt=grey)
