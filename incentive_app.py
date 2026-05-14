@@ -2544,39 +2544,111 @@ def load_cmr_targets(uploaded_file):
 
 def load_sam_ilp_targets(uploaded_file):
     """Load SAM-ILP individual DV targets from uploaded file.
-    Expected columns: Employee ID, DV_Target, Rate_% (optional base rate at 95% tier).
-    If Rate_% provided as percentage (e.g. 0.60): stored as decimal 0.006.
-    Returns dict: {emp_id: {"target": float, "rate_95": float|None}}
+
+    Supports sir's May 2026 format (xlsb or xlsx):
+      Sheet: 'ILP Team'  (or first sheet)
+      Headers start at row 5 (1-indexed), data from row 6 onwards
+      Columns: Employee ID, Employee Name, L4/Direct Name, ZM,
+               Joining Date, Vertical, Design., Total (Client-A),
+               Catalog, SS/LS (= Listing), ILP Client, Target (In Lac)
+
+      Target (In Lac) = Deal Value target in Lacs → multiply × 1,00,000
+
+    Also accepts simpler formats:
+      Columns: Employee ID, DV_Target / Target / Overall Target
+
+    Returns dict: {emp_id: {"target": float, "catalog": int, "listing": int,
+                             "ilp_client": int, "client_a": int, "rate_95": None}}
     """
     if uploaded_file is None:
         return {}
     try:
-        df = _read_file(uploaded_file)
-        df.columns = [str(c).strip() for c in df.columns]
-        emp_col = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
-        tgt_col = find_col(df, ["DV_Target", "DV Target", "Deal Value Target",
-                                 "Target", "dv_target", "Overall Target"])
-        rate_col = find_col(df, ["Rate_%", "Rate", "Incentive_Rate", "Base_Rate",
-                                  "Rate_95%", "Base_Rate_%"])
-        if not emp_col or not tgt_col:
-            st.warning("SAM-ILP targets file: need 'Employee ID' and 'DV_Target' columns")
+        fname = getattr(uploaded_file, "name", str(uploaded_file)).lower()
+        df = None
+
+        # ── Handle xlsb separately (pyxlsb) ─────────────────────────────────
+        if fname.endswith(".xlsb"):
+            try:
+                import pyxlsb, io
+                raw = uploaded_file.read()
+                with pyxlsb.open_workbook(io.BytesIO(raw)) as wb:
+                    sheet_name = "ILP Team" if "ILP Team" in wb.sheets else wb.sheets[0]
+                    with wb.get_sheet(sheet_name) as ws:
+                        all_rows = [[c.v for c in row] for row in ws.rows()]
+
+                # Find header row: look for row containing 'Employee ID'
+                hdr_idx = None
+                for i, row in enumerate(all_rows):
+                    if any("employee id" in str(v).lower() for v in row if v):
+                        hdr_idx = i
+                        break
+                if hdr_idx is None:
+                    st.warning("SAM-ILP xlsb: could not find 'Employee ID' header row")
+                    return {}
+
+                headers = all_rows[hdr_idx]
+                data_rows = [dict(zip(headers, r)) for r in all_rows[hdr_idx+1:]
+                             if any(v is not None for v in r)]
+                df = pd.DataFrame(data_rows)
+            except ImportError:
+                st.warning("SAM-ILP targets: xlsb format requires pyxlsb. Install with: pip install pyxlsb")
+                return {}
+            except Exception as e:
+                st.warning(f"SAM-ILP xlsb read error: {e}")
+                return {}
+        else:
+            df = _read_file(uploaded_file)
+
+        if df is None or len(df) == 0:
             return {}
+
+        df.columns = [str(c).strip() if c else "" for c in df.columns]
+        df = df.dropna(how="all")
+
+        # ── Column detection ─────────────────────────────────────────────────
+        emp_col = find_col(df, ["Employee ID", "Emp ID", "EmpID", "ID"])
+        tgt_col = find_col(df, [
+            "Target (In Lac)", "Target (In Lacs)", "Target_Lac", "DV_Target",
+            "DV Target", "Deal Value Target", "Target", "Overall Target",
+        ])
+        cat_col  = find_col(df, ["Catalog", "Catalog C", "CatalogClient"])
+        list_col = find_col(df, ["SS/LS", "Listing", "SS/Listing", "Listing C", "ListingClient"])
+        ilp_col  = find_col(df, ["ILP Client", "ILP", "ILPClient"])
+        ca_col   = find_col(df, ["Total", "Client-A", "Client A", "Total Clients"])
+
+        if not emp_col or not tgt_col:
+            st.warning(f"SAM-ILP targets: found columns {list(df.columns[:10])} — "
+                       f"need 'Employee ID' and 'Target (In Lac)' columns")
+            return {}
+
         result = {}
         for _, row in df.iterrows():
-            eid = str(row[emp_col]).strip().split('.')[0]
-            if not eid or eid.lower() in ('nan', ''):
+            eid = str(row.get(emp_col, "")).strip().split('.')[0]
+            if not eid or eid.lower() in ('nan', '', 'none', 'employee id'):
                 continue
             try:
-                tgt = float(row[tgt_col])
-                rate = None
-                if rate_col and pd.notna(row.get(rate_col)):
-                    r = float(row[rate_col])
-                    # Convert: if given as 0.60 (percent) -> 0.006; if 0.006 already -> keep
-                    rate = r / 100 if r > 0.1 else r
-                result[eid] = {"target": tgt, "rate_95": rate}
-            except Exception:
-                pass
+                raw_tgt = float(row[tgt_col])
+            except (TypeError, ValueError):
+                continue
+
+            # Convert target: if > 1000 assume already in ₹; if < 10000 assume Lacs
+            if raw_tgt < 10000:
+                target = raw_tgt * 100_000   # Lacs → ₹
+            else:
+                target = raw_tgt
+
+            result[eid] = {
+                "target":     target,
+                "catalog":    int(float(row[cat_col]))  if cat_col  and pd.notna(row.get(cat_col))  else 0,
+                "listing":    int(float(row[list_col])) if list_col and pd.notna(row.get(list_col)) else 0,
+                "ilp_client": int(float(row[ilp_col]))  if ilp_col  and pd.notna(row.get(ilp_col))  else 0,
+                "client_a":   int(float(row[ca_col]))   if ca_col   and pd.notna(row.get(ca_col))   else 0,
+                "rate_95":    None,
+            }
+        if result:
+            st.toast(f"✅ SAM-ILP targets loaded: {len(result)} employees")
         return result
+
     except Exception as e:
         st.warning(f"SAM-ILP targets file error: {e}")
         return {}
@@ -4766,6 +4838,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _ilp_tgt  = _ilp_rec.get("target", 0) if isinstance(_ilp_rec, dict) else float(_ilp_rec or 0)
                 _ilp_rate = _ilp_rec.get("rate_95") if isinstance(_ilp_rec, dict) else None
                 _bt_count = int(sb.get("btl_sales", 0))
+                # Use client breakdown from ILP target file when available
+                if isinstance(_ilp_rec, dict):
+                    catalog_c  = float(_ilp_rec.get("catalog",  catalog_c)  or catalog_c)
+                    listing_c  = float(_ilp_rec.get("listing",  listing_c)  or listing_c)
+                    _ilp_ca    = float(_ilp_rec.get("client_a", 0) or 0)
+                    if _ilp_ca > 0: client_cnt = _ilp_ca  # override with ILP file's Client-A
                 base_inc, notes = calc_kcd_sam_ilp(
                     kcd_net_dv, _ilp_tgt,
                     cmr_pct=cmr_pct,
@@ -5146,9 +5224,9 @@ with st.sidebar:
     st.info("Individual Slab 1 & 2 targets are loaded per employee from this file.\n\n≤3 renewals sent → auto-forced Slab 1", icon="ℹ️")
 
     sam_ilp_file = st.file_uploader(
-        "8. SAM-ILP Targets (optional) -- Employee ID + DV_Target. "
-        "Add optional Rate_% column (0.60 or 0.65) for per-employee base rate.",
-        type=["xlsx", "csv"])
+        "8. SAM-ILP Targets (optional) — ILP_Team_Deal_Value_Target.xlsb "
+        "or any file with Employee ID + Target (In Lac) columns.",
+        type=["xlsx", "xlsb", "csv"])
 
     st.divider()
     st.header("⚙️ Scheme Settings")
