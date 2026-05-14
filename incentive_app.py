@@ -5782,60 +5782,247 @@ if calc_btn:
         pct_fmt = wb.add_format({"num_format": "0.0%", "font_size": 9})
 
         def write_sheet(df, sheet_name, col_fmt=None, header_fmt=None):
-            """Write df to sheet with header row and Excel formulas for key totals."""
+            """Write df to sheet with full row-level Excel formulas for ALL derived columns."""
             df.to_excel(w, sheet_name=sheet_name, index=False, startrow=1)
-            ws = w.sheets[sheet_name]
-            hf = header_fmt or hdr
+            ws   = w.sheets[sheet_name]
+            hf   = header_fmt or hdr
             cols = list(df.columns)
 
-            # Write headers
-            for ci, col in enumerate(cols):
-                ws.write(1, ci, col, hf)
-                ws.set_column(ci, ci, max(14, len(str(col)) + 2))
+            # ── helpers ──────────────────────────────────────────────────────
+            def xl(idx):
+                s = ""; idx += 1
+                while idx:
+                    idx, r = divmod(idx - 1, 26)
+                    s = chr(65 + r) + s
+                return s
+
+            def ci(name):
+                return xl(cols.index(name)) if name in cols else None
+
+            def _fmt(bg="#FFFFFF", bold=False, italic=False, font_color="#000000",
+                     num_format=None, font_size=9):
+                d = {"bg_color": bg, "bold": bold, "italic": italic,
+                     "font_color": font_color, "font_size": font_size}
+                if num_format: d["num_format"] = num_format
+                return wb.add_format(d)
+
+            # Format palette
+            _money  = _fmt("#F0F7FF", num_format="#,##0")          # blue  — finance
+            _pct1   = _fmt("#F7FFF0", num_format="0.0")            # green — %
+            _green  = _fmt("#E2EFDA", num_format="#,##0", bold=True) # totals
+            _orange = _fmt("#FFF0E0", num_format="#,##0")           # incentive components
+            _grey   = _fmt("#F5F5F5", num_format="0.0")            # CMR / multipliers
+            _yellow = _fmt("#FFF2CC", italic=True, font_color="#595959", font_size=8)  # note row
+
+            # ── headers + freeze ──────────────────────────────────────────────
+            for ci_i, col in enumerate(cols):
+                ws.write(1, ci_i, col, hf)
+                ws.set_column(ci_i, ci_i, max(14, len(str(col)) + 2))
             ws.write(0, 0, f"{sheet_name} — IndiaMart Incentive Calculator (May 2026)")
-            ws.freeze_panes(2, 2)  # freeze first 2 rows and 2 cols (ID + Name)
+            ws.freeze_panes(2, 2)
 
-            # Add Excel formula note row (row 0, separate columns explaining key formulas)
-            formula_notes = {
-                "PCR":                  "=Net Collection / Client-A",
-                "PCDV":                 "=Net Deal Value / Client-C (CSD) or Client-A (KCD)",
-                "CMR% (auto)":          "=Renewals Received / Renewals Sent",
-                "KCD PCDV Target":      "=KCD Collection Target / Client-A",
-                "KCD PCDV%":            "=PCDV / KCD PCDV Target",
-                "Total Incentive (₹)":  "=Base Incentive + PoP Incentive + Spot Incentive",
+            # ── formula rules: (output_col, formula_template, description_note, fmt)
+            # {R} is replaced with the Excel row number; {key} with column letters
+            formula_rules = []
+
+            def rule(col_name, tmpl, note="", fmt=None):
+                """Register a formula rule only if the output column exists in this sheet."""
+                if col_name in cols:
+                    formula_rules.append((col_name, tmpl, note, fmt or _money))
+
+            # ── 1. Financial derivations ─────────────────────────────────────
+            rule("Net Collection (₹)",  "={coll}{R}-{ref}{R}",           "=Collection − Refund", _money)
+            rule("Net Deal Value (₹)",  "={dv}{R}-{dl}{R}",              "=Deal Value − Deal Loss", _money)
+
+            # ── 2. Per-client metrics (PCR / PCDV) ───────────────────────────
+            rule("PCR",   "=IF({ca}{R}>0,{nc}{R}/{ca}{R},0)",
+                 "=Net Collection / Client-A",  _pct1)
+            rule("PCDV",  "=IF({cc}{R}>0,{ndv}{R}/{cc}{R},IF({ca}{R}>0,{ndv}{R}/{ca}{R},0))",
+                 "=Net DV / Client-C (CSD) or Client-A (KCD)", _pct1)
+
+            # ── 3. CMR family ────────────────────────────────────────────────
+            rule("CMR% (auto)",
+                 "=IF({rs}{R}>0,{rr}{R}/{rs}{R}*100,0)",
+                 "=Renewals Recd / Sent × 100", _pct1)
+            rule("SS+ CMR% (auto)",
+                 "=IF({ss_s}{R}>0,{ss_r}{R}/{ss_s}{R}*100,0)",
+                 "=SS+ Recd / Sent × 100", _pct1)
+            rule("MDC-1 CMR%",
+                 '=IF({ms}{R}>0,{mr}{R}/{ms}{R}*100,"")',
+                 "=MDC1 Recd / MDC1 Sent × 100", _pct1)
+            rule("MDC1 CMR+1%",
+                 '=IF({c1s}{R}>0,{c1r}{R}/{c1s}{R}*100,"")',
+                 "=CMR+1 Recd / CMR+1 Sent × 100", _pct1)
+            rule("KCD CMR Ren%",
+                 '=IF({kcmrs}{R}>0,{kcmrr}{R}/{kcmrs}{R}*100,"")',
+                 "=KCD CMR Recd / Sent × 100", _pct1)
+            rule("KCD SS+ CMR%",
+                 '=IF({kss_s}{R}>0,{kss_r}{R}/{kss_s}{R}*100,"")',
+                 "=KCD SS+ Recd / Sent × 100", _pct1)
+            rule("CMR (Ren%)",      # BM/RM sheet name
+                 "=IF({rs}{R}>0,{rr}{R}/{rs}{R},0)",
+                 "=Renewals Received / Sent", _pct1)
+            rule("CMR+1 Ren%",
+                 '=IF({c1s}{R}>0,{c1r}{R}/{c1s}{R},"")',
+                 "=CMR+1 Recd / CMR+1 Sent", _pct1)
+
+            # ── 4. KCD targets & achievement ────────────────────────────────
+            rule("KCD PCDV Target",
+                 "=IF({ca}{R}>0,{ct}{R}/{ca}{R},0)",
+                 "=KCD Collection Target / Client-A", _pct1)
+            rule("KCD PCDV%",
+                 "=IF({pt}{R}>0,{pcdv}{R}/{pt}{R},0)",
+                 "=PCDV / KCD PCDV Target", _pct1)
+            rule("KCD Highest Collection (₹)",
+                 "={ca}{R}*{hcm}{R}" if ci("KCD HC Multiplier") else "={ca}{R}*0",
+                 "=Client-A × HC Multiplier (team-specific)", _money)
+
+            # ── 5. CSD SPS incentive derivations ────────────────────────────
+            rule("Inc. Per Txn (₹)",
+                 "={ipm}{R}*{prod}{R}",
+                 "=Inc. Payout Mult × Productivity Score", _orange)
+            rule("Net Incentive (₹)",
+                 "={ipt}{R}*{cmr1m}{R}",
+                 "=Inc. Per Txn × CMR+1 Multiplier", _orange)
+            rule("Gross Inc w/ Boost (₹)",
+                 "=IF({boost}{R}>0,{nipt}{R}*{boost}{R},{nipt}{R})",
+                 "=Net Incentive × SPS Booster", _orange)
+
+            # ── 6. AOP for BM/RM ─────────────────────────────────────────────
+            rule("AOP Achievement %",
+                 "=IF({aop}{R}>0,{ndv}{R}/{aop}{R}*100,0)",
+                 "=Net Deal Value / AOP Target × 100", _pct1)
+            rule("AOP Multiplier",
+                 '=IF({aopp}{R}=0,"",IF({aopp}{R}<95,"<95% — not eligible",'
+                 'IF({aopp}{R}<100,"100%",IF({aopp}{R}<105,"110%",'
+                 'IF({aopp}{R}<110,"120%","130%")))))',
+                 "=<95%→0 | 95-100%→100% | 100-105%→110% | 105-110%→120% | 110%+→130%",
+                 _grey)
+
+            # ── 7. KCD weekly totals ─────────────────────────────────────────
+            rule("KCD WK Total Txns",
+                 "={wk1}{R}+{wk2}{R}+{wk3}{R}+{wk4}{R}",
+                 "=WK-1+WK-2+WK-3+WK-4 Transactions", _pct1)
+
+            # ── 8. KCD incentive totals ──────────────────────────────────────
+            rule("KCD Total Incentive (₹)",
+                 "={kbase}{R}+{kinc}{R}+{spot}{R}",
+                 "=KCD Base + KCD Incremental + Spot Incentive", _green)
+            rule("KCD Gross Incentive (₹)",
+                 "={kbase}{R}+{kinc}{R}",
+                 "=KCD Base Incentive + KCD Incremental", _green)
+
+            # ── 9. Main totals (all sheets) ───────────────────────────────────
+            rule("Gross Incentive (₹)",
+                 "={base}{R}+{pop}{R}+{spot}{R}",
+                 "=Base + PoP + Spot Incentive", _green)
+            rule("Total Incentive (₹)",
+                 "={base}{R}+{pop}{R}+{spot}{R}",
+                 "=Base Incentive + PoP Incentive + Spot Incentive", _green)
+            rule("Balance Incentive (₹)",
+                 "=IF({gi}{R}>0,{gi}{R}-{pi}{R},0)",
+                 "=Gross Incentive − Paid Incentive", _money)
+
+            # ── 10. Days since joining ────────────────────────────────────────
+            rule("Days Since Joining",
+                 '=IF({jd}{R}<>"",TODAY()-{jd}{R},"")',
+                 "=TODAY() − Joining Date", _pct1)
+
+            # ── 11. Receipt/Refund/Renewal enrichment formulas ───────────────
+            # Day / Week / FNT — derived from date column
+            rule("Day",   '=IF({edate}{R}<>"",DAY({edate}{R}),"")',       "=DAY(Entry Date)", _pct1)
+            rule("Week",  '=IF({day_c}{R}="","",IF({day_c}{R}<=9,"WK-1",IF({day_c}{R}<=16,"WK-2",IF({day_c}{R}<=23,"WK-3","WK-4"))))',
+                 '=IF(Day<=9,"WK-1",IF(<=16,"WK-2",IF(<=23,"WK-3","WK-4")))', _grey)
+            rule("FNT",   '=IF({day_c}{R}="","",IF({day_c}{R}<=16,"FNT-1","FNT-2"))',
+                 '=IF(Day<=16,"FNT-1","FNT-2")', _grey)
+            rule("Total Sale",
+                 '=IF(OR({uniq}{R}="",{uniq}{R}="TS"),0,1)',
+                 '=IF(Unique="" or "TS", 0, 1)', _pct1)
+            rule("Productivity",
+                 "={tsale}{R}",
+                 "=Total Sale (1=productive txn)", _pct1)
+            rule("Collection",
+                 '=IF(OR(ISNUMBER(SEARCH("NACH",{mode_c}{R})),ISNUMBER(SEARCH("ECS",{mode_c}{R}))),"No","Yes")',
+                 '=IF(Mode contains NACH/ECS,"No","Yes")', _grey)
+
+            # ── Column letter lookup (all possible columns across all sheets) ─
+            _lk = {
+                "coll":   ci("Collection (₹)"),
+                "ref":    ci("Refund (₹)"),
+                "nc":     ci("Net Collection (₹)"),
+                "dv":     ci("Deal Value (₹)"),
+                "dl":     ci("Deal Loss (₹)"),
+                "ndv":    ci("Net Deal Value (₹)"),
+                "ca":     ci("Client-A (aggregated)") or ci("Client-A"),
+                "cc":     ci("Client-C (aggregated)") or ci("Client-C"),
+                "rs":     ci("Renewals Sent"),
+                "rr":     ci("Renewals Received"),
+                "ss_s":   ci("SS+ Sent") or ci("SS+ Sent"),
+                "ss_r":   ci("SS+ Received") or ci("SS+ Received"),
+                "ms":     ci("MDC1 Sent"),
+                "mr":     ci("MDC1 Recd"),
+                "c1s":    ci("CMR+1 Sent"),
+                "c1r":    ci("CMR+1 Recd"),
+                "ct":     ci("KCD Collection Target (₹)"),
+                "pt":     ci("KCD PCDV Target"),
+                "pcdv":   ci("PCDV"),
+                "kcmrs":  ci("KCD CMR Sent"),
+                "kcmrr":  ci("KCD CMR Recd"),
+                "kss_s":  ci("KCD SS+ Sent"),
+                "kss_r":  ci("KCD SS+ Recd"),
+                "aop":    ci("AOP Target (₹)"),
+                "aopp":   ci("AOP Achievement %"),
+                "base":   ci("Base Incentive (₹)"),
+                "pop":    ci("PoP Incentive (₹)"),
+                "spot":   ci("Spot Incentive (₹)"),
+                "kbase":  ci("KCD Base Incentive (₹)"),
+                "kinc":   ci("KCD Incremental (₹)"),
+                "gi":     ci("Gross Incentive (₹)"),
+                "pi":     ci("Paid Incentive (₹)"),
+                "ipm":    ci("Inc. Payout Mult"),
+                "prod":   ci("Productivity Score"),
+                "cmr1m":  ci("CMR+1 Multiplier"),
+                "ipt":    ci("Inc. Per Txn (₹)"),
+                "nipt":   ci("Net Incentive (₹)"),
+                "boost":  ci("SPS Booster"),
+                "hcm":    ci("KCD HC Multiplier"),
+                "wk1":    ci("KCD WK-1 Txns"),
+                "wk2":    ci("KCD WK-2 Txns"),
+                "wk3":    ci("KCD WK-3 Txns"),
+                "wk4":    ci("KCD WK-4 Txns"),
+                "jd":     ci("Joining Date"),
+                # Receipt/Refund columns
+                "edate":  (ci("Entry Date") or ci("Clear Date") or
+                           ci("Receipt Date") or ci("Date")),
+                "day_c":  ci("Day"),
+                "uniq":   ci("Unique"),
+                "tsale":  ci("Total Sale"),
+                "mode_c": ci("Mode"),
             }
-            _note_fmt = wb.add_format({"italic": True, "font_color": "#595959",
-                                        "bg_color": "#FFF2CC", "font_size": 8})
-            for ci, col in enumerate(cols):
-                if col in formula_notes:
-                    ws.write(0, ci, formula_notes[col], _note_fmt)
 
-            # Replace Total Incentive column values with actual Excel SUM formula
-            # so the Excel file is self-validating
-            _ti_col  = cols.index("Total Incentive (₹)") if "Total Incentive (₹)" in cols else None
-            _base_col = cols.index("Base Incentive (₹)")  if "Base Incentive (₹)"  in cols else None
-            _pop_col  = cols.index("PoP Incentive (₹)")   if "PoP Incentive (₹)"   in cols else None
-            _spot_col = cols.index("Spot Incentive (₹)")  if "Spot Incentive (₹)"  in cols else None
-            if _ti_col is not None and any(c is not None for c in [_base_col, _pop_col, _spot_col]):
-                def _xl_col(idx):  # 0-based → Excel letter(s)
-                    s = ""
-                    idx += 1
-                    while idx:
-                        idx, r = divmod(idx - 1, 26)
-                        s = chr(65 + r) + s
-                    return s
-                _ti_letter   = _xl_col(_ti_col)
-                parts = []
-                if _base_col is not None: parts.append(_xl_col(_base_col))
-                if _pop_col  is not None: parts.append(_xl_col(_pop_col))
-                if _spot_col is not None: parts.append(_xl_col(_spot_col))
-                _money_fmt = wb.add_format({"num_format": "#,##0", "font_size": 9,
-                                             "bg_color": "#E2EFDA"})
-                for row_idx in range(len(df)):
-                    excel_row = row_idx + 3  # 1-indexed: row 1=formula note, row 2=header, row 3+=data
-                    formula = "=" + "+".join(f"{p}{excel_row}" for p in parts)
-                    ws.write_formula(excel_row - 1, _ti_col, formula, _money_fmt,
-                                     int(df.iloc[row_idx]["Total Incentive (₹)"] or 0))
+            # ── Write note row (row 0) ────────────────────────────────────────
+            for out_col, _, note, _ in formula_rules:
+                if note:
+                    ws.write(0, cols.index(out_col), note, _yellow)
+
+            # ── Write row-level formulas for every data row ───────────────────
+            for row_idx in range(len(df)):
+                er = row_idx + 3  # note=row1, header=row2, data rows start at Excel row 3
+
+                for out_col, tmpl, _, fmt in formula_rules:
+                    try:
+                        f = tmpl.format(R=er, **_lk)
+                        if "None" in f:
+                            continue  # required column not in this sheet
+                        # Preserve computed fallback value so file opens correctly
+                        raw = df.iloc[row_idx].get(out_col, 0) if hasattr(df.iloc[row_idx], 'get') else 0
+                        try:
+                            fallback = float(raw) if raw and str(raw) not in ('','nan') else 0
+                        except (TypeError, ValueError):
+                            fallback = 0
+                        ws.write_formula(er - 1, cols.index(out_col), f, fmt, fallback)
+                    except (KeyError, TypeError, ValueError):
+                        continue
 
         # ── Sheet 1: FSF (Final Settlement File) -- all employees ─────────────
         fsf_cols = [c for c in [
