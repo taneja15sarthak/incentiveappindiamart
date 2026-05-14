@@ -5605,16 +5605,18 @@ if enrich_btn:
                 rec_raw = rec_raw.loc[:, ~rec_raw.columns.astype(str).str.lower().str.startswith("unnamed")]
                 rec_raw = rec_raw.loc[:, rec_raw.columns.astype(str).str.strip() != ""]
 
-                # Column detection
-                _d_c  = find_col(rec_raw, ["Entry Date","Clear Date","Receipt Date","Date","O"])
-                _u_c  = find_col(rec_raw, ["Unique","UNIQUE","E"])
-                _ak_c = find_col(rec_raw, ["WT AMT","WTAMT","WT_AMT","AK"])
-                _al_c = find_col(rec_raw, ["MODE","Mode","Payment Terms","AL"])
-                _ah_c = find_col(rec_raw, ["CMR-C+1-C+2","Rem","AH"])
-                _x_c  = find_col(rec_raw, ["Base Client Type","CustType","X"])
-                _ab_c = find_col(rec_raw, ["Vertical","AB","vertical"])
-                _p_c  = find_col(rec_raw, ["Sales Exec ID","Sales Ex. ID","EMP ID","L1 ID","P"])
-                _c_c  = find_col(rec_raw, ["WS/MDC Main","Prod","Product","C"])
+                # Column detection — use actual column names from sir's receipt file
+                _d_c  = find_col(rec_raw, ["Entry Date","Clear Date","Receipt Date","Date"])
+                _u_c  = find_col(rec_raw, ["Unique","UNIQUE"])          # product category (E in sir)
+                _ak_c = find_col(rec_raw, ["WT AMT","WTAMT","WT Amt(A)","WT_AMT","Deal Val (WT)"])
+                _al_c = find_col(rec_raw, ["MODE","Mode"])              # payment mode col (AL)
+                _rem_c= find_col(rec_raw, ["Rem"])                      # WIP/Renewal/Upsell-NR/NACH-ECS
+                _rnl_c= find_col(rec_raw, ["Rnl Remarks","Rnl_Remarks","RnlRemarks"])  # AMR source (AH)
+                _x_c  = find_col(rec_raw, ["Base Client Type","CustType","Cust Type"])  # X
+                _ab_c = find_col(rec_raw, ["Vertical","Vertical.1","VERTICAL OF HOD"])  # AB
+                _p_c  = find_col(rec_raw, ["Sales Exec ID","EMP ID","L1 ID"])           # P
+                _c_c  = find_col(rec_raw, ["Prod","WS/MDC Main","Product"])             # C = product name
+                _deal_c=find_col(rec_raw, ["Deal Remarks","Deal Val (WT)"])             # product detail
 
                 # Day / Week / FNT
                 if _d_c:
@@ -5637,51 +5639,64 @@ if enrich_btn:
                     rec_raw["IL Sale/CL"] = rec_raw[_u_c].apply(
                         lambda v: "Yes" if str(v).strip().upper() in _IL else "No")
 
-                # Sale Mapping (approx — "Upsell" for TS/IVE/upgrade products)
-                _UPS = {"MDC-TS","IVE","TRUSTSEAL","TS-1","TS-2","TS-3","MDC PLUS","MDC PRO"}
-                if _c_c:
-                    rec_raw["Sale Mapping"] = rec_raw[_c_c].apply(
+                # ── Sale Mapping ────────────────────────────────────────────────
+                # "Upsell" if Unique/product is an upgrade/upsell type, else ""
+                _UPS = {"MDC-TS","IVE","TRUSTSEAL","TS-1","TS-2","TS-3","MDC PLUS","MDC PRO",
+                        "TS1","TS2","TS3","VERIFIED SUPPLIER","VS","COMBO","MAXIMISER","MAXI"}
+                if _u_c:
+                    rec_raw["Sale Mapping"] = rec_raw[_u_c].apply(
                         lambda v: "Upsell" if any(k in str(v).upper() for k in _UPS) else "")
 
-                # Renewal Map (approx — "Renewal" for renewal products)
-                _RNL = {"MDC","MDC-TS","WS","IVE","MYR","MAXI","TRUSTSEAL"}
-                if _c_c and _ah_c:
-                    rec_raw["Renewal Map"] = rec_raw.apply(
-                        lambda r: "NA" if str(r.get(_ah_c,"")).strip()=="Retention"
-                                  else ("Renewal" if any(k in str(r.get(_c_c,"")).upper() for k in _RNL) else "NA"),
-                        axis=1)
+                # ── Renewal Map ─────────────────────────────────────────────────
+                # "Renewal" if Rem="Renewal" OR Prod is a renewal-type product
+                # "NA" if Rnl Remarks="Retention"
+                _RNL_PROD = {"RENEWAL","TS2RENEWAL","TS3RENEWAL","TS1RENEWAL",
+                             "WSSRENEWAL","WSPRENEWAL","WSRENEWAL","IVERENEWAL"}
+                def _rmap(r):
+                    rnl_rem = str(r.get(_rnl_c,"")).strip() if _rnl_c else ""
+                    if rnl_rem == "Retention": return "NA"
+                    rem_v  = str(r.get(_rem_c,"")).strip() if _rem_c else ""
+                    prod_v = str(r.get(_c_c,"")).strip().upper() if _c_c else ""
+                    if rem_v == "Renewal" or prod_v in _RNL_PROD or "RENEWAL" in prod_v:
+                        return "Renewal"
+                    return "NA"
+                rec_raw["Renewal Map"] = rec_raw.apply(_rmap, axis=1)
 
-                # Total Sale (sir: IF(OR(E3="",E3="TS"),0,1))
+                # ── Total Sale ──────────────────────────────────────────────────
+                # Sir: =IF(OR(E3="",E3="TS"),0,1)
                 if _u_c:
                     rec_raw["Total Sale"] = rec_raw[_u_c].apply(
                         lambda v: 0 if str(v).strip() in ("","nan","TS") else 1)
                 else:
                     rec_raw["Total Sale"] = 1
 
-                # Productivity (sir: IF(AQ=1,1,IF(AND(BH="Renewal",BG=""),1,"")))
-                if "Renewal Map" in rec_raw.columns and "Sale Mapping" in rec_raw.columns:
-                    rec_raw["Productivity"] = rec_raw.apply(
-                        lambda r: (1 if r["Total Sale"]==1
-                                   else (1 if (r.get("Renewal Map","")=="Renewal" and
-                                               r.get("Sale Mapping","")=="") else "")),
-                        axis=1)
-                else:
-                    rec_raw["Productivity"] = rec_raw["Total Sale"]
+                # ── Productivity ────────────────────────────────────────────────
+                # Sir: IF(TotalSale=1, 1, IF(AND(RenewalMap="Renewal",SaleMapping=""), 1, ""))
+                rec_raw["Productivity"] = rec_raw.apply(
+                    lambda r: (1 if r.get("Total Sale",0)==1
+                               else (1 if (r.get("Renewal Map","")=="Renewal" and
+                                           r.get("Sale Mapping","")=="") else "")),
+                    axis=1)
 
-                # AMR
-                if _ah_c:
-                    rec_raw["AMR"] = rec_raw[_ah_c].apply(
-                        lambda v: "No" if str(v).strip().upper() in {"OTHERS","RETENTION","CMR+3"} else "Yes")
+                # ── AMR ─────────────────────────────────────────────────────────
+                # Sir: =IF(OR(AH3="Others",AH3="Retention",AH3="CMR+3"),"No","Yes")
+                # AH = "Rnl Remarks" col (values: Others, CMR, CMR+1, CMR+2, CMR+3, Retention)
+                if _rnl_c:
+                    rec_raw["AMR"] = rec_raw[_rnl_c].apply(
+                        lambda v: "No" if str(v).strip() in ("Others","Retention","CMR+3") else "Yes")
 
-                # NR Upsell/AMR (sir: CSD AND (AMR=Yes OR AL=Upsell-NR))
+                # ── NR Upsell/AMR ───────────────────────────────────────────────
+                # Sir: =IF(AB3="CSD", IF(OR(AMR="Yes", AL3="Upsell-NR"), "Yes","No"), "No")
+                # Vertical must be exactly "CSD"; Rem col has "Upsell-NR" values
                 if "AMR" in rec_raw.columns and _ab_c:
                     rec_raw["NR Upsell/AMR"] = rec_raw.apply(
-                        lambda r: "Yes" if (str(r.get(_ab_c,"")).upper()=="CSD" and
-                                            (r.get("AMR","No")=="Yes" or
-                                             str(r.get(_al_c,"")).strip().upper()=="UPSELL-NR"))
-                                  else "No", axis=1)
+                        lambda r: "Yes" if (
+                            str(r.get(_ab_c,"")).strip() == "CSD" and
+                            (r.get("AMR","No")=="Yes" or
+                             str(r.get(_rem_c,"")).strip() == "Upsell-NR")
+                        ) else "No", axis=1)
 
-                # SAM ILP Slab
+                # ── SAM ILP Slab ────────────────────────────────────────────────
                 if _ak_c:
                     def _safe_enrich(v):
                         try: return float(v)
@@ -5691,15 +5706,20 @@ if enrich_btn:
                                   "5L+"  if _safe_enrich(v)>=500000  else
                                   "2L+"  if _safe_enrich(v)>=200000  else 0)
 
-                # Base to List Sale
+                # ── Base to List Sale ────────────────────────────────────────────
+                # Sir: =IF(OR(X3="Leader",X3="Star"),"No","Yes")
                 if _x_c:
                     rec_raw["Base to List Sale"] = rec_raw[_x_c].apply(
                         lambda v: "No" if str(v).strip().upper() in ("LEADER","STAR") else "Yes")
 
-                # Collection (sir: AL<>"Nach/ECS" → Yes)
-                if _al_c:
-                    rec_raw["Collection"] = rec_raw[_al_c].apply(
-                        lambda v: "No" if str(v).strip()=="Nach/ECS" else "Yes")
+                # ── Collection ──────────────────────────────────────────────────
+                # Sir: =IF(AL3<>"Nach/ECS","Yes","No") — exact "Nach/ECS"
+                # Check both MODE col and Rem col for NACH/ECS payments
+                def _coll(r):
+                    mode_v = str(r.get(_al_c,"")).strip() if _al_c else ""
+                    rem_v  = str(r.get(_rem_c,"")).strip() if _rem_c else ""
+                    return "No" if (mode_v == "Nach/ECS" or rem_v.upper() == "NACH/ECS") else "Yes"
+                rec_raw["Collection"] = rec_raw.apply(_coll, axis=1)
 
                 # L2-L6 from struct_map
                 if _p_c and 'struct_map' in dir() and struct_map:
@@ -6757,10 +6777,11 @@ if calc_btn:
             _unique_c= find_col(rec_exp, ["Unique","UNIQUE","E"])
             _amt_c   = find_col(rec_exp, ["WT AMT","WTAMT","WT_AMT","AK"])
             _mode_al = find_col(rec_exp, ["MODE","Mode","Payment Terms","AL"])
-            _cmr_rem = find_col(rec_exp, ["CMR-C+1-C+2","Rem","AH"])
+            _cmr_rem = find_col(rec_exp, ["Rnl Remarks","Rnl_Remarks","CMR-C+1-C+2","AH"])  # AMR source
+            _rem_exp  = find_col(rec_exp, ["Rem"])   # Renewal/WIP/NACH-ECS
             _base_ct = find_col(rec_exp, ["Base Client Type","CustType","Cust Type","X"])
             _vert_c  = find_col(rec_exp, ["Vertical","AB","vertical"])
-            _rnl_col = find_col(rec_exp, ["Renewal Map","Renewal Base","BH"])
+            _rnl_col = find_col(rec_exp, ["Renewal Map","Renewal Base","Prod","BH"])
             _sale_map= find_col(rec_exp, ["Sale Mapping","Sale","BG"])
 
             # ── Day / Week / FNT (sir: col BC=DAY(O3), BD=Week, BE=FNT) ─────────
