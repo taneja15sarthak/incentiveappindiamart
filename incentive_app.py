@@ -2231,13 +2231,28 @@ if not _use_enriched:
     rec_enriched = enrich_receipt_data(rec_raw, struct_map)
     ref_enriched = enrich_refund_data(ref_raw, struct_map)
     rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
-    st.info("📋 Mode 1: Raw files enriched with hierarchy/category columns. "
-            "Download the output, review the ' Receipt Data' sheet, make corrections, "
-            "then re-upload as 'Enriched Receipt (Step 2)'.")
+    # ── Download button for enriched receipt (Step 1 output) ──────────────
+    _enr_buf = io.BytesIO()
+    with pd.ExcelWriter(_enr_buf, engine="xlsxwriter") as _enr_w:
+        rec_enriched.to_excel(_enr_w, sheet_name="Receipt Data", index=False)
+        ref_enriched.to_excel(_enr_w, sheet_name="Refund",       index=False)
+        rnl_enriched.to_excel(_enr_w, sheet_name="Renewal",      index=False)
+    st.download_button(
+        label="⬇️ Download Enriched Receipt / Refund / Renewal",
+        data=_enr_buf.getvalue(),
+        file_name=f"Enriched_Data_{sel_month.replace(chr(39),'').replace(' ','_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Download this file, review and correct any columns (Productivity, CMR, etc.), "
+             "then re-upload as 'Enriched Receipt (Step 2)' for the final incentive calculation.",
+        type="primary",
+    )
+    st.info("📋 **Mode 1:** Enriched files ready. Download ↑, correct any values, "
+            "then re-upload in Step 2 for final calculation.")
 else:
     rec_enriched = rec_raw
     ref_enriched = enrich_refund_data(ref_raw, struct_map)
     rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
+    st.success("✅ **Mode 2:** Using your corrected enriched receipt for incentive calculation.")
 
 # Normalise EMP ID in renewal
 ec_rnl = find_col(rnl_raw, ["EMP ID","Emp ID","EmpID","Employee ID"])
