@@ -474,8 +474,7 @@ def load_ta_structure(f):
         if sh is None:
             st.warning("⚠️ Could not find FSF_TA/TA sheet in the structure file.")
             return {}
-        f.seek(0)
-        df = pd.read_excel(f, sheet_name=sh)
+        df = pd.read_excel(f, sheet_name=sh)  # f can be path or bytes
         df.columns = [str(c).strip() for c in df.columns]
     except Exception as e:
         st.error(f"Structure file error: {e}"); return {}
