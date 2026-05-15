@@ -2206,10 +2206,19 @@ with st.sidebar:
 
 # Slab config download
 st.subheader("Step 0 – Download TA Slab Config")
-st.download_button("⬇️ Download TA Slab Config Template",
-                   data=make_slab_excel(),
-                   file_name="TA_Slab_Config_Apr2026.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.caption("⚠️ The default slab config contains **April 2026** values. "
+           "Upload the May 2026 slab config file (from sidebar) to use May scheme values.")
+col_slab1, col_slab2 = st.columns(2)
+with col_slab1:
+    st.download_button("⬇️ Download April 2026 Slab Config",
+                       data=make_slab_excel(),
+                       file_name="TA_Slab_Config_Apr2026.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       use_container_width=True)
+with col_slab2:
+    st.info("May 2026 slab config: upload **TA_Slab_Config_May2026.xlsx** in the sidebar. "
+            "Slab numbers from May scheme emails are image-only — fill in the Excel once you have them.",
+            icon="ℹ️")
 
 # Load slab config
 cfg_raw = load_ta_slab_config(slab_f)
