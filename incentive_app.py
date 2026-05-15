@@ -2240,7 +2240,7 @@ if not _use_enriched:
     st.download_button(
         label="⬇️ Download Enriched Receipt / Refund / Renewal",
         data=_enr_buf.getvalue(),
-        file_name=f"Enriched_Data_{sel_month.replace(chr(39),'').replace(' ','_')}.xlsx",
+        file_name="Enriched_Data.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         help="Download this file, review and correct any columns (Productivity, CMR, etc.), "
              "then re-upload as 'Enriched Receipt (Step 2)' for the final incentive calculation.",
