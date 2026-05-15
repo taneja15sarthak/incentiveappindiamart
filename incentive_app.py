@@ -211,6 +211,7 @@ _IM_STAR_PRO_PRODS    = {"IM Star Pro","IM Leader Pro","Adv IM SS Pro"}
 # Hierarchy lookup built from structure (populated in load_ta_structure call)
 _HIER = {}   # {exec_eid: {L2 ID, L2 Name, L3 ID, L3 Name, L4 ID, L4 Name, L5 ID, L5 Name, L6 ID, L6 Name}}
 
+@st.cache_data(show_spinner=False)
 def enrich_receipt_data(rec_df, structure_result=None):
     """
     Add sir's extra columns to the raw receipt file.
@@ -314,6 +315,7 @@ def enrich_receipt_data(rec_df, structure_result=None):
     return df
 
 
+@st.cache_data(show_spinner=False)
 def enrich_refund_data(ref_df, structure_result=None):
     """Add sir's extra columns to the raw refund file."""
     df = ref_df.copy()
@@ -341,6 +343,7 @@ def enrich_refund_data(ref_df, structure_result=None):
     return df
 
 
+@st.cache_data(show_spinner=False)
 def enrich_renewal_data(rnl_df, structure_result=None):
     """Add sir's extra columns to the raw renewal file."""
     df = rnl_df.copy()
@@ -2228,31 +2231,40 @@ if "enr_file" in dir() and enr_file:
 
 # Mode 1: enrich raw receipt → output sheet
 if not _use_enriched:
-    rec_enriched = enrich_receipt_data(rec_raw, struct_map)
-    ref_enriched = enrich_refund_data(ref_raw, struct_map)
-    rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
-    # ── Download button for enriched receipt (Step 1 output) ──────────────
-    _enr_buf = io.BytesIO()
-    with pd.ExcelWriter(_enr_buf, engine="xlsxwriter") as _enr_w:
-        rec_enriched.to_excel(_enr_w, sheet_name="Receipt Data", index=False)
-        ref_enriched.to_excel(_enr_w, sheet_name="Refund",       index=False)
-        rnl_enriched.to_excel(_enr_w, sheet_name="Renewal",      index=False)
+    with st.spinner("Enriching receipt/refund/renewal data…"):
+        rec_enriched = enrich_receipt_data(rec_raw, struct_map)
+        ref_enriched = enrich_refund_data(ref_raw, struct_map)
+        rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
+
+    # ── Prominent download section ─────────────────────────────────────────
+    st.subheader("📥 Step 1 Complete — Download Enriched Files")
+    st.markdown("Enriched with hierarchy (L2-L6), Day/Week/FNT labels, product flags. **Review, correct any values, then re-upload in Step 2.**")
+
+    @st.cache_data(show_spinner=False)
+    def _build_enr_excel(_rec, _ref, _rnl):
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+            _rec.to_excel(w, sheet_name="Receipt Data", index=False)
+            _ref.to_excel(w, sheet_name="Refund",       index=False)
+            _rnl.to_excel(w, sheet_name="Renewal",      index=False)
+        return buf.getvalue()
+
+    _enr_bytes = _build_enr_excel(rec_enriched, ref_enriched, rnl_enriched)
     st.download_button(
         label="⬇️ Download Enriched Receipt / Refund / Renewal",
-        data=_enr_buf.getvalue(),
+        data=_enr_bytes,
         file_name="Enriched_Data.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="Download this file, review and correct any columns (Productivity, CMR, etc.), "
-             "then re-upload as 'Enriched Receipt (Step 2)' for the final incentive calculation.",
         type="primary",
+        use_container_width=True,
     )
-    st.info("📋 **Mode 1:** Enriched files ready. Download ↑, correct any values, "
-            "then re-upload in Step 2 for final calculation.")
+    st.info("After downloading and correcting, re-upload the file in the sidebar → "
+            "**📥 Enriched Receipt (Step 2)**, then click ▶ Calculate.")
 else:
     rec_enriched = rec_raw
     ref_enriched = enrich_refund_data(ref_raw, struct_map)
     rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
-    st.success("✅ **Mode 2:** Using your corrected enriched receipt for incentive calculation.")
+    st.success("✅ **Mode 2 active:** Incentive calculation will use your corrected enriched receipt.")
 
 # Normalise EMP ID in renewal
 ec_rnl = find_col(rnl_raw, ["EMP ID","Emp ID","EmpID","Employee ID"])
