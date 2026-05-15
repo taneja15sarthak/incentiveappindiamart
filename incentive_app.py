@@ -159,7 +159,9 @@ def parse_slabs(cfg):
         "csd_spot_7_12": sorted(rows("CSD_Spot_7_12"), key=lambda r:-r.get("Txn",0)),
         "csd_spot_20_30":sorted(rows("CSD_Spot_20_30"),key=lambda r:-r.get("Txn",0)),
         "kcd_milestones":sorted(rows("KCD_Milestones"),key=lambda r:-r.get("Min_Ach_Pct",0)),
-        "kcd_target_map": {(r.get("Group","KCD"),r["Vintage"]):(7100.0 if r.get("Group","KCD")=="KCD" and r["Vintage"]=="0-270" else float(r["Target_PCDV"])) for r in rows("KCD_Targets")},
+        "kcd_target_map": {(r.get("Group","KCD"),r["Vintage"]):({"KCD":{"0-270":7100,"270-2Yr":8100,"2Yr+":9100},
+                        "KCD-25cr":{"0-270":6480,"270-2Yr":9100,"2Yr+":10000}}.get(
+                        r.get("Group","KCD"),{}).get(r["Vintage"], float(r["Target_PCDV"]))) for r in rows("KCD_Targets")},
         "kcd_spot_1_12": sorted(rows("KCD_Spot_1_12"), key=lambda r:-r.get("PCDV",0)),
         "kcd_spot_20_30":sorted(rows("KCD_Spot_20_30"),key=lambda r:-r.get("PCDV",0)),
         "kcd_25cr_1_12": sorted(rows("KCD_25Cr_Spot_1_12"),key=lambda r:-r.get("PCDV",0)),
@@ -371,10 +373,17 @@ def enrich_receipt_data(rec_df, structure_result=None):
 
     # ── Hierarchy from structure ──────────────────────────────────────────────
     ec = find_col(df, ["Sales Exec ID","EMP ID"])
+    # Build EID lookup (int → str key) for hierarchy columns
+    _hier_map = {}
+    if ec and structure_result:
+        for _eid_raw in df[ec].dropna().unique():
+            _k = str(_eid_raw).split(".")[0].strip()
+            if _k in structure_result:
+                _hier_map[_k] = structure_result[_k]
     for h_key in ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name"]:
-        if ec and structure_result:
-            df[h_key] = df[ec].astype(str).str.split(".").str[0].str.strip().apply(
-                lambda e, hk=h_key: structure_result.get(e, {}).get(hk, ""))
+        if _hier_map:
+            df[h_key] = df[ec].astype(str).str.split(".").str[0].str.strip().map(
+                lambda e: _hier_map.get(e, {}).get(h_key, ""))
         else:
             df[h_key] = ""
 
@@ -1226,7 +1235,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
     # ── TELE ANNUAL CSD ────────────────────────────────────
     if vert == "CSD":
         if desig == "L1":
-            tgt_pcdv = S["csd_targets"].get(vint, 1800)
+            tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1300,"90-270":1800,"270+":2000}.get(vint, 1800)
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
             incr = round(max(0,pcdv_total-tgt_pcdv)*client_a*S["csd_incr_rate"]/1000)*1000 if grid>0 else 0
             base_incentive = grid + incr
@@ -1252,7 +1261,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         elif desig == "L2":
             # Rel'n Mgr CSD: team aggregate / HC
-            tgt_pcdv = S["csd_targets"].get(vint, 1800)
+            tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1300,"90-270":1800,"270+":2000}.get(vint, 1800)
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
             incr = round(max(0,pcdv_total-tgt_pcdv)*client_a*S["csd_incr_rate"]/1000)*1000 if grid>0 else 0
             base_incentive = grid + incr
@@ -1323,7 +1332,10 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         ss_m = 1.0 if _cmr1_pct >= (2/3) else 0.5
 
         if desig == "L1":
-            tgt_pcdv = S.get("kcd_target_map",{}).get((str(emp.get("Group","KCD") or "KCD").strip(),vint),1800)
+            tgt_pcdv = S.get("kcd_target_map",{}).get(
+                (str(emp.get("Group","KCD") or "KCD").strip(),vint)) or \
+               {"KCD":{"0-270":7100,"270-2Yr":8100,"2Yr+":9100},"KCD-25cr":{"0-270":6480,"270-2Yr":9100,"2Yr+":10000}}.get(
+                str(emp.get("Group","KCD") or "KCD").strip(),{}).get(vint,1800)
             grid   = _milestone(pcdv_total, tgt_pcdv, S["kcd_milestones"])
             incr   = round(max(0,pcdv_total-tgt_pcdv)*client_a*S.get("csd_incr_rate",0.03)/1000)*1000 if grid>0 else 0
             gross_inc = round((grid+incr)*ss_m,0)
@@ -1344,7 +1356,10 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             })
 
         elif desig == "L2":
-            tgt_pcdv = S.get("kcd_target_map",{}).get((str(emp.get("Group","KCD") or "KCD").strip(),vint),1800)
+            tgt_pcdv = S.get("kcd_target_map",{}).get(
+                (str(emp.get("Group","KCD") or "KCD").strip(),vint)) or \
+               {"KCD":{"0-270":7100,"270-2Yr":8100,"2Yr+":9100},"KCD-25cr":{"0-270":6480,"270-2Yr":9100,"2Yr+":10000}}.get(
+                str(emp.get("Group","KCD") or "KCD").strip(),{}).get(vint,1800)
             grid     = _milestone(pcdv_total,tgt_pcdv,S["kcd_milestones"])
             gross_inc= round(grid*ss_m,0)
             payout_elig = gross_inc > 0
