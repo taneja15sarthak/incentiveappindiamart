@@ -470,14 +470,21 @@ def _to_date(v):
 def load_ta_structure(f):
     if f is None: return {}
     try:
-        xl = pd.ExcelFile(f)
+        # Normalise to bytes so we can reuse without seek issues
+        if isinstance(f, (str, bytes.__class__)) and not isinstance(f, bytes):
+            _raw = open(f, "rb").read()   # file path string
+        elif isinstance(f, bytes):
+            _raw = f
+        else:
+            _raw = f.read() if hasattr(f, "read") else f.getvalue()
+        xl = pd.ExcelFile(_io.BytesIO(_raw))
         norms = [s.strip().upper() for s in xl.sheet_names]
         sh = next((xl.sheet_names[i] for i,s in enumerate(norms)
                    if s in ("FSF_TA","TA","STRUCT","STRUCTURE"," FSF_TA")), None)
         if sh is None:
             st.warning("⚠️ Could not find FSF_TA/TA sheet in the structure file.")
             return {}
-        df = pd.read_excel(f, sheet_name=sh)  # f can be path or bytes
+        df = pd.read_excel(_io.BytesIO(_raw), sheet_name=sh)
         df.columns = [str(c).strip() for c in df.columns]
     except Exception as e:
         st.error(f"Structure file error: {e}"); return {}
@@ -2236,12 +2243,7 @@ _struct_name  = struct_f.name if struct_f else ""
 @st.cache_data(show_spinner="Loading employee structure…")
 def _cached_load_ta_structure(fbytes: bytes, fname: str):
     if not fbytes: return {}
-    import tempfile, os
-    ext = fname.rsplit(".",1)[-1] if "." in fname else "xlsx"
-    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
-        tmp.write(fbytes); tmp_path = tmp.name
-    try: return load_ta_structure(tmp_path)
-    finally: os.unlink(tmp_path)
+    return load_ta_structure(_io.BytesIO(fbytes))
 
 struct_map = _cached_load_ta_structure(_struct_bytes, _struct_name)
 if not struct_map:
