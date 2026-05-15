@@ -185,6 +185,30 @@ def parse_slabs(cfg):
 
 
 @st.cache_data(show_spinner=False)
+def make_may_slab_excel():
+    """Return May 2026 slab config — same structure as April but labelled May.
+    Slab numbers are April defaults; upload the Excel to update with May actuals."""
+    import shutil, openpyxl, io as _bio
+    from openpyxl.styles import Font, PatternFill
+    # Build from April defaults, override labels to May
+    apr_bytes = make_slab_excel()
+    buf = _bio.BytesIO(apr_bytes)
+    wb = openpyxl.load_workbook(buf)
+    # Update any Apr references in cell A1 of each sheet
+    ORANGE = PatternFill("solid", fgColor="FFA500")
+    for sh in wb.sheetnames:
+        ws = wb[sh]
+        c = ws.cell(1,1)
+        if c.value and "Apr" in str(c.value):
+            c.value = str(c.value).replace("Apr","May")
+            c.fill = ORANGE
+    # Add/update the notes sheet
+    note_sh = wb["MAY_SPOT_NOTES"] if "MAY_SPOT_NOTES" in wb.sheetnames else wb.create_sheet("MAY_SPOT_NOTES")
+    note_sh.cell(1,1).value = "May 2026 — Slab numbers are April defaults. Update each sheet with May actuals once available."
+    note_sh.cell(1,1).font = Font(bold=True)
+    out = _bio.BytesIO(); wb.save(out); return out.getvalue()
+
+@st.cache_data(show_spinner=False)
 def make_slab_excel():
     cfg = build_ta_slab_config()
     buf = io.BytesIO()
@@ -2216,9 +2240,12 @@ with col_slab1:
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        use_container_width=True)
 with col_slab2:
-    st.info("May 2026 slab config: upload **TA_Slab_Config_May2026.xlsx** in the sidebar. "
-            "Slab numbers from May scheme emails are image-only — fill in the Excel once you have them.",
-            icon="ℹ️")
+    st.download_button("⬇️ Download May 2026 Slab Config",
+                       data=make_may_slab_excel(),
+                       file_name="TA_Slab_Config_May2026.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       use_container_width=True)
+    st.caption("May slab numbers = April defaults. Update the Excel with May actuals once you have sir's output.")
 
 # Load slab config
 cfg_raw = load_ta_slab_config(slab_f)
