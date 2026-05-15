@@ -744,7 +744,9 @@ def get_prev_month_str(sel, available_months):
     except: return None
 
 def filter_month(rec, ref, rnl, sel):
-    tgt = pd.to_datetime(sel, format="%b-%y")
+    # sel can be "May'26", "May-26", "Apr'26" etc — normalise before parsing
+    _sel_norm = str(sel).strip().replace("'", "-").replace(" ", "-")
+    tgt = pd.to_datetime(_sel_norm, format="%b-%y")
     tm, ty = tgt.month, tgt.year
 
     def _dt(s):
