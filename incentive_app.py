@@ -2322,6 +2322,25 @@ if "enr_file" in dir() and enr_file:
         enr_raw.columns = [str(c).strip() for c in enr_raw.columns]
 
         if "Day" in enr_raw.columns and "FNT" in enr_raw.columns and len(enr_raw) > 0:
+            # Detect the month in the enriched receipt
+            _enr_dtc = next((c for c in enr_raw.columns if "entry" in c.lower() or "date" in c.lower()), None)
+            if _enr_dtc:
+                _enr_dates = pd.to_datetime(enr_raw[_enr_dtc], errors="coerce")
+                _enr_months = _enr_dates.dt.to_period("M").dropna().value_counts()
+                _enr_top_month = str(_enr_months.index[0]) if len(_enr_months) else ""  # e.g. "2026-04"
+                # Compare with sel_month
+                _sel_norm = str(sel_month).strip().replace("'","-")
+                _sel_dt = pd.to_datetime(_sel_norm, format="%b-%y", errors="coerce")
+                _sel_period = f"{_sel_dt.year}-{_sel_dt.month:02d}" if _sel_dt is not pd.NaT else ""
+                if _enr_top_month and _sel_period and _enr_top_month != _sel_period:
+                    st.error(
+                        f"⚠️ **Month mismatch!** The enriched file contains **{_enr_top_month}** data "
+                        f"but you are calculating for **{sel_month}**. "
+                        f"Please download a fresh enriched file from a {sel_month} session first.",
+                        icon="🚨"
+                    )
+                    _use_enriched = False  # fall back to raw
+                    st.stop()
             rec_raw = enr_raw
             # Also read corrected Refund and Renewal if present
             _ref_sh = next((s for s in _enr_xl.sheet_names if "refund" in s.lower()), None)
