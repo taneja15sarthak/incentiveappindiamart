@@ -215,101 +215,141 @@ _HIER = {}   # {exec_eid: {L2 ID, L2 Name, L3 ID, L3 Name, L4 ID, L4 Name, L5 ID
 def enrich_receipt_data(rec_df, structure_result=None):
     """
     Add sir's extra columns to the raw receipt file.
-    structure_result = result dict from load_ta_structure (for hierarchy columns).
+    All column logic reverse-engineered from sir's TA Base+Spot Incentive Scheme Apr26 file.
     """
     df = rec_df.copy()
 
-    # ── Date-based columns ────────────────────────────────────────────────────
+    # ── Date columns: confirmed bins from sir ─────────────────────────────────
+    # Week: WK-1=1-9, WK-2=10-16, WK-3=17-23, WK-4=24+
+    # FNT:  FNT-1=1-16, FNT-2=17+
     dtc = find_col(df, ["Entry Date","Receipt Date","Clear Date"])
     if dtc:
         dates = pd.to_datetime(df[dtc], errors="coerce")
         day   = dates.dt.day.fillna(0).astype(int)
         df["Day"]  = day
         df["Week"] = day.apply(lambda d:
-            "WK-1" if d<=7 else "WK-2" if d<=14 else "WK-3" if d<=21
-            else "WK-4" if d<=28 else "WK-5")
-        df["FNT"]  = day.apply(lambda d: "FNT-1" if d<=15 else "FNT-2")
-    df["WK-1"] = None; df["WK-2"] = None; df["WK-3"] = None
-    df["WK-4"] = None; df["WK-5"] = None
-    df["FNT-1"] = None; df["FNT-2"] = None
+            "WK-1" if d<=9 else "WK-2" if d<=16 else "WK-3" if d<=23 else "WK-4")
+        df["FNT"]  = day.apply(lambda d: "FNT-1" if d<=16 else "FNT-2")
+    df["WK-1"]=None; df["WK-2"]=None; df["WK-3"]=None
+    df["WK-4"]=None; df["WK-5"]=None; df["FNT-1"]=None; df["FNT-2"]=None
 
-    # ── Product category flags ────────────────────────────────────────────────
-    prod_c = find_col(df, ["Prod","Product","Tagged Services Name","Prod.1"])
-    if prod_c:
-        prod = df[prod_c].astype(str).str.strip()
-        df["IM Star/Leader"]       = prod.apply(lambda p: "Yes" if any(k in p for k in _IM_STAR_LEADER_PRODS) else "No")
-        df["IM Star Pro+ New Sale"] = prod.apply(lambda p: "Yes" if any(k in p for k in _IM_STAR_PRO_PRODS) else "No")
-        df["KCD-New Sale"]          = prod.apply(lambda p: "Yes" if any(k in p for k in _SS_PLUS_PRODS) else "Yes")  # All non-CTM = Yes for KCD
-        df["MDC-WS -Anurag"]        = prod.apply(lambda p:
-            "Star" if "Star" in p else "Leader" if "Leader" in p
-            else "IVE" if "IVE" in p or "Exporter" in p
-            else "MDC" if "MDC" in p or "Trust" in p
-            else "WS"  if "WS" in p  else "Other")
-    else:
-        for c in ["IM Star/Leader","IM Star Pro+ New Sale","KCD-New Sale","MDC-WS -Anurag"]:
-            df[c] = "No"
+    # ── Rem (tag) column ──────────────────────────────────────────────────────
+    rem_c = find_col(df, ["Rem","Rnl Remarks","Deal Remarks"])
+    rem   = df[rem_c].astype(str).str.strip() if rem_c else pd.Series("", index=df.index)
 
-    # ── Deal Value columns ────────────────────────────────────────────────────
-    wt_c  = find_col(df, ["WT AMT","WT_AMT","WT Amt(A)"])
-    dv_c  = find_col(df, ["Deal Value","Deal Val","Deal Val (WT)"])
-    ra_c  = find_col(df, ["Receipt Amount"])
-    if dv_c:
-        df["Deal Val"] = pd.to_numeric(df[dv_c], errors="coerce").fillna(0)
-    if wt_c:
-        df["Deal Val (WOT)"] = pd.to_numeric(df[wt_c], errors="coerce").fillna(0)
-        df["DV"] = df.get("Deal Val (WOT)", df[wt_c])
-    else:
-        df["Deal Val"] = 0; df["Deal Val (WOT)"] = 0; df["DV"] = 0
+    # ── Total Sale: 1 only for Upsell-NR and Upsell-Ren (confirmed from sir) ──
+    df["Total Sale"] = (rem.isin(["Upsell-NR","Upsell-Ren"])).astype(int)
 
-    # ── Big Ticket Slab ───────────────────────────────────────────────────────
-    dv_val = pd.to_numeric(df.get("DV", df.get("Deal Val (WOT)", 0)), errors="coerce").fillna(0)
-    def _bt_slab(v):
-        if v >= 500000: return "5L+"
-        if v >= 300000: return "3L+"
-        if v >= 200000: return "2L+"
-        if v >= 100000: return "1L+"
-        return 0
-    df["Big Ticket-Slab"] = dv_val.apply(_bt_slab)
+    # ── Prod.1: productivity weight — 1.0 for non-WIP/Balance/TDS rows ────────
+    _excl = {"WIP","Balance","TDS","NACH/ECS","NR","Addon"}
+    df["Prod.1"] = (~rem.isin(_excl)).astype(float)
 
-    # ── Status / Collection flag ──────────────────────────────────────────────
-    status_c = find_col(df, ["Status","Receipt Status","PAYMENT STATUS"])
-    bc_c     = find_col(df, ["B/C"])
+    # ── CMR-C+1-C+2: Renewal rows get CMR tag (sequence-based) ───────────────
+    # Renewal rows: CMR/CMR+1/CMR+2/... based on renewal sequence
+    # Non-renewal rows: "Others"  (we set all to Others; CMR sequence requires renewal join)
+    df["CMR-C+1-C+2"] = "Others"
+    # Renewal rows that are tagged as Renewal → CMR (approximation; sir uses renewal month seq)
+    _is_rnl = rem == "Renewal"
+    df.loc[_is_rnl, "CMR-C+1-C+2"] = "CMR"
+
+    # ── AMR: Yes only when Rem=="Renewal" AND it's an auto-renewal ────────────
+    # Sir: AMR=Yes for ~787 Renewal rows (auto-renewal flag from renewal file)
+    # We default to No; could be enhanced with renewal file join
+    df["AMR"] = "No"
+
+    # ── Sale Mapping: Yes when Rem is any of Upsell-NR, Upsell-Ren, Renewal, NR
+    df["Sale Mapping"] = rem.apply(lambda r: "Yes" if r in {"Upsell-NR","Upsell-Ren","Renewal","NR"} else None)
+
+    # ── Renewal Map: "Renewal" when Rem is Renewal or Upsell-Ren ─────────────
+    df["Renewal Map"]  = rem.apply(lambda r: "Renewal" if r in {"Renewal","Upsell-Ren","Upsell-NR"} else None)
+
+    # ── Collection: Yes if Status==Cleared ───────────────────────────────────
+    status_c = find_col(df, ["Status","Receipt Status"])
     if status_c:
-        df["Final Status"] = "Tagged"
         cleared = df[status_c].astype(str).str.upper().str.strip() == "CLEARED"
-        has_bc  = df[bc_c].notna() & (df[bc_c].astype(str).str.strip()!="") if bc_c else pd.Series(False, index=df.index)
         df["Collection"] = cleared.apply(lambda x: "Yes" if x else "No")
     else:
-        df["Final Status"] = "Tagged"; df["Collection"] = "Yes"
+        df["Collection"] = "Yes"
+    df["Final Status"] = "Tagged"
 
-    # ── Renewal / Sale Mapping ────────────────────────────────────────────────
-    rem_c = find_col(df, ["Rem","Remarks","Rnl Remarks"])
-    if rem_c:
-        rem_val = df[rem_c].astype(str).str.strip()
-        df["Renewal Map"]  = rem_val.apply(lambda r: "Renewal" if "renew" in r.lower() or "Upsell-Ren" in r else None)
-        df["Sale Mapping"] = rem_val.apply(lambda r: "Yes" if "upsell" in r.lower() or "upsell-nr" in r.lower() or "renew" in r.lower() else None)
+    # ── IM Star/Leader ────────────────────────────────────────────────────────
+    prod_c  = find_col(df, ["Prod","Product","Tagged Services Name"])
+    prod    = df[prod_c].astype(str).str.strip() if prod_c else pd.Series("", index=df.index)
+    df["IM Star/Leader"] = prod.apply(
+        lambda p: "Yes" if any(k in p for k in _IM_STAR_LEADER_PRODS) else "No")
+    df["IM Star Pro+ New Sale"] = prod.apply(
+        lambda p: "Yes" if any(k in p for k in _IM_STAR_PRO_PRODS) else "No")
+
+    # ── KCD-New Sale: Yes only for non-Balance/TDS/WIP/Renewal upsell rows ────
+    # Sir: KCD-New Sale='Yes' for specific new sale products only
+    # 0 for Balance/WIP/Renewal/NR; 'Yes' only for confirmed new KCD upsell products
+    _kcd_new_rems = {"Upsell-NR","Upsell-Ren"}
+    df["KCD-New Sale"] = rem.apply(lambda r: "Yes" if r in _kcd_new_rems else 0)
+
+    # ── MDC-WS -Anurag: based on CustType column (NOT product name) ──────────
+    # CustType mapping (confirmed from sir):
+    # STAR, FREELIST, FCP, CATALOG, BL Paid* → MDC
+    # LEADER → Leader   |  ExportTS, TSCATALOG → IVE/MDC-TS  |  TSCATALOG → MDC-TS
+    cust_c = find_col(df, ["CustType","Cust Type","CUST TYPE"])
+    if cust_c:
+        cust = df[cust_c].astype(str).str.strip().str.upper()
+        def _mdc_cat(ct):
+            if "LEADER" in ct:                           return "Leader"
+            if ct in {"EXPORTTS","EXPORT TS"}:           return "IVE"
+            if ct == "TSCATALOG":                        return "MDC-TS"
+            if any(k in ct for k in
+                   {"STAR","FCP","CATALOG","FREELIST","BL PAID","MFCP","VGFCP","QGFCP"}):
+                return "MDC"
+            return "Other"
+        df["MDC-WS -Anurag"] = cust.apply(_mdc_cat)
     else:
-        df["Renewal Map"] = None; df["Sale Mapping"] = None
+        # Fallback to product-based approximation
+        df["MDC-WS -Anurag"] = prod.apply(lambda p:
+            "Leader" if "Leader" in p else "IVE" if "IVE" in p or "Exporter" in p
+            else "MDC-TS" if "Catalog" in p else "MDC")
 
-    # ── CMR mapping ───────────────────────────────────────────────────────────
-    df["CMR-C+1-C+2"] = "Others"  # default; renewal rows override via renewal file join
-    df["Tue/False"]   = False
-    df["AMR"]         = "No"
+    # ── Deal Val columns ──────────────────────────────────────────────────────
+    wt_c  = find_col(df, ["WT AMT","WT_AMT","WT Amt(A)"])
+    ra_c  = find_col(df, ["Receipt Amount"])
+    dv_c  = find_col(df, ["Deal Value","Deal Val","Deal Val (WT)"])
+    wot_c = find_col(df, ["Deal Val (WOT)"])
+
+    wt_arr  = pd.to_numeric(df[wt_c],  errors="coerce").fillna(0) if wt_c  else pd.Series(0.0, index=df.index)
+    dv_arr  = pd.to_numeric(df[dv_c],  errors="coerce").fillna(0) if dv_c  else pd.Series(0.0, index=df.index)
+    wot_arr = pd.to_numeric(df[wot_c], errors="coerce").fillna(0) if wot_c else wt_arr
+    ra_arr  = pd.to_numeric(df[ra_c],  errors="coerce").fillna(0) if ra_c  else wt_arr
+
+    df["Deal Val"]     = dv_arr if dv_c else ra_arr
+    df["Deal Val (WOT)"] = wot_arr
+    # DV: use Deal Val (WOT) when non-zero, else Receipt Amount (not WT AMT)
+    # For TDS/Balance rows: DV comes from the companion sale via GLUSER grouping
+    df["DV"] = wot_arr.where(wot_arr > 0, ra_arr)
+
+    # ── Big Ticket Slab: based on DV ─────────────────────────────────────────
+    # Confirmed: 5L+=500K+, 3L+=300K+, 2L+=200K+, 1L+=100K+
+    dv_val = df["DV"]
+    df["Big Ticket-Slab"] = pd.cut(
+        dv_val,
+        bins=[-1, 0, 99999.99, 199999.99, 299999.99, 499999.99, float("inf")],
+        labels=[0, 0, "1L+", "2L+", "3L+", "5L+"]
+    ).astype(str).replace({"0":"0"})
+    df.loc[dv_val <= 0,     "Big Ticket-Slab"] = 0
+    df.loc[dv_val < 100000, "Big Ticket-Slab"] = 0
+
+    # ── Misc defaults ─────────────────────────────────────────────────────────
+    df["Tue/False"]     = False
     df["Base to Listing"] = "No"
-    df["Total Sale"]  = 1
-    df["Prod.1"]      = 1.0
-    df["MYR/F"]       = None
-    df["Correction"]  = None; df["Reason"] = None
-    df["NA"] = None; df["NA.1"] = None; df["NA.2"] = None
+    df["MYR/F"]         = None
+    df["Correction"]    = None; df["Reason"] = None
+    df["NA"]=None; df["NA.1"]=None; df["NA.2"]=None
 
-    # ── Hierarchy columns from structure ──────────────────────────────────────
+    # ── Hierarchy from structure ──────────────────────────────────────────────
     ec = find_col(df, ["Sales Exec ID","EMP ID"])
-    if ec and structure_result:
-        for h_key in ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name"]:
-            df[h_key] = df[ec].astype(str).str.split(".").str[0].str.strip().map(
+    for h_key in ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name"]:
+        if ec and structure_result:
+            df[h_key] = df[ec].astype(str).str.split(".").str[0].str.strip().apply(
                 lambda e, hk=h_key: structure_result.get(e, {}).get(hk, ""))
-    else:
-        for h_key in ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name","L6  ID","L6 Name"]:
+        else:
             df[h_key] = ""
 
     return df
@@ -2186,7 +2226,21 @@ if not struct_f:
     st.info("Upload the Employee Structure file with a FSF_TA sheet.", icon="📂")
     st.stop()
 
-struct_map = load_ta_structure(struct_f)
+# Cache structure loading by file bytes (fast re-runs when only slab/targets change)
+_struct_bytes = struct_f.getvalue() if struct_f else b""
+_struct_name  = struct_f.name if struct_f else ""
+
+@st.cache_data(show_spinner="Loading employee structure…")
+def _cached_load_ta_structure(fbytes: bytes, fname: str):
+    if not fbytes: return {}
+    import tempfile, os
+    ext = fname.rsplit(".",1)[-1] if "." in fname else "xlsx"
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(fbytes); tmp_path = tmp.name
+    try: return load_ta_structure(tmp_path)
+    finally: os.unlink(tmp_path)
+
+struct_map = _cached_load_ta_structure(_struct_bytes, _struct_name)
 if not struct_map:
     st.error("Could not load TA structure. Check the FSF_TA sheet in the file.")
     st.stop()
@@ -2303,6 +2357,12 @@ st.subheader("Step 2 – Calculate")
 
 # Detect L2 name column in renewal (for L2+ CMR lookup)
 l2_rnl_col = find_col(rnl, ["L2","L2 Name","L2Name","RM Name"]) if rnl is not None else None
+
+# Store results across rerenders
+if "ta_results" not in st.session_state:
+    st.session_state["ta_results"] = None
+if "ta_sel_month" not in st.session_state:
+    st.session_state["ta_sel_month"] = None
 
 if calc_btn:
     results = {
@@ -2613,7 +2673,11 @@ if calc_btn:
 
     # Export
     results["rec_df_full"]=rec_enriched; results["rnl_df_full"]=rnl_enriched; results["ref_df_full"]=ref_enriched
-    out_bytes = build_excel_output(results, sel_month)
+    with st.spinner("Building Excel output…"):
+        out_bytes = build_excel_output(results, sel_month)
+    st.session_state["ta_results"]    = out_bytes
+    st.session_state["ta_sel_month"]  = sel_month
+    st.success("✅ Calculation complete — download below.")
     st.download_button(
         "⬇️ Download Full TA Incentive Report (Excel)",
         data=out_bytes,
@@ -2630,3 +2694,24 @@ if calc_btn:
             } for r in zero]), use_container_width=True, hide_index=True)
         else:
             st.success("All employees earned an incentive! 🎉")
+# ═══════════════════════════════════════════════════════════════════════
+# PERSISTENT RESULTS (visible after rerun, survives widget interaction)
+# ═══════════════════════════════════════════════════════════════════════
+if st.session_state.get("ta_results"):
+    _rb = st.session_state["ta_results"]
+    _rm = str(st.session_state.get("ta_sel_month","")).replace("'","").replace(" ","_")
+    st.divider()
+    st.subheader("📊 Output Ready")
+    _dc1, _dc2 = st.columns([3,1])
+    with _dc1:
+        st.download_button(
+            label="⬇️ Download TA Incentive Output",
+            data=_rb,
+            file_name=f"TA_Incentives_{_rm}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True, type="primary", key="dl_persistent",
+        )
+    with _dc2:
+        if st.button("🗑️ Clear", use_container_width=True, key="clear_results"):
+            st.session_state["ta_results"] = None
+            st.rerun()
