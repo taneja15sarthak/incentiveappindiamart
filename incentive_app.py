@@ -6,6 +6,7 @@ For Tele Annual CSD and Tele Annual KCD - SEPARATE from regular CSD/KCD
 import streamlit as st
 import pandas as pd
 import io
+import io as _io
 from datetime import date
 
 st.set_page_config(page_title="TA Incentive Calculator", layout="wide", page_icon="📊")
@@ -127,11 +128,13 @@ def build_ta_slab_config():
 def load_ta_slab_config(f):
     defs = build_ta_slab_config()
     if f is None: return defs
-    xl = pd.ExcelFile(f)
+    # Read bytes once so both ExcelFile and read_excel can use it
+    _b = f.getvalue() if hasattr(f, "getvalue") else f.read()
+    xl = pd.ExcelFile(_io.BytesIO(_b))
     cfg = {}
     for k, dd in defs.items():
         if k in xl.sheet_names:
-            df = pd.read_excel(f, sheet_name=k, header=1).dropna(how="all")
+            df = pd.read_excel(_io.BytesIO(_b), sheet_name=k, header=1).dropna(how="all")
             cfg[k] = df
         else:
             cfg[k] = dd
@@ -1430,14 +1433,15 @@ def load_ta_targets(f):
     empty = {"l1_cmr":{}, "l2_cmr":{}, "l3_coll":{}, "l4_coll":{}}
     if f is None: return empty
     try:
-        xl = pd.ExcelFile(f)
+        _tb = f.getvalue() if hasattr(f,"getvalue") else (open(f,"rb").read() if isinstance(f,str) else f.read())
+        xl = pd.ExcelFile(_io.BytesIO(_tb))
         norms = {s.strip().upper(): s for s in xl.sheet_names}
 
         # L1 Renewal CMR targets
         l1_cmr = {}
         sh1 = norms.get("L1 RENEWAL") or norms.get("L1RENEWAL") or norms.get("L1")
         if sh1:
-            df1 = pd.read_excel(f, sheet_name=sh1)
+            df1 = pd.read_excel(_io.BytesIO(_tb), sheet_name=sh1)
             df1.columns = [str(c).strip() for c in df1.columns]
             iil_c = find_col(df1, ["IIL","Employee ID","Emp ID","EmpID"])
             tgt_c = find_col(df1, ["TGT CMR 100%","CMR Target","Target CMR","TGT CMR","CMR%","Target"])
@@ -1453,7 +1457,7 @@ def load_ta_targets(f):
         l2_cmr = {}
         sh2 = norms.get("L2 TARGET") or norms.get("L2TARGET") or norms.get("L2")
         if sh2:
-            df2 = pd.read_excel(f, sheet_name=sh2)
+            df2 = pd.read_excel(_io.BytesIO(_tb), sheet_name=sh2)
             df2.columns = [str(c).strip() for c in df2.columns]
             iil_c = find_col(df2, ["IIL","Employee ID","Emp ID"])
             tgt_c = find_col(df2, ["% TGT","TGT","Target","CMR Target","CMR%"])
@@ -1468,7 +1472,7 @@ def load_ta_targets(f):
         l3_coll = {}
         sh3 = norms.get("L3")
         if sh3:
-            df3 = pd.read_excel(f, sheet_name=sh3)
+            df3 = pd.read_excel(_io.BytesIO(_tb), sheet_name=sh3)
             df3.columns = [str(c).strip() for c in df3.columns]
             name_c = find_col(df3, ["Employee Name","Name","L3 Name","L3Name"])
             tgt_c  = find_col(df3, ["Target","Collection Target","Coll Target"])
@@ -1489,7 +1493,7 @@ def load_ta_targets(f):
         l4_coll = {}
         sh4 = norms.get("L4")
         if sh4:
-            df4 = pd.read_excel(f, sheet_name=sh4)
+            df4 = pd.read_excel(_io.BytesIO(_tb), sheet_name=sh4)
             df4.columns = [str(c).strip() for c in df4.columns]
             name_c = find_col(df4, ["L4 Name","Name","Employee Name"])
             tgt_c  = find_col(df4, ["Target","Collection Target","Coll Target"])
@@ -2269,7 +2273,7 @@ rnl_raw = _rf(renewal_f)
 _use_enriched = False
 if "enr_file" in dir() and enr_file:
     try:
-        enr_raw = pd.read_excel(enr_file)
+        enr_raw = pd.read_excel(_io.BytesIO(enr_file.getvalue()))
         enr_raw.columns = [str(c).strip() for c in enr_raw.columns]
         # Validate it has the enriched marker columns
         if "Day" in enr_raw.columns and "FNT" in enr_raw.columns:
