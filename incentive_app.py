@@ -2410,7 +2410,13 @@ except Exception:
 FY_START = date(CALC_DATE.year if CALC_DATE.month >= 4 else CALC_DATE.year-1, 4, 1)
 st.sidebar.caption(f"CALC_DATE: {CALC_DATE:%d %b %Y} | FY: {FY_START:%b %Y}")
 
-rec, ref, rnl = filter_month(rec_raw, ref_raw, rnl_raw, sel_month)
+if _use_enriched:
+    # Mode 2: enriched receipt is already the corrected dataset — skip re-filtering
+    rec = rec_raw    # enriched receipt used as-is
+    ref = ref_raw    # enriched refund used as-is
+    _, _, rnl = filter_month(rec_raw, ref_raw, rnl_raw, sel_month)  # still filter renewal
+else:
+    rec, ref, rnl = filter_month(rec_raw, ref_raw, rnl_raw, sel_month)
 st.info(f"📅 {sel_month} | Receipt: {len(rec)} rows | Refund: {len(ref)} rows | Renewal: {len(rnl) if rnl is not None else 0} rows")
 
 st.subheader("Step 2 – Calculate")
