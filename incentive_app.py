@@ -2310,16 +2310,34 @@ rnl_raw = _rf(renewal_f)
 _use_enriched = False
 if "enr_file" in dir() and enr_file:
     try:
-        enr_raw = pd.read_excel(_io.BytesIO(enr_file.getvalue()))
+        _enr_bytes = enr_file.getvalue()
+        _enr_xl    = pd.ExcelFile(_io.BytesIO(_enr_bytes))
+        _enr_sheets = [s.strip() for s in _enr_xl.sheet_names]
+
+        # Read Receipt Data sheet
+        _rec_sh = next((s for s in _enr_xl.sheet_names if "receipt" in s.lower()), _enr_xl.sheet_names[0])
+        enr_raw = pd.read_excel(_io.BytesIO(_enr_bytes), sheet_name=_rec_sh)
         enr_raw.columns = [str(c).strip() for c in enr_raw.columns]
-        # Validate it has the enriched marker columns
-        if "Day" in enr_raw.columns and "FNT" in enr_raw.columns:
-            rec_raw = enr_raw   # replace raw receipt with enriched version
+
+        if "Day" in enr_raw.columns and "FNT" in enr_raw.columns and len(enr_raw) > 0:
+            rec_raw = enr_raw
+            # Also read corrected Refund and Renewal if present
+            _ref_sh = next((s for s in _enr_xl.sheet_names if "refund" in s.lower()), None)
+            _rnl_sh = next((s for s in _enr_xl.sheet_names if "renewal" in s.lower() or "renew" in s.lower()), None)
+            if _ref_sh:
+                _enr_ref = pd.read_excel(_io.BytesIO(_enr_bytes), sheet_name=_ref_sh)
+                _enr_ref.columns = [str(c).strip() for c in _enr_ref.columns]
+                if len(_enr_ref) > 0: ref_raw = _enr_ref
+            if _rnl_sh:
+                _enr_rnl = pd.read_excel(_io.BytesIO(_enr_bytes), sheet_name=_rnl_sh)
+                _enr_rnl.columns = [str(c).strip() for c in _enr_rnl.columns]
+                if len(_enr_rnl) > 0: rnl_raw = _enr_rnl
             _use_enriched = True
-            st.success(f"✅ Mode 2: Using enriched receipt ({len(enr_raw)} rows) — "
-                       f"sir's manual corrections applied to productivity/CMR columns.")
+            st.success(f"✅ Mode 2: Using enriched receipt ({len(enr_raw)} rows) from "
+                       f"sheet '{_rec_sh}' — corrections applied.")
         else:
-            st.warning("Enriched file missing 'Day'/'FNT' columns — using raw receipt instead.")
+            st.warning(f"Enriched file has {len(enr_raw)} rows / missing Day+FNT columns — "
+                       f"using raw receipt instead. Sheets found: {_enr_sheets}")
     except Exception as _enr_e:
         st.warning(f"Could not read enriched file: {_enr_e}")
 
