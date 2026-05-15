@@ -329,15 +329,14 @@ def enrich_receipt_data(rec_df, structure_result=None):
     df["DV"] = wot_arr.where(wot_arr > 0, ra_arr)
 
     # ── Big Ticket Slab: based on DV ─────────────────────────────────────────
-    # Confirmed: 5L+=500K+, 3L+=300K+, 2L+=200K+, 1L+=100K+
     dv_val = df["DV"]
-    df["Big Ticket-Slab"] = pd.cut(
-        dv_val,
-        bins=[-1, 0, 99999.99, 199999.99, 299999.99, 499999.99, float("inf")],
-        labels=[0, 0, "1L+", "2L+", "3L+", "5L+"]
-    ).astype(str).replace({"0":"0"})
-    df.loc[dv_val <= 0,     "Big Ticket-Slab"] = 0
-    df.loc[dv_val < 100000, "Big Ticket-Slab"] = 0
+    def _bt(v):
+        if v >= 500000: return "5L+"
+        if v >= 300000: return "3L+"
+        if v >= 200000: return "2L+"
+        if v >= 100000: return "1L+"
+        return 0
+    df["Big Ticket-Slab"] = dv_val.apply(_bt)
 
     # ── Misc defaults ─────────────────────────────────────────────────────────
     df["Tue/False"]     = False
