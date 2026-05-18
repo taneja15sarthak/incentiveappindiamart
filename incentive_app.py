@@ -1020,7 +1020,16 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
             if (dates.dt.year==1970).sum() > dates.notna().sum()*0.4:
                 base=pd.Timestamp("1899-12-30")
                 dates=nums.apply(lambda x:base+pd.Timedelta(days=int(x)) if pd.notna(x) and x>0 else pd.NaT)
+            # Spot counts only NEW SALES (Upsell-NR + Upsell-Ren), not Renewal/WIP/NR/Balance
+            _rem_c = find_col(r, ["Rem","Rnl Remarks","Deal Remarks","Remarks"])
+            if _rem_c:
+                _new_sale_mask = r[_rem_c].astype(str).str.strip().isin({"Upsell-NR","Upsell-Ren"})
+            else:
+                # Fallback: use Total Sale column if Rem not available
+                _ts_c = find_col(r, ["Total Sale","total_sale"])
+                _new_sale_mask = (pd.to_numeric(r[_ts_c],errors="coerce")==1) if _ts_c else pd.Series(True, index=r.index)
             days = dates.dt.day
+            _spot_days = days[_new_sale_mask]  # only new sale days for spot count
             if dvc:
                 dv_s = pd.to_numeric(r[dvc],errors="coerce").fillna(0)
                 fnt_dv["1_12"]  = float(dv_s[days<=12].sum())
@@ -1029,17 +1038,15 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
             # p1, p2, p3 driven by CALC_DATE month
             _mo = CALC_DATE.month
             if _mo == 4:   # April
-                spot_txn["2_6"]   = int(days.between(2,6).sum())
-                spot_txn["7_12"]  = int(days.between(7,12).sum())
-                spot_txn["20_30"] = int((days>=20).sum())
-                # aliases for output
+                spot_txn["2_6"]   = int(_spot_days.between(2,6).sum())
+                spot_txn["7_12"]  = int(_spot_days.between(7,12).sum())
+                spot_txn["20_30"] = int((_spot_days>=20).sum())
                 spot_txn["1_12"] = spot_txn["2_6"] + spot_txn["7_12"]
-                spot_txn["4th"]  = int((days==4).sum())
+                spot_txn["4th"]  = int((_spot_days==4).sum())
             else:          # May (and default)
-                spot_txn["1_12"]  = int(days.between(1,12).sum())
-                spot_txn["4th"]   = int((days==4).sum())
-                spot_txn["20_30"] = int((days>=20).sum())
-                # aliases for backward compat
+                spot_txn["1_12"]  = int(_spot_days.between(1,12).sum())
+                spot_txn["4th"]   = int((_spot_days==4).sum())
+                spot_txn["20_30"] = int((_spot_days>=20).sum())
                 spot_txn["2_6"]  = spot_txn["1_12"]
                 spot_txn["7_12"] = spot_txn["4th"]
         except: pass
@@ -1132,14 +1139,14 @@ def _nursery_mult(sent, recd, cmr_pct, sent_max, cmr_grid, cmr_table,
         if sent == 2: return 1.0 if recd >= 1 else 0.0
         if sent == 3: return 1.0 if recd >= 2 else 0.0
         if sent == 4: return 1.0 if recd >= 3 else 0.0   # KCD: >=3
-        return 1.0 if cmr_pct >= 60.0 else 0.0           # KCD: 60% threshold
+        return 1.0 if cmr_pct >= 0.60 else 0.0           # KCD: 60% threshold
 
     # CSD (default)
-    # CMR threshold: 35% for first 60D / 60D movers, 40% for 61-90D
+    # CMR threshold as DECIMAL (cmr_pct is stored as 0.35 not 35)
     if bucket == "60D" or fy_age <= 60:
-        cmr_thresh = 35.0
+        cmr_thresh = 0.35   # 35% for first 60D / 60D movers
     else:
-        cmr_thresh = 40.0
+        cmr_thresh = 0.40   # 40% for 61-90D
 
     if sent == 0: return 1.0
     if sent == 1: return 1.0
@@ -2019,7 +2026,7 @@ def build_excel_output(results_dict, sel_month):
                     "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Collection":round(r.get("gross_coll",0),2),
                     "Refund":round(r.get("refund",0),2),
-                    "Net Collection":round(r.get("net_coll_cr",r.get("net_coll",0)/1e7),6),
+                    "Net Collection":round(r.get("net_coll",0)/1e7,6),  # BM-CSD: Crore
                     "Deal Value":round(r.get("deal_val",0),2),
                     "Target":r.get("coll_target") or None,"Ach\n%":round(r.get("ach_pct",0)/100,4),
                     "Incentive":r.get("base_inc",0),
