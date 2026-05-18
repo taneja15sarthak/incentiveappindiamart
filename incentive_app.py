@@ -2663,8 +2663,11 @@ if calc_btn:
                 # PDF: employee is eligible for BOTH nursery and base scheme
                 # Both get computed; payment from whichever is higher
                 results["nursery"].append(row)
-                # Compute base-scheme (exec) incentive separately for exec sheet
-                _emp_exec = dict(emp); _emp_exec["vintage_label"] = ""
+                # Compute BASE-SCHEME incentive for exec sheet (must bypass nursery branch)
+                _emp_exec = dict(emp)
+                _emp_exec["vintage_label"] = ""
+                _emp_exec["FY_Ageing"] = 999       # force skip nursery eligibility
+                _emp_exec["_nurs_bucket"] = "none" # not 60D
                 _inc_exec = calc_employee(_emp_exec, data, cmr, S, is_25cr=is_25cr)
                 _row_exec = {**{k:v for k,v in emp.items()
                                 if "ID" in k or "Name" in k
@@ -2718,7 +2721,10 @@ if calc_btn:
                 row["vintage_label"] = vl
                 # PDF: eligible for both nursery and base scheme
                 results["nursery"].append(row)
-                _emp_exec_k = dict(emp); _emp_exec_k["vintage_label"] = ""
+                _emp_exec_k = dict(emp)
+                _emp_exec_k["vintage_label"] = ""
+                _emp_exec_k["FY_Ageing"] = 999
+                _emp_exec_k["_nurs_bucket"] = "none"
                 _inc_exec_k = calc_employee(_emp_exec_k, data, cmr, S, is_25cr=is_25cr)
                 _row_exec_k = {**{k:v for k,v in emp.items()
                                   if "ID" in k or "Name" in k
