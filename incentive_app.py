@@ -3921,14 +3921,28 @@ def calc_spot_csd(nr_upsell, S):
 
 @st.cache_data(show_spinner=False)
 def load_excel(file_bytes: bytes, file_name: str) -> pd.DataFrame:
-    """Load xlsx or xlsb files from raw bytes. Cached to avoid re-reading on every re-run."""
+    """Load xlsx or xlsb files from raw bytes. Auto-detects note rows in enriched files."""
     ext = file_name.lower().rsplit(".", 1)[-1] if "." in file_name else "xlsx"
     buf = io.BytesIO(file_bytes)
     try:
         if ext == "xlsb":
-            return pd.read_excel(buf, engine="pyxlsb")
+            df = pd.read_excel(buf, engine="pyxlsb")
         else:
-            return pd.read_excel(buf, engine="openpyxl")
+            # Try header=0 first; if first cell looks like a note (long string), use header=1
+            df0 = pd.read_excel(buf, engine="openpyxl", header=0, nrows=2)
+            first_cell = str(df0.columns[0]).strip()
+            if len(first_cell) > 50 or first_cell.lower().startswith("receipt"):
+                # Row 0 is a note/title — real headers are in row 1
+                buf.seek(0)
+                df = pd.read_excel(buf, engine="openpyxl", header=1)
+            else:
+                buf.seek(0)
+                df = pd.read_excel(buf, engine="openpyxl", header=0)
+        df.columns = [str(c).strip() for c in df.columns]
+        # Drop fully empty columns
+        df = df.loc[:, df.columns.astype(str).str.strip() != ""]
+        df = df.loc[:, ~df.columns.astype(str).str.lower().str.startswith("unnamed")]
+        return df
     except Exception as e:
         err = str(e)
         if "pyxlsb" in err or "xlsb" in err.lower():
@@ -6800,6 +6814,7 @@ if calc_btn:
             _vert_c  = find_col(rec_exp, ["Vertical","AB","vertical"])
             _rnl_col = find_col(rec_exp, ["Renewal Map","Renewal Base","Prod","BH"])
             _sale_map= find_col(rec_exp, ["Sale Mapping","Sale","BG"])
+            _prod_col= find_col(rec_exp, ["WS/MDC Main","Prod","Product","C"])  # for AMR fallback
 
             # ── Day / Week / FNT (sir: col BC=DAY(O3), BD=Week, BE=FNT) ─────────
             # Sir's Week: >=24=WK-4, >=17=WK-3, >=10=WK-2, else WK-1
