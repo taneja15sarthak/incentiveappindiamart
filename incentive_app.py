@@ -3983,12 +3983,18 @@ def clean_receipt(df):
 
 
 def build_emp_list(receipt_df):
-    cols  = {"Sales Exec ID": "Employee ID",
+    # Flexible Employee ID column — try multiple names
+    eid_src = next((c for c in ["Sales Exec ID","EMP ID","Emp ID","L1 ID","Employee ID"]
+                    if c in receipt_df.columns), None)
+    if eid_src is None:
+        return pd.DataFrame(columns=["Employee ID"])
+
+    cols  = {eid_src: "Employee ID",
              "Manager": "L2 Name", "HOD - 1": "L3 Name", "HOD": "L4 Name",
              "Location": "Location", "Vertical": "Vertical"}
     avail = {k: v for k, v in cols.items() if k in receipt_df.columns}
     emp   = receipt_df[list(avail.keys())].rename(columns=avail).drop_duplicates("Employee ID")
-    emp["Employee ID"] = emp["Employee ID"].astype(str)
+    emp["Employee ID"] = emp["Employee ID"].astype(str).str.split('.').str[0].str.strip()
     return emp.reset_index(drop=True)
 
 
