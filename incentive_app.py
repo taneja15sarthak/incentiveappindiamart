@@ -4044,12 +4044,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         _prod_vals = rec["Productivity"].fillna(0).astype(float)
         prod_rows  = rec[_prod_vals > 0]
         svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
-        insta_count_receipt = int((_prod_vals == 0.5).sum())  # rows with 0.5 = Insta
-        prod_score_receipt  = float(_prod_vals.sum())          # SUMIFS(AR): 1.0×full + 0.5×insta → SPS/KCD
-        # For CSD 0-30D/31-90D: sir uses COUNTIFS(AR="1") — integer count, Insta excluded
-        # (per Exec-CSD col 43 formula: COUNTIFS(Receipt.AR, "1", EmpID, Tagged))
-        prod_score_receipt_int = int((_prod_vals == 1.0).sum())  # rows with exactly AR=1 (non-Insta)
-        # Per-week productivity (SUMIFS on AR per week = weighted count)
+        insta_cnt_receipt    = int((_prod_vals == 0.5).sum())
+        prod_score_receipt     = float(_prod_vals.sum())
+        prod_score_receipt_int = int((_prod_vals == 1.0).sum())
         _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
         weekly_prod_counts = {}
         if _date_col and len(prod_rows) > 0:
@@ -4063,7 +4060,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     else:
         prod_rows              = rec
         svc_tiers              = []
-        insta_count_receipt    = 0
+        insta_cnt_receipt    = 0
         prod_score_receipt     = txn_count
         prod_score_receipt_int = txn_count
         weekly_prod_counts     = {}
@@ -4301,7 +4298,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
 
     return (net_collection, txn_count, prods,
             rnl_prods, rnl_modes, rnl_count, total_ref, all_rnl_count,
-            svc_tiers, insta_count_receipt, prod_score_receipt,
+            svc_tiers, insta_cnt_receipt, prod_score_receipt,
             gross_collection, gross_deal_val, deal_loss, net_deal_val,
             nr_upsell_count, weekly_dv, weekly_txn,
             fnt1_prod_count, fnt2_prod_count,
@@ -5111,7 +5108,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "PCDV":                round(pcdv_val, 0),
         "Slab Metric Used":    metric_label,
         "Productivity Score":  _prod_score,
-        "Insta Txns (0.5×)":   insta_count_receipt,  # receipt-based (sir's col AR Insta rows)
+        "Insta Txns (0.5×)":   insta_cnt_receipt,  # receipt-based (sir's col AR Insta rows)
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
         # MDC1 CMR+1% = PREVIOUS month's MDC-1 CMR% (April data when running May)
@@ -6782,12 +6779,14 @@ if calc_btn:
         try:
             rec_exp = receipt_df.copy()
             rec_exp = rec_exp.drop(columns=[c for c in
-                ["Productivity","Service_Tier","_is_upsell",
+                ["Service_Tier","_is_upsell",
                  "_is_pure_renewal","_has_upsell_on_receipt"]
                 if c in rec_exp.columns])
             # Drop unnamed/empty columns
             rec_exp = rec_exp.loc[:, ~rec_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
             rec_exp = rec_exp.loc[:, rec_exp.columns.astype(str).str.strip() != ""]
+            _already_enriched = all(c in rec_exp.columns
+                                    for c in ["Total Sale","Productivity","AMR","Renewal Map"])
 
             _date_c  = find_col(rec_exp, ["Entry Date","Clear Date","Receipt Date","Date","O"])
             _empid_c = find_col(rec_exp, ["Sales Exec ID","Sales Ex. ID","EMP ID","L1 ID","P"])
@@ -6796,6 +6795,7 @@ if calc_btn:
             _mode_al = find_col(rec_exp, ["MODE","Mode","Payment Terms","AL"])
             _cmr_rem = find_col(rec_exp, ["Rnl Remarks","Rnl_Remarks","CMR-C+1-C+2","AH"])  # AMR source
             _rem_exp  = find_col(rec_exp, ["Rem"])   # Renewal/WIP/NACH-ECS
+            _rem_c    = _rem_exp   # alias used in AMR/NR/Collection blocks below
             _base_ct = find_col(rec_exp, ["Base Client Type","CustType","Cust Type","X"])
             _vert_c  = find_col(rec_exp, ["Vertical","AB","vertical"])
             _rnl_col = find_col(rec_exp, ["Renewal Map","Renewal Base","Prod","BH"])
@@ -6821,25 +6821,21 @@ if calc_btn:
                         lambda d: "" if d==0 else "FNT-1" if d<=16 else "FNT-2")
                 except Exception: pass
 
+            # Only recompute enrichment columns when file is raw (not already enriched)
             # ── IL Sale/CL (sir col BF) ────────────────────────────────────────
-            # Sir: =IF(OR(E3="Category Leader","ILP","Category Leader India",
-            #            "Industry Leader","Brand Billboard","Im IL","Preferred IL"),"Yes","No")
-            # col E = Unique/Product category
             _IL_PRODUCTS = {"CATEGORY LEADER","ILP","CATEGORY LEADER INDIA",
                             "INDUSTRY LEADER","BRAND BILLBOARD","IM IL","PREFERRED IL"}
-            if _unique_c:
+            if _unique_c and (not _already_enriched or "IL Sale/CL" not in rec_exp.columns):
                 rec_exp["IL Sale/CL"] = rec_exp[_unique_c].apply(
                     lambda v: "Yes" if str(v).strip().upper() in _IL_PRODUCTS else "No")
 
-            # ── Sale Mapping (sir col BG) ───────────────────────────────────────
-            # Sir: =IFERROR(VLOOKUP($B3,'For Upsell'!$A:$B,2,0),"")
-            # Depends on 'For Upsell' lookup table (not in our uploads)
-            # Approximation: "Upsell" if product is an upsell type, "" otherwise
-            _UPSELL_PRODS = {"MDC-TS","MDC PLUS","MDC PRO","IVE","TRUSTSEAL","VERIFIED",
-                             "TS1","TS2","TS3","TS-1","TS-2","TS-3","PREMIUM"}
-            if _unique_c:
-                rec_exp["Sale Mapping"] = rec_exp[_unique_c].apply(
-                    lambda v: "Upsell" if any(k in str(v).upper() for k in _UPSELL_PRODS) else "")
+            # ── Sale Mapping / Renewal Map / Productivity — skip if already enriched
+            if not _already_enriched:
+                _UPSELL_PRODS = {"MDC-TS","MDC PLUS","MDC PRO","IVE","TRUSTSEAL","VERIFIED",
+                                 "TS1","TS2","TS3","TS-1","TS-2","TS-3","PREMIUM"}
+                if _unique_c:
+                    rec_exp["Sale Mapping"] = rec_exp[_unique_c].apply(
+                        lambda v: "Upsell" if any(k in str(v).upper() for k in _UPSELL_PRODS) else "")
 
             # ── Renewal Map (sir col BH) ────────────────────────────────────────
             # Sir: =IF(AH3="Retention","NA",IFERROR(VLOOKUP($C3,'For Renewal'!$A:$B,2,0),"NA"))
