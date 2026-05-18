@@ -4009,21 +4009,25 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     eid_str   = str(int(float(emp_id))) if str(emp_id).replace(".","").isdigit() else str(emp_id)
     eid       = int(eid_str) if eid_str.isdigit() else eid_str
 
+    # Detect employee ID column once (flexible — works with enriched receipt too)
+    _eid_col  = find_col(receipt_df, ["Sales Exec ID","EMP ID","Emp ID","L1 ID","Employee ID"])
+
     # For CSD L2 Rel Mgr: use HOD-3 / L2-ID column to get ALL team receipts
-    # (Manager Id misses some L1s who report via different hierarchy path)
-    # FSF AS col = L2 ID; our file: 'Old Sales HOD-3 ID' is most complete
     if is_l2:
-        _mgr_col  = find_col(receipt_df, ["Old Sales HOD-3 ID", "Manager Id"])
-        _vert_col = find_col(receipt_df, ["Vertical.1", "Vertical"])
+        _mgr_col = find_col(receipt_df, ["Old Sales HOD-3 ID", "Manager Id"])
         if _mgr_col:
             _mask = receipt_df[_mgr_col].astype(str).str.split(".").str[0].str.strip() == eid_str
-            # No vertical filter — HOD-3 ID already correctly identifies the team
             rec = receipt_df[_mask]
             rec = receipt_df[_mask]
+        elif _eid_col:
+            rec = receipt_df[receipt_df[_eid_col].astype(str).str.split(".").str[0].str.strip() == eid_str]
         else:
-            rec = receipt_df[receipt_df["Sales Exec ID"] == eid]
+            rec = receipt_df.iloc[0:0]  # empty
     else:
-        rec = receipt_df[receipt_df["Sales Exec ID"] == eid]
+        if _eid_col:
+            rec = receipt_df[receipt_df[_eid_col].astype(str).str.split(".").str[0].str.strip() == eid_str]
+        else:
+            rec = receipt_df.iloc[0:0]  # empty — no ID column found
     total_dv  = rec["WT AMT"].fillna(0).sum()               # collection (WT AMT)
     txn_count = len(rec)
 
