@@ -4028,7 +4028,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             rec = receipt_df[receipt_df[_eid_col].astype(str).str.split(".").str[0].str.strip() == eid_str]
         else:
             rec = receipt_df.iloc[0:0]  # empty — no ID column found
-    total_dv  = rec["WT AMT"].fillna(0).sum()               # collection (WT AMT)
+    # --- Collection amount (WT AMT / WT Amt(A)) ---
+    _wt_col   = find_col(receipt_df, ["WT AMT","WT Amt(A)","WT_AMT","Receipt Amount","Total Amount"])
+    total_dv  = rec[_wt_col].fillna(0).sum() if _wt_col else 0.0
     txn_count = len(rec)
 
     # Deal Value (WT) = deal value column (different from collection)
@@ -4077,7 +4079,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             ref = refund_df.iloc[0:0]
     else:
         ref = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
-    total_ref = ref["WT Amount"].fillna(0).sum()
+    _ref_wt_col = find_col(refund_df, ["WT Amount","WT AMT","WT_AMT","Refund Amount","Amount"])
+    total_ref = ref[_ref_wt_col].fillna(0).sum() if (_ref_wt_col and len(ref) > 0) else 0.0
     # Deal Loss is always 0 -- it is a separate manual entry and not derived from the refund file.
     # Net Deal Value = Deal Value - 0 = Deal Value (before refund).
     deal_loss = 0
@@ -4151,7 +4154,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # Per-FNT deal value for KCD PCDV Bullet Spot (April)
     fnt1_dv = 0.0; fnt2_dv = 0.0
     _fnt_col = find_col(receipt_df, ["FNT", "Fortnight"])
-    _dv_col  = find_col(receipt_df, ["Deal Val (WOT)", "Deal Val", "WT AMT", "WT_AMT"])
+    _dv_col  = find_col(receipt_df, ["Deal Val (WOT)","Deal Val","Deal Val (WT)","WT AMT","WT Amt(A)","WT_AMT"])
     if _fnt_col and _dv_col and len(rec) > 0:
         _fnt_vals = rec[_fnt_col].fillna("").astype(str).str.upper().str.strip()
         _dv_vals  = pd.to_numeric(rec[_dv_col], errors='coerce').fillna(0)
@@ -4174,7 +4177,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     if "Productivity" in rec.columns and "_is_upsell" not in rec.columns:
         upsell_col_name = find_col(receipt_df, ["Upsell", "UPSELL", "Unique", "UNIQUE"])
         if upsell_col_name:
-            wt_col_name = find_col(receipt_df, ["WT AMT", "WT_AMT", "WTAMT"])
+            wt_col_name = find_col(receipt_df, ["WT AMT","WT Amt(A)","WT_AMT","WTAMT","Receipt Amount"])
             upsell_mask = (rec[upsell_col_name].fillna("").astype(str).str.strip() != "")
             if wt_col_name:
                 upsell_mask = upsell_mask & (rec[wt_col_name].fillna(0) > 0)
