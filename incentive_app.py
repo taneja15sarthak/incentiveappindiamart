@@ -367,9 +367,14 @@ def enrich_receipt_data(rec_df, structure_result=None):
     # ── Misc defaults ─────────────────────────────────────────────────────────
     df["Tue/False"]     = False
     df["Base to Listing"] = "No"
-    df["MYR/F"]         = None
-    df["Correction"]    = None; df["Reason"] = None
-    df["NA"]=None; df["NA.1"]=None; df["NA.2"]=None
+    df["MYR/F"]         = ""
+    df["Correction"]    = ""; df["Reason"] = ""
+    df["NA"]=""; df["NA.1"]=""; df["NA.2"]=""
+    # Ensure Big Ticket-Slab is string (not mixed int/str)
+    df["Big Ticket-Slab"] = df["Big Ticket-Slab"].astype(str).replace({"0":"0","nan":"0"})
+    df["KCD-New Sale"]    = df["KCD-New Sale"].astype(str)
+    df["Total Sale"]      = pd.to_numeric(df["Total Sale"], errors="coerce").fillna(0).astype(int)
+    df["Prod.1"]          = pd.to_numeric(df["Prod.1"],    errors="coerce").fillna(0).astype(float)
 
     # ── Hierarchy from structure ──────────────────────────────────────────────
     ec = find_col(df, ["Sales Exec ID","EMP ID"])
