@@ -67,8 +67,7 @@ PROD_TIER2 = {"TS2Renewal","WS Renewal","IVE Renewal","Combo 2YR","Maxi Pro-2",
 PROD_TIER3 = {"TS3Renewal","SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal",
               "Pref SS Renewal","Pref LS Renewal","CL Renewal","IL Renewal",
               "IM IL Renewal","Pref IL Renewal","Combo 3YR","TS Pro-3","Maxi Pro-3",
-              "Maximiser-3","Maxi pro-3","Adv SS Renewal","Adv LS Renewal",
-              "Adv IM SS Renewal","Adv IM LS Renewal","Adv Pref SS Renewal",
+              "Maximiser-3","Maxi pro-3",
               "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro"}
 
 TIER_REWARD = {1: 500, 2: 1000, 3: 1500}
