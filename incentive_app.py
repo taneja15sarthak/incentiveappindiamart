@@ -3502,7 +3502,7 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
             base = round(_min_rate * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
             _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
 
-    return round(base + incr, 0), \
+    return round(base, 0), \
            f"KCD Listing {vintage} | Achv:{round(achv,1)}% | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
 
 
@@ -4488,8 +4488,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _client_c_val = float(cfg_row.get("Client-C", 0) or 0)
     _is_csd = "CSD" in vertical
 
-    # PCR denominator: always Client-A (actual client count)
-    _pcr_denom  = client_cnt if client_cnt > 0 else 1
+    # PCR denominator: Client-C for CSD (per sir's FSF formula: =Net_Collection/Client_C)
+    #                  Client-A for KCD
+    _pcr_denom  = (_client_c_val if (_is_csd and _client_c_val > 0) else client_cnt)
+    _pcr_denom  = _pcr_denom if _pcr_denom > 0 else 1
     pcr_val     = (net_dv / _pcr_denom) if _pcr_denom > 0 else 0
 
     # PCDV denominator: Client-C for ALL CSD (FSF: Z = Net_DV / L = Client-C)
@@ -5129,8 +5131,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "SS+ CMR% (auto)":     round(ss_cmr_pct, 1),
         "CMR Slab1 Target":    sb.get("csd_slab1_target", sb.get("kcd_slab1_target", "")),
         "CMR Slab2 Target":    sb.get("csd_slab2_target", sb.get("kcd_slab2_target", "")),
-        "Renewals Sent":       rnl_sent,
-        "Renewals Received":   cmr_data.get("renewal_received", 0),
+        "CMR Sent":       rnl_sent,
+        "CMR Received":   cmr_data.get("renewal_received", 0),
         "CMR Slab":            cmr_note,
         "SS+ Sent":            cmr_data.get("ss_sent", 0),
         "SS+ Received":        cmr_data.get("ss_received", 0),
@@ -5156,7 +5158,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "MDC1 CMR+1%":         (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                          if (cmr_plus1_sent > 0 and _is_csd)
                          else ""),
-        "CMR+1 Multiplier":    _inc_payout_mult if _is_csd else "",
+        "CMR+1 Multiplier":    _mdc1_mult_val if (_is_csd and _is_sps_vintage) else "",
         "Inc. Payout Mult":    _inc_payout_mult if _is_csd else "",
         "Inc. Per Txn (₹)":    int(_per_txn_rate) if _is_csd and _prod_score > 0 else "",
         "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd else "",
@@ -5186,7 +5188,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "KCD Incentive Multiplier": int(_kcd_per_txn)  if "KCD" in vertical else "",
         "KCD Base Incentive (₹)":   _kcd_base,
         "KCD Incremental (₹)":      _kcd_incr,
-        "KCD Total Incentive (₹)":  int(_kcd_base) if "KCD" in vertical else "",
+        "KCD Total Incentive (₹)":  int(_kcd_base + _kcd_incr + spot_inc) if "KCD" in vertical else "",
         "KCD Gross Incentive (₹)":  int(base_inc)  if "KCD" in vertical else "",
         "KCD Paid Incentive (₹)":   0              if "KCD" in vertical else "",
         "KCD Balance Incentive (₹)":int(base_inc)  if "KCD" in vertical else "",
@@ -5203,12 +5205,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                                      "ROI" if "ROI" in str(team).upper() else
                                      "Pharma" if "NAGPUR" in str(team).upper() else "-") if "KCD" in vertical else "",
         # ── Common output columns ─────────────────────────────────
-        "Collection (₹)":      int(gross_collection) if gross_collection else 0,
-        "Refund (₹)":          int(total_ref) if total_ref else 0,
-        "Net Collection (₹)":  int(net_dv),  # net_dv = net_collection from get_transactions
-        "Deal Value (₹)":      int(gross_deal_val) if gross_deal_val else 0,
-        "Deal Loss (₹)":       int(deal_loss) if deal_loss else 0,
-        "Net Deal Value (₹)":  int(net_deal_val) if net_deal_val else 0,
+        "Collection (₹)":      round(float(gross_collection or 0), 2),
+        "Refund (₹)":          round(float(total_ref or 0), 2),
+        "Net Collection (₹)":  round(float(net_dv or 0), 2),  # net_dv = net_collection from get_transactions
+        "Deal Value (₹)":      round(float(gross_deal_val or 0), 2),
+        "Deal Loss (₹)":       round(float(deal_loss or 0), 2),
+        "Net Deal Value (₹)":  round(float(net_deal_val or 0), 2),
         "Client-A (aggregated)": int(client_cnt) if _is_l2_csd or (_desig_str == "L2" and "KCD" in vertical) else "",
         "Client-C (aggregated)": int(_client_c_val) if (_is_l2_csd and _client_c_val > 0) else "",
         "Catalog Client":      int(catalog_c) if catalog_c >= 0 else "",
@@ -5643,194 +5645,99 @@ if enrich_btn:
                 import io as _io
                 rec_raw = _read_file(receipt_file)
                 rec_raw.columns = [str(c).strip() for c in rec_raw.columns]
-
-                # Drop unnamed columns
                 rec_raw = rec_raw.loc[:, ~rec_raw.columns.astype(str).str.lower().str.startswith("unnamed")]
                 rec_raw = rec_raw.loc[:, rec_raw.columns.astype(str).str.strip() != ""]
 
-                # Column detection — use actual column names from sir's receipt file
-                _d_c  = find_col(rec_raw, ["Entry Date","Clear Date","Receipt Date","Date"])
-                _u_c  = find_col(rec_raw, ["Unique","UNIQUE"])          # product category (E in sir)
-                _ak_c = find_col(rec_raw, ["WT AMT","WTAMT","WT Amt(A)","WT_AMT","Deal Val (WT)"])
-                _al_c = find_col(rec_raw, ["MODE","Mode"])              # payment mode col (AL)
-                _rem_c= find_col(rec_raw, ["Rem"])                      # WIP/Renewal/Upsell-NR/NACH-ECS
-                _rnl_c= find_col(rec_raw, ["Rnl Remarks","Rnl_Remarks","RnlRemarks"])  # AMR source (AH)
-                _x_c  = find_col(rec_raw, ["Base Client Type","CustType","Cust Type"])  # X
-                _ab_c = find_col(rec_raw, ["Vertical","Vertical.1","VERTICAL OF HOD"])  # AB
-                _p_c  = find_col(rec_raw, ["Sales Exec ID","EMP ID","L1 ID"])           # P
-                _c_c  = find_col(rec_raw, ["Prod","WS/MDC Main","Product"])             # C = product name
-                _deal_c=find_col(rec_raw, ["Deal Remarks","Deal Val (WT)"])             # product detail
+                # Use sir's exact enrichment function (enrich_receipt)
+                rec_enriched = enrich_receipt(rec_raw)
 
-                # Day / Week / FNT
-                if _d_c:
-                    _dt = pd.to_datetime(rec_raw[_d_c], errors='coerce', dayfirst=False)
-                    _n  = pd.to_numeric(rec_raw[_d_c], errors='coerce')
-                    _is_s = _n.notna() & _dt.isna()
-                    if _is_s.any():
-                        _bt = pd.Timestamp('1899-12-30')
-                        _dt = _dt.copy()
-                        _dt[_is_s] = _n[_is_s].apply(lambda x: _bt + pd.Timedelta(days=int(x)) if pd.notna(x) else pd.NaT)
-                    _dy = _dt.dt.day.fillna(0).astype(int)
-                    rec_raw["Day"]  = _dy.replace(0,"")
-                    rec_raw["Week"] = _dy.apply(lambda d: "" if d==0 else "WK-4" if d>=24 else "WK-3" if d>=17 else "WK-2" if d>=10 else "WK-1")
-                    rec_raw["FNT"]  = _dy.apply(lambda d: "" if d==0 else "FNT-1" if d<=16 else "FNT-2")
+                prod_col_e   = find_col(rec_enriched, ["Prod","Product","PRODUCT"])
+                upsell_col_e = find_col(rec_enriched, ["Unique","Upsell","UNIQUE"])
+                rcpt_id_e    = find_col(rec_enriched, ["Receipts ID","Receipt ID","ReceiptID"])
 
-                # IL Sale/CL
-                _IL = {"CATEGORY LEADER","ILP","CATEGORY LEADER INDIA",
-                       "INDUSTRY LEADER","BRAND BILLBOARD","IM IL","PREFERRED IL"}
-                if _u_c:
-                    rec_raw["IL Sale/CL"] = rec_raw[_u_c].apply(
-                        lambda v: "Yes" if str(v).strip().upper() in _IL else "No")
+                def _se(v): return str(v).strip() if pd.notna(v) and str(v).strip()!="nan" else ""
 
-                # ── Renewal Map (sir col BH) ─────────────────────────────────────
-                # Sir ALWAYS fills "NA" or "Renewal" — never blank
-                # Sir: =IF(AH3="Retention","NA",IFERROR(VLOOKUP($C3,'For Renewal'!...,2,0),"NA"))
-                _RNL_PROD = {"RENEWAL","TS2RENEWAL","TS3RENEWAL","TS1RENEWAL",
-                             "WSSRENEWAL","WSPRENEWAL","WSRENEWAL","IVERENEWAL"}
-                def _rmap(r):
-                    rnl_rem = str(r.get(_rnl_c,"")).strip() if _rnl_c else ""
-                    if rnl_rem == "Retention": return "NA"
-                    rem_v  = str(r.get(_rem_c,"")).strip() if _rem_c else ""
-                    prod_v = str(r.get(_c_c,"")).strip().upper() if _c_c else ""
-                    if rem_v == "Renewal" or prod_v in _RNL_PROD or "RENEWAL" in prod_v:
-                        return "Renewal"
-                    return "NA"  # always "NA" not blank — matches sir's FSF exactly
-                rec_raw["Renewal Map"] = rec_raw.apply(_rmap, axis=1)
+                # Upsell column: "Yes" if Unique not blank (sir step 2)
+                if upsell_col_e:
+                    rec_enriched["Upsell"] = rec_enriched[upsell_col_e].apply(
+                        lambda x: "Yes" if _se(x)!="" else "")
 
-                # ── Total Sale ──────────────────────────────────────────────────
-                # Sir: =IF(OR(E3="",E3="TS"),0,1)
-                if _u_c:
-                    rec_raw["Total Sale"] = rec_raw[_u_c].apply(
-                        lambda v: 0 if str(v).strip() in ("","nan","TS") else 1)
-                else:
-                    rec_raw["Total Sale"] = 1
+                # Pure Renewal column: "Yes" if Prod in renewal list (sir step 3)
+                if prod_col_e:
+                    rec_enriched["Pure Renewal"] = rec_enriched[prod_col_e].apply(
+                        lambda x: "Yes" if _se(x) in PURE_RENEWAL_PRODUCTS else "")
 
-                # ── Sale Mapping (sir col BG) ────────────────────────────────────
-                # Sir: =IFERROR(VLOOKUP($B3,'For Upsell'!$A:$B,2,0),"")
-                # Approximation (87.9% match): "Yes" if TotalSale=1 OR Rem in {Upsell-NR,Upsell-Ren}
-                # The remaining 12% depends on sir's VLOOKUP table (not available)
-                _SALE_REM = {"Upsell-NR","Upsell-Ren"}
-                if _rem_c:
-                    rec_raw["Sale Mapping"] = rec_raw.apply(
-                        lambda r: "Yes" if (r.get("Total Sale",0)==1 or
-                                            str(r.get(_rem_c,"")).strip() in _SALE_REM)
-                                  else None, axis=1)
+                # all Upsell: "Yes" for all rows on a receipt that has any upsell (sir step 4)
+                if rcpt_id_e and "Upsell" in rec_enriched.columns:
+                    _ups_ids = set(rec_enriched.loc[rec_enriched["Upsell"]=="Yes", rcpt_id_e].tolist())
+                    rec_enriched["all Upsell"] = rec_enriched[rcpt_id_e].apply(
+                        lambda x: "Yes" if x in _ups_ids else "")
 
-                # ── Productivity ────────────────────────────────────────────────
-                # Sir: IF(TotalSale=1, 1, IF(AND(RenewalMap="Renewal",SaleMapping=""), 1, ""))
-                # SaleMapping="" means blank/None (not "Yes") — key for second condition
-                rec_raw["Productivity"] = rec_raw.apply(
-                    lambda r: (1 if r.get("Total Sale",0)==1
-                               else (1 if (r.get("Renewal Map","")=="Renewal" and
-                                           r.get("Sale Mapping") is None) else "")),
-                    axis=1)
+                # Service column: MDC tier label (sir's assign_service)
+                def _svc(row):
+                    if row.get("Productivity",0) != 1: return ""
+                    u = _se(row[upsell_col_e]) if upsell_col_e else ""
+                    p = _se(row[prod_col_e]) if prod_col_e else ""
+                    e = _se(row.get("Exp",""))
+                    if u == "Combo 1YR": return "MDC-Annual||TS-1"
+                    if u in {"Maximiser","Combo 2YR","VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6"}:
+                        return "MDC-MYR||TS-2||Maxi-A||VE"
+                    if "MYR" in u.upper() and e == "MDC": return "MDC-MYR||TS-2||Maxi-A||VE"
+                    if u != "": return "TS-3||Maxi-2"
+                    if p in PROD_TIER1: return "MDC-Annual||TS-1"
+                    if p in PROD_TIER2: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    if p in PROD_TIER3: return "TS-3||Maxi-2"
+                    return ""
+                rec_enriched["Service"] = rec_enriched.apply(_svc, axis=1)
 
-                # ── AMR ─────────────────────────────────────────────────────────
-                # Sir: =IF(OR(AH3="Others",AH3="Retention",AH3="CMR+3"),"No","Yes")
-                # AH = "Rnl Remarks" col (values: Others, CMR, CMR+1, CMR+2, CMR+3, Retention)
-                if _rnl_c:
-                    rec_raw["AMR"] = rec_raw[_rnl_c].apply(
-                        lambda v: "No" if str(v).strip() in ("Others","Retention","CMR+3") else "Yes")
+                # L2-L6 hierarchy
+                _p_c_e = find_col(rec_enriched, ["Sales Exec ID","EMP ID","L1 ID"])
+                if _p_c_e and 'struct_map' in dir() and struct_map:
+                    def _he(v):
+                        s=struct_map.get(str(v).split('.')[0].strip(),{})
+                        return {k: s.get(k,"") for k in
+                                ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name"]}
+                    _hdf_e = rec_enriched[_p_c_e].apply(lambda v: pd.Series(_he(v)))
+                    for _hc_e in _hdf_e.columns:
+                        if _hc_e not in rec_enriched.columns:
+                            rec_enriched[_hc_e] = _hdf_e[_hc_e]
 
-                # ── NR Upsell/AMR ───────────────────────────────────────────────
-                # Sir: =IF(AB3="CSD", IF(OR(AMR="Yes", AL3="Upsell-NR"), "Yes","No"), "No")
-                # Vertical must be exactly "CSD"; Rem col has "Upsell-NR" values
-                if "AMR" in rec_raw.columns and _ab_c:
-                    rec_raw["NR Upsell/AMR"] = rec_raw.apply(
-                        lambda r: "Yes" if (
-                            str(r.get(_ab_c,"")).strip() == "CSD" and
-                            (r.get("AMR","No")=="Yes" or
-                             str(r.get(_rem_c,"")).strip() == "Upsell-NR")
-                        ) else "No", axis=1)
-
-                # ── SAM ILP Slab ────────────────────────────────────────────────
-                if _ak_c:
-                    def _safe_enrich(v):
-                        try: return float(v)
-                        except: return 0.0
-                    rec_raw["SAM ILP Slab"] = rec_raw[_ak_c].apply(
-                        lambda v: "10L+" if _safe_enrich(v)>=1000000 else
-                                  "5L+"  if _safe_enrich(v)>=500000  else
-                                  "2L+"  if _safe_enrich(v)>=200000  else 0)
-
-                # ── Base to List Sale ────────────────────────────────────────────
-                # Sir: =IF(OR(X3="Leader",X3="Star"),"No","Yes")
-                if _x_c:
-                    rec_raw["Base to List Sale"] = rec_raw[_x_c].apply(
-                        lambda v: "No" if str(v).strip().upper() in ("LEADER","STAR") else "Yes")
-
-                # ── Collection ──────────────────────────────────────────────────
-                # Sir: =IF(AL3<>"Nach/ECS","Yes","No") — exact "Nach/ECS"
-                # Check both MODE col and Rem col for NACH/ECS payments
-                def _coll(r):
-                    mode_v = str(r.get(_al_c,"")).strip() if _al_c else ""
-                    rem_v  = str(r.get(_rem_c,"")).strip() if _rem_c else ""
-                    return "No" if (mode_v == "Nach/ECS" or rem_v.upper() == "NACH/ECS") else "Yes"
-                rec_raw["Collection"] = rec_raw.apply(_coll, axis=1)
-
-                # L2-L6 from struct_map
-                if _p_c and 'struct_map' in dir() and struct_map:
-                    def _h(v):
-                        s = struct_map.get(str(v).split('.')[0].strip(), {})
-                        return {"L2 ID": s.get("L2 ID",""), "L2 Name": s.get("L2 Name",""),
-                                "L3 ID": s.get("L3 ID",""), "L3 Name": s.get("L3 Name",""),
-                                "L4 ID": s.get("L4 ID",""), "L4 Name": s.get("L4 Name","")}
-                    _hdf = rec_raw[_p_c].apply(lambda v: pd.Series(_h(v)))
-                    for _hc in _hdf.columns:
-                        if _hc not in rec_raw.columns:
-                            rec_raw[_hc] = _hdf[_hc]
-
-                # Write to Excel
+                # Write output
                 _buf = _io.BytesIO()
                 with pd.ExcelWriter(_buf, engine="xlsxwriter") as _w:
-                    rec_raw.to_excel(_w, sheet_name="Receipt Data", index=False, startrow=1)
-                    _ws  = _w.sheets["Receipt Data"]
-                    _hf  = _w.book.add_format({"bold":True,"bg_color":"#595959","font_color":"#FFFFFF","font_size":10})
-                    _yel = _w.book.add_format({"italic":True,"bg_color":"#FFF2CC","font_color":"#595959","font_size":8})
-                    _green = _w.book.add_format({"bg_color":"#E2EFDA"})
-                    _ws.write(0, 0, "Receipt Data — Review and edit Productivity/AMR columns as needed, then upload this file back as Receipt to recalculate incentives.")
-                    for _ci, _col in enumerate(rec_raw.columns):
+                    rec_enriched.to_excel(_w, sheet_name="Receipt Data", index=False, startrow=1)
+                    _ws = _w.sheets["Receipt Data"]
+                    _hf = _w.book.add_format({"bold":True,"bg_color":"#595959","font_color":"#FFFFFF","font_size":10})
+                    _yel= _w.book.add_format({"italic":True,"bg_color":"#FFF2CC","font_color":"#595959","font_size":8})
+                    _ws.write(0, 0, "Receipt Data — edit computed columns then re-upload as Receipt to recalculate.")
+                    _EDIT = {"Productivity","Upsell","Pure Renewal","all Upsell","Service",
+                             "AMR","L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name"}
+                    for _ci, _col in enumerate(rec_enriched.columns):
                         _ws.write(1, _ci, _col, _hf)
                         _ws.set_column(_ci, _ci, max(14, len(str(_col))+2))
-                        # All computed/derived columns highlighted green — all editable
-                        if _col in ("Day","Week","FNT","IL Sale/CL",
-                                    "Sale Mapping","Renewal Map",
-                                    "Total Sale","Productivity",
-                                    "AMR","NR Upsell/AMR",
-                                    "SAM ILP Slab","Base to List Sale","Collection",
-                                    "L2 ID","L2 Name","L3 ID","L3 Name",
-                                    "L4 ID","L4 Name","L5 ID","L5 Name"):
+                        if _col in _EDIT:
                             _ws.write(0, _ci, f"↓ {_col}", _yel)
                     _ws.freeze_panes(2, 0)
 
                 st.download_button(
-                    label="⬇ Download Enriched Receipt File",
+                    label="⬇ Download Enriched Receipt",
                     data=_buf.getvalue(),
                     file_name=f"Receipt_Enriched_{pd.Timestamp.now().strftime('%d%m%Y')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                st.success(f"✅ Enriched receipt file ready ({len(rec_raw):,} rows). "
-                           f"All computed columns are editable. "
-                           f"Upload the edited file back as Receipt and click Calculate.")
-                st.info("💡 **All computed columns can be edited** (marked with ↓ in row 1):\n\n"
-                        "| Column | What to check |\n"
-                        "|---|---|\n"
-                        "| **Total Sale** | 1 = new sale, 0 = not a sale (based on Unique column) |\n"
-                        "| **Productivity** | 1 = productive transaction, blank = not productive |\n"
-                        "| **Renewal Map** | 'Renewal' or 'NA' — fix misclassified products |\n"
-                        "| **Sale Mapping** | 'Upsell' or blank |\n"
-                        "| **IL Sale/CL** | Yes/No — Industry Leader / Category Leader sale |\n"
-                        "| **AMR** | Yes/No — Annual Maintenance Renewal eligibility |\n"
-                        "| **NR Upsell/AMR** | Yes/No — CSD NR Upsell or AMR |\n"
-                        "| **Collection** | Yes/No — Nach/ECS vs collected payment |\n"
-                        "| **SAM ILP Slab** | 2L+/5L+/10L+ |\n"
-                        "| **Base to List Sale** | Yes/No |\n"
-                        "| **Day/Week/FNT** | Date-derived — correct if dates are wrong |\n"
-                        "| **L2-L5 hierarchy** | Correct if employee mapping is wrong |\n\n"
-                        "When you upload the edited file back, the code uses **your values directly** — "
-                        "Productivity especially drives the incentive calculation.")
+                _pc = int((rec_enriched.get("Productivity",pd.Series(0))==1).sum())
+                st.success(f"✅ {len(rec_enriched):,} rows | {_pc:,} productive rows")
+                st.info(
+                    "**Sir's exact logic (matches sir's Python script):**\n"
+                    "- **Upsell** = Yes if `Unique` not blank\n"
+                    "- **Pure Renewal** = Yes if `Prod` is in the renewal product list\n"
+                    "- **all Upsell** = Yes for every row whose Receipt ID has any upsell\n"
+                    "- **Productivity** = 1 if Upsell=Yes OR (Pure Renewal=Yes AND all Upsell=\'\')\n"
+                    "- **Service** = MDC-Annual||TS-1 / MDC-MYR||TS-2||Maxi-A||VE / TS-3||Maxi-2\n\n"
+                    "Upload edited file back as Receipt then click **▶ Calculate Incentives**.")
             except Exception as _e:
-                st.error(f"Error generating enriched receipt: {_e}")
+                st.error(f"Error: {_e}")
+                import traceback; st.code(traceback.format_exc())
 
 
 if calc_btn:
@@ -5992,7 +5899,7 @@ if calc_btn:
         except Exception as _e:
             inc = {"CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
                 "CMR Slab1 Target": "", "CMR Slab2 Target": "",
-                "Renewals Sent": 0, "Renewals Received": 0, "CMR Slab": "Error",
+                "CMR Sent": 0, "CMR Received": 0, "CMR Slab": "Error",
                 "SS+ Sent": 0, "SS+ Received": 0,
                 "MDC-1 CMR%": "", "PCR": 0, "PCDV": 0, "Slab Metric Used": "",
                 "Productivity Score": 0, "Insta Txns (0.5×)": 0,
@@ -6040,12 +5947,12 @@ if calc_btn:
             "L5":                 s.get("L5 Name", ""),
             "Joining Date":       s.get("Joining Date", ""),
             # ── Financial data from receipt/refund (always correct) ───
-            "Collection (₹)":     int(gross_collection),
-            "Refund (₹)":         int(total_ref),
-            "Net Collection (₹)": int(net_dv),
-            "Deal Value (₹)":     int(gross_deal_val),
-            "Deal Loss (₹)":      int(deal_loss),
-            "Net Deal Value (₹)": int(net_deal_val),
+            "Collection (₹)":     round(float(gross_collection or 0), 2),
+            "Refund (₹)":         round(float(total_ref or 0), 2),
+            "Net Collection (₹)": round(float(net_dv or 0), 2),
+            "Deal Value (₹)":     round(float(gross_deal_val or 0), 2),
+            "Deal Loss (₹)":      round(float(deal_loss or 0), 2),
+            "Net Deal Value (₹)": round(float(net_deal_val or 0), 2),
             "Collection Target (₹)": int(s.get("Collection Target", 0)),
             "PCR Target (₹)":        int(s.get("PCR Target", 0)),
             "CMR Slab1 Target":   emp_targets["slab1"],
@@ -6101,7 +6008,7 @@ if calc_btn:
         "PCR", "PCDV", "Slab Metric Used",
         "CMR% (auto)", "CMR Slab1 Target", "CMR Slab2 Target",
         "SS+ CMR% (auto)", "SS+ Sent", "SS+ Received",
-        "Renewals Sent", "Renewals Received", "CMR Slab",
+        "CMR Sent", "CMR Received", "CMR Slab",
         "MDC1 Sent", "MDC1 Recd",
         "MDC-1 CMR%", "CMR+1 Sent", "CMR+1 Recd", "MDC1 CMR+1%", "CMR+1 Multiplier", "Inc. Payout Mult",
         "Productivity Score", "Insta Txns (0.5×)", "Receipt Txns", "Renewal Txns",
@@ -6179,8 +6086,8 @@ if calc_btn:
             rule("Net Deal Value (₹)",  "={dv}{R}-{dl}{R}",              "=Deal Value − Deal Loss", _money)
 
             # ── 2. Per-client metrics (PCR / PCDV) ───────────────────────────
-            rule("PCR",   "=IF({ca}{R}>0,{nc}{R}/{ca}{R},0)",
-                 "=Net Collection / Client-A",  _pct1)
+            rule("PCR",   "=IF({cc}{R}>0,{nc}{R}/{cc}{R},IF({ca}{R}>0,{nc}{R}/{ca}{R},0))",
+                 "=Net Collection / Client-C (CSD) or Client-A (KCD)",  _pct1)
             rule("PCDV",  "=IF({cc}{R}>0,{ndv}{R}/{cc}{R},IF({ca}{R}>0,{ndv}{R}/{ca}{R},0))",
                  "=Net DV / Client-C (CSD) or Client-A (KCD)", _pct1)
 
@@ -6298,8 +6205,8 @@ if calc_btn:
                 "ndv":    ci("Net Deal Value (₹)"),
                 "ca":     ci("Client-A (aggregated)") or ci("Client-A"),
                 "cc":     ci("Client-C (aggregated)") or ci("Client-C"),
-                "rs":     ci("Renewals Sent"),
-                "rr":     ci("Renewals Received"),
+                "rs":     ci("CMR Sent"),
+                "rr":     ci("CMR Received"),
                 "ss_s":   ci("SS+ Sent") or ci("SS+ Sent"),
                 "ss_r":   ci("SS+ Received") or ci("SS+ Received"),
                 "ms":     ci("MDC1 Sent"),
@@ -6377,7 +6284,7 @@ if calc_btn:
             "PCR","PCDV","Slab Metric Used",
             "CMR Slab1 Target","CMR Slab2 Target",
             "CMR% (auto)","SS+ CMR% (auto)","SS+ Sent","SS+ Received",
-            "Renewals Sent","Renewals Received","CMR Slab",
+            "CMR Sent","CMR Received","CMR Slab",
             "MDC1 Sent","MDC1 Recd",
             "MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier","Inc. Payout Mult",
             "Productivity Score","Insta Txns (0.5×)","Receipt Txns","Renewal Txns",
@@ -6410,9 +6317,9 @@ if calc_btn:
             "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","Slab Metric Used",
             # CMR
             "CMR Slab1 Target","CMR Slab2 Target",
-            "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
+            "CMR Sent","CMR Received","CMR% (auto)","CMR Slab",
             "MDC1 Sent","MDC1 Recd",
-            "MDC-1 CMR%","MDC1 CMR+1%","CMR+1 Multiplier",
+            "MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier",
             # Base incentive (SPS 90+D section)
             "Inc. Payout Mult","Productivity Score","Insta Txns (0.5×)","Receipt Txns",
             "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
@@ -6441,7 +6348,7 @@ if calc_btn:
                 "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV",
                 # CMR (matches sir's CMR / CMR+1 / MDC-1 CMR sections)
                 "CMR Slab1 Target","CMR Slab2 Target",
-                "Renewals Sent","Renewals Received","CMR% (auto)",
+                "CMR Sent","CMR Received","CMR% (auto)",
                 "MDC1 Sent","MDC1 Recd","MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier",
                 # Base incentive
                 "Inc. Payout Mult","Productivity Score","Receipt Txns",
@@ -6471,7 +6378,7 @@ if calc_btn:
             # CMR / SS+
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
             "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
-            "Renewals Sent","Renewals Received",
+            "CMR Sent","CMR Received",
             "Productivity Score","Receipt Txns",
             "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
@@ -6502,7 +6409,7 @@ if calc_btn:
                 # CMR / SS+
                 "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
                 "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%","KCD SS+Ren Mult","KCD SS+ Penalty Applied",
-                "Renewals Sent","Renewals Received",
+                "CMR Sent","CMR Received",
                 "Productivity Score","Receipt Txns",
                 # Base incentive
                 "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
@@ -6572,7 +6479,7 @@ if calc_btn:
             "AOP Target (₹)","AOP Achievement %","AOP Multiplier",
             "CMR%","CMR Multiplier",
             "Incentive (₹)","Gross Incentive (₹)","Paid Incentive (₹)","Balance Incentive (₹)",
-            "Renewals Sent","Renewals Received","CMR (Ren%)",
+            "CMR Sent","CMR Received","CMR (Ren%)",
             "CMR+1 Sent","CMR+1 Recd","CMR+1 Ren%",
             "Total Incentive (₹)","Scheme",
         ]
@@ -6661,8 +6568,8 @@ if calc_btn:
 
                 # If manager not in renewal file, aggregate from subordinates
                 if cmr_pct_v == 0 and not subs.empty:
-                    _ss = int(pd.to_numeric(subs.get("Renewals Sent", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
-                    _sr = int(pd.to_numeric(subs.get("Renewals Received", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+                    _ss = int(pd.to_numeric(subs.get("CMR Sent", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+                    _sr = int(pd.to_numeric(subs.get("CMR Received", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
                     cmr_pct_v = round(_sr/_ss*100,1) if _ss>0 else 0
                     rnl_sent=_ss; rnl_recd=_sr
                 if ss_cmr_v == 0 and not subs.empty and "KCD SS+ Sent" in subs.columns:
@@ -6701,7 +6608,7 @@ if calc_btn:
                     "CMR%": round(cmr_v,1), "CMR Multiplier": cmr_mult_str,
                     "Incentive (₹)": int(inc), "Gross Incentive (₹)": int(inc),
                     "Paid Incentive (₹)": 0, "Balance Incentive (₹)": int(inc),
-                    "Renewals Sent": rnl_sent, "Renewals Received": rnl_recd,
+                    "CMR Sent": rnl_sent, "CMR Received": rnl_recd,
                     "CMR (Ren%)": round(cmr_v/100,4),
                     "SS+ Sent": ss_sent, "SS+ Received": ss_recd,
                     "Renewals Sent (Non SS+)": mdc1_sent, "Renewals Received (Non SS+)": mdc1_recd,
@@ -6742,7 +6649,7 @@ if calc_btn:
         cmr_cols = [c for c in [
             "Employee ID","Employee Name","Vertical","Vintage","Team","Location",
             "CMR Slab1 Target","CMR Slab2 Target",
-            "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
+            "CMR Sent","CMR Received","CMR% (auto)","CMR Slab",
             "SS+ Sent","SS+ Received","SS+ CMR% (auto)",
             "MDC1 Sent","MDC1 Recd","MDC-1 CMR%",
         ] if c in res.columns]
