@@ -44,9 +44,7 @@ PURE_RENEWAL_PRODUCTS = {
     "Renewal","TS1Renewal","TS2Renewal","TS3Renewal","WS Renewal","IVE Renewal",
     "SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal","Pref SS Renewal",
     "Pref LS Renewal","FPL Renewal","IM IL Renewal","CL Renewal","IL Renewal",
-    "Pref IL Renewal","Adv Renewal","Adv WS Renewal","Adv SS Renewal",
-    "Adv LS Renewal","Adv IM SS Renewal","Adv IM LS Renewal","Adv IVE Renewal",
-    "IM Insta Renewal","Adv Pref Renewal","Adv Pref SS Renewal",
+    "Pref IL Renewal"
 }
 
 # Upsell column values → service tier
