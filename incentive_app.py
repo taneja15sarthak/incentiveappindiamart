@@ -2993,20 +2993,29 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
     else:
         booster = 1.0
 
-    total = per_txn * eff_txn_count * mdc1_mult * booster
-
-    # ── May scheme for 90+ SPS ──────────────────────────────────────────────────
-    # FAQ Q13: "Only CMR achieved (no PCDV slab) → 50% payout of min slab rate"
-    # There is NO 125% "Both Achievers" multiplier for 90+ SPS base incentive.
-    # "Both Achievers" 125% applies only to 0-90D PoP scheme.
+    # ── Both Achievers / Only CMR (per KCD & CSD Magnificent May PPT) ──────────
+    # "Both Achievers (PCDV+CMR) earn 125% & Only CMR Achievers will get 50% Payout"
+    # Step 1: compute pre-BA base = per_txn × txns
+    # Step 2: apply BothAchievers (×125%) or OnlyCMR (50% of lowest CMR-slab rate × txns)
+    # Step 3: × mdc1_mult × booster
     _ba_note = ""
-    if cmr_slab >= 1 and per_txn == 0 and S.get("both_achievers_on", False):
-        # Only CMR target achieved, PCDV below any slab → 50% of min slab rate
-        _min_per_txn = min((r for _, r, _ in slabs), default=0)
-        total = round(_min_per_txn * eff_txn_count * mdc1_mult * booster
-                      * S.get("cmr_only_pct", 0.50), 0)
-        _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
-    # If PCDV slab hit AND CMR slab hit → full payout (no extra 125% multiplier for 90+)
+    if S.get("both_achievers_on", False) and cmr_slab >= 1:
+        _pcdv_hit = per_txn > 0  # PCDV cleared at least the lowest slab threshold
+        if _pcdv_hit:
+            # Both Achievers: PCDV slab + CMR slab both achieved → ×125%
+            raw_base = per_txn * eff_txn_count * S.get("both_achievers_pct", 1.25)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        else:
+            # Only CMR Achiever: PCDV below all slabs → 50% of lowest-threshold rate for this CMR slab
+            _lowest_slab_rate = (slabs[-1][2] if cmr_slab == 2 else slabs[-1][1]) if slabs else 0
+            raw_base = _lowest_slab_rate * eff_txn_count * S.get("cmr_only_pct", 0.50)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+    elif cmr_slab == 0:
+        raw_base = 0  # Below CMR slab 1 → no incentive
+    else:
+        raw_base = per_txn * eff_txn_count  # both_achievers_on=False → plain per-txn
+
+    total = round(raw_base * mdc1_mult * booster, 0)
 
     notes = (f"CSD SPS {vintage} | {metric_label}:{round(pcdv)} | CMR slab:{cmr_slab} | "
              f"₹{per_txn}/txn×{eff_txn_count} | MDC1:{mdc1_mult:.1f}(CMR+1:{_mdc1_for_mult:.0f}%|CMR:{mdc1_cmr_display:.0f}%) "
@@ -3104,8 +3113,31 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
     # Effective per_txn after CMR eligibility
     per_txn_eff = round(per_txn * cmr_mult, 0) if cmr_mult > 0 else 0
 
-    # ── AH: Base = per_txn_eff * RAW productivity ───────────────────────────
-    ah = per_txn_eff * float(prod_raw or 0)
+    # ── Both Achievers / Only CMR applied to RAW base ──────────────────────
+    # Per scheme: "Both Achievers (PCDV+CMR) → 125% & Only CMR Achievers → 50%"
+    # This is applied to the BASE (per_txn × prod) BEFORE Cross / CMR+1 / Booster
+    _cmr_slab1_hit = cmr_pct_v >= _cmr_slab1
+    _ba_note = ""
+    if S.get("both_achievers_on", False) and cmr_pct_v >= _cmr_min:
+        if _pcdv_hit and _cmr_slab1_hit:
+            # Both Achievers: per_txn × prod × 125%
+            raw_base = per_txn * float(prod_raw or 0) * S.get("both_achievers_pct", 1.25)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_slab1_hit and not _pcdv_hit:
+            # Only CMR: 50% of lowest slab rate × prod (no PCDV qualifier, lowest slab)
+            _min_per_txn = min((r1 for _, r1, _ in slabs if r1 > 0), default=0) if slabs else 0
+            if _min_per_txn == 0:
+                _DEFAULT_RM_SLABS_SORTED = sorted([(2900,1250,1500),(2700,1000,1200),(2500,750,900)])
+                _min_per_txn = _DEFAULT_RM_SLABS_SORTED[0][1]
+            raw_base = _min_per_txn * float(prod_raw or 0) * S.get("cmr_only_pct", 0.50)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+        else:
+            raw_base = per_txn * float(prod_raw or 0)
+    else:
+        raw_base = per_txn * float(prod_raw or 0)
+
+    # ── AH: Base (after BA/OnlyCMR) × CMR multiplier ────────────────────────
+    ah = raw_base * cmr_mult
 
     # ── AI: Cross Multiplier (2D: CMR% x MDC-1 CMR%) ────────────────────────
     mdc = mdc1_cmr_pct * 100 if mdc1_cmr_pct <= 1 else mdc1_cmr_pct
@@ -3120,7 +3152,7 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
         elif mdc >= 40: ai = 1.10
         elif mdc >= 35: ai = 1.00
         else:           ai = 0.75
-    elif cmr >= _cmr_min:   # 53-59.9% range → uses 50% mult already in per_txn_eff
+    elif cmr >= _cmr_min:
         if mdc >= 45:   ai = 1.10
         elif mdc >= 40: ai = 1.00
         else:           ai = 0.50
@@ -3144,17 +3176,6 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
         an = ak * 1.20
     else:
         an = ak
-
-    # ── Both Achievers (May): PCDV hit + CMR Slab1 hit → 125% ───────────────
-    _ba_note = ""
-    if S.get("both_achievers_on", False):
-        _cmr_slab1_hit = cmr_pct_v >= _cmr_slab1
-        if _pcdv_hit and _cmr_slab1_hit:
-            an = an * S.get("both_achievers_pct", 1.25)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
-        elif _cmr_slab1_hit and not _pcdv_hit:
-            # Only CMR → 50% already handled via cmr_mult; just note it
-            _ba_note = " | OnlyCMR(50%)"
 
     total = round(max(0, an), 0)
     notes = (f"CSD RM | PCR:{pcr:.0f} | CMR:{cmr:.0f}% | MDC1:{mdc:.0f}% | "
@@ -3245,16 +3266,29 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         else:
             base_before_ss = round(_ay, 0)   # Listing: no BTL mult
 
-        # SS+ mult: FSF BA=AY then BB=IF(sent>=3, BA*AZ, BA)
+        # SS+ mult
         if ss_sent >= 3:
             ss_mult = 1.0 if ss_cmr_pct >= S.get("kcd_ss_threshold", 72) else 0.5
         else:
             ss_mult = 1.0
         total = round(base_before_ss * ss_mult, 0)
 
+        # Both Achievers / Only CMR (KCD Listing/Catalog: "DV+CMR" per PPT)
+        _ba_note = ""
+        if S.get("both_achievers_on", False):
+            _dv_hit  = per_txn > 0
+            _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+            if _dv_hit and _cmr_hit:
+                total = round(total * S.get("both_achievers_pct", 1.25), 0)
+                _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+            elif _cmr_hit and not _dv_hit:
+                _lowest_r = (slabs[-1][2] if ss_cmr_pct >= 80 else slabs[-1][1]) if slabs else 0
+                total = round(_lowest_r * float(txn_prod_raw or 0) * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+                _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+
         notes = (f"KCD SAM {'Listing' if is_listing else 'Catalog'} {vintage} | "
                  f"PCR%:{pcr_pct_val:.1f}% | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
-                 f"Incr:{incremental:.0f} | SS+:{ss_mult}")
+                 f"Incr:{incremental:.0f} | SS+:{ss_mult}{_ba_note}")
         return total, notes
 
     # ── Type A: Regular / HVRI / ROI / Nagpur ────────────────────────────────
@@ -3312,8 +3346,9 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
             total = round(total * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
         elif _cmr_hit and not _pcdv_hit:
-            _min_rate = min((r1 for _, r1, _ in slabs if r1 > 0), default=0)
-            total = round(_min_rate * txn_prod_raw * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+            # Use the correct CMR-slab column rate from the lowest PCDV threshold
+            _lowest_r = (slabs[-1][2] if is_cmr80 else slabs[-1][1]) if slabs else 0
+            total = round(_lowest_r * txn_prod_raw * ss_mult * S.get("cmr_only_pct", 0.50), 0)
             _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
 
     notes = (f"KCD SAM {'Nagpur' if is_nagpur else 'HVRI' if is_hvri else 'ROI' if is_roi else 'Regular'}"
@@ -3410,7 +3445,20 @@ def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
     _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
     ss_mult = 0.5 if (ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72)) else 1.0
     base = per_txn * txn_count * ss_mult
-    return round(base, 0),            f"KCD ROI {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}"
+
+    # Both Achievers / Only CMR (KCD ROI PPT: "Both Achievers (PCDV+CMR) → 125%")
+    _ba_note = ""
+    if S.get("both_achievers_on", False):
+        _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        if per_txn > 0 and _cmr_hit:
+            base = round(base * S.get("both_achievers_pct", 1.25), 0)
+            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
+        elif _cmr_hit and per_txn == 0:
+            _lowest_r = (slabs[-1][2] if cmr_col_val == 2 else slabs[-1][1]) if slabs else 0
+            base = round(_lowest_r * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+
+    return round(base, 0),            f"KCD ROI {vintage} | {metric_label}:{round(pcdv)} | ₹{per_txn}/txn×{txn_count} | SS+:{ss_mult}{_ba_note}"
 
 
 def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
@@ -3451,10 +3499,9 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
             base = round(base * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
         elif _cmr_hit and not _pcdv_hit:
-            # Only CMR: use minimum slab rate × 50%
-            _min_slab = (S.get("kcd_0_90_slabs") or S.get("kcd_91_270_slabs") or [])
-            _min_rate = min((r1 for _, r1, _ in _min_slab if r1 > 0), default=0)
-            base = round(_min_rate * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
+            # Only CMR: 50% of lowest slab rate for employee's CMR column
+            _lowest_r = (slabs[-1][2] if cmr_col_val == 2 else slabs[-1][1]) if slabs else 0
+            base = round(_lowest_r * txn_count * ss_mult * S.get("cmr_only_pct", 0.50), 0)
             _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
 
     return round(base, 0), \
