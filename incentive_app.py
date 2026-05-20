@@ -3063,7 +3063,8 @@ def get_cmr_plus1_2d_mult(cmr_pct, mdc1_pct, cmr_slab1, cmr_slab2):
 
 
 def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
-                     cmr_plus1_pct, ext_tat, d60, is_sps, S):
+                     cmr_plus1_pct, ext_tat, d60, is_sps, S,
+                     emp_cmr_slab1=None, emp_cmr_slab2=None):
     """
     CSD Relationship Manager (L2) incentive -- exact FSF Rel Mgr-CSD formula.
 
@@ -3077,8 +3078,9 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
     """
     # ── AF: Per-txn from CSD_RM slab (PCDV x CMR%) ─────────────────────────
     slabs = S.get("csd_rm_slabs", [])
-    _cmr_slab1 = S.get("rm_cmr_slab1", 60)
-    _cmr_slab2 = S.get("rm_cmr_slab2", 65)
+    # Use per-employee individual CMR targets if available, else global defaults
+    _cmr_slab1 = float(emp_cmr_slab1) if emp_cmr_slab1 is not None else S.get("rm_cmr_slab1", 60)
+    _cmr_slab2 = float(emp_cmr_slab2) if emp_cmr_slab2 is not None else S.get("rm_cmr_slab2", 65)
     _cmr_min   = S.get("rm_cmr_min",   53)
     cmr_pct_v  = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
 
@@ -3295,8 +3297,8 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
     # Highest Collection = Client-A * 17000 (April FSF KCD-SAM: AA = L*17000)
     highest_coll = float(client_a or 0) * 17000
 
-    # Per-txn: threshold is PCR (collection per client) and CMR%
-    # Get SAM slabs for this team
+    # Per-txn: threshold is PCDV (per PPT slides 14-17: "PCDV" column heading)
+    # NOT PCR — SAM Type A uses the same PCDV thresholds as KCD Exec L1
     if is_nagpur:
         slabs = S.get("kcd_sam_nagpur", [])
     elif is_hvri:
@@ -3308,36 +3310,34 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
     is_cmr80 = cmr_pct >= 80
     per_txn = 0
-    for (thresh_pcr, r1, r2) in sorted(slabs, reverse=True):
-        if pcr_val >= thresh_pcr:
+    for (thresh_pcdv, r1, r2) in sorted(slabs, reverse=True):
+        if pcdv_val >= thresh_pcdv:          # ← PCDV not PCR
             per_txn = r2 if is_cmr80 else r1
             break
 
-    # Incremental: (Net_DV - Highest_Coll) * rate%  when PCR > threshold
-    # Threshold = lowest PCR slab that earns something
+    # Incremental: (Net_DV - Highest_Coll) * rate% when PCDV > highest slab threshold
     _team_key = ("NAGPUR" if is_nagpur else "HVRI" if is_hvri else
                  "ROI" if is_roi else "REGULAR")
     _incr_rec = next((r for r in S.get("kcd_sam_incr",[])
                       if str(r.get("Team","")).upper() == _team_key), {})
-    incr_thresh_pcr = float(_incr_rec.get("Incr_Threshold_PCR", 0) or 0)
-    incr_rate       = float(_incr_rec.get("Incr_Rate_%", 0.65) or 0.65) / 100
-    # FSF: IF(PCR > incr_thresh, IF(NetDV <= HC, 0, (NetDV-HC)*rate), 0)
+    incr_thresh_pcdv = float(_incr_rec.get("Incr_Threshold_PCDV", 0) or
+                              _incr_rec.get("Incr_Threshold_PCR", 0) or 0)
+    incr_rate        = float(_incr_rec.get("Incr_Rate_%", 0.65) or 0.65) / 100
     incremental = 0.0
-    if pcr_val > incr_thresh_pcr and net_dv > highest_coll:
+    if incr_thresh_pcdv > 0 and pcdv_val > incr_thresh_pcdv and net_dv > highest_coll:
         incremental = round((net_dv - highest_coll) * incr_rate, 0)
 
     # Base = per_txn * raw_wk_productivity + incremental
     base_before_ss = round(per_txn * float(txn_prod_raw or 0) + incremental, 0)
 
-    # SS+ mult: FSF AZ = IF(SS_sent>=3, IF(CMR>=70%, 100%, 50%), 0)
-    #           BA = IF(SS_sent>=3, AY*AZ, AY)
+    # SS+ mult: SS sent >= 3 and cmr < 72% → 50% penalty; else no penalty
     if ss_sent >= 3:
         ss_mult = 1.0 if ss_cmr_pct >= S.get("kcd_ss_threshold", 72) else 0.5
     else:
         ss_mult = 1.0
     total = round(base_before_ss * ss_mult, 0)
 
-    # Both Achievers (May): PCDV/DV slab hit + SS+ CMR hit → 125%; Only CMR → 50%
+    # Both Achievers / Only CMR
     _ba_note = ""
     if S.get("both_achievers_on", False):
         _pcdv_hit = per_txn > 0
@@ -3346,13 +3346,12 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
             total = round(total * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
         elif _cmr_hit and not _pcdv_hit:
-            # Use the correct CMR-slab column rate from the lowest PCDV threshold
             _lowest_r = (slabs[-1][2] if is_cmr80 else slabs[-1][1]) if slabs else 0
             total = round(_lowest_r * txn_prod_raw * ss_mult * S.get("cmr_only_pct", 0.50), 0)
             _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
 
     notes = (f"KCD SAM {'Nagpur' if is_nagpur else 'HVRI' if is_hvri else 'ROI' if is_roi else 'Regular'}"
-             f" {vintage} | PCR:{pcr_val:.0f} | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
+             f" {vintage} | PCDV:{pcdv_val:.0f} | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
              f"HC:{highest_coll:.0f} | Incr:{incremental:.0f} | SS+:{ss_mult}{_ba_note}")
     return total, notes
     team_up = str(team).upper()
@@ -4748,7 +4747,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 cmr_pct=cmr_pct, mdc1_cmr_pct=emp_mdc1_cmr,
                 cmr_plus1_pct=_cmr_plus1,
                 ext_tat=sb.get("ext_tat", S.get("boost_tat_thr", 1)), d60=sb.get("d60", S.get("boost_60d_thr", 10)),
-                is_sps=is_sps_employee, S=S)
+                is_sps=is_sps_employee, S=S,
+                emp_cmr_slab1=emp_targets.get("slab1"),
+                emp_cmr_slab2=emp_targets.get("slab2"))
             pop_inc = 0
             if S.get("has_apr_spot") or S.get("has_may_spot"):
                 spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
@@ -5150,6 +5151,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     import re as _re
 
+    # CMR+1 Sent/Recd: from prev-month upload if available, else MDC1 for Rel Mgr
+    _c1_map = cmr_plus1_map.get(emp_id, {})
+    _c1_sent = _c1_map.get("mdc1_sent", 0)
+    _mdc1_sent_val = mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0)
+    _mdc1_recd_val = mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0)
+
     # Both Achievers / Only CMR multiplier label (extracted from scheme notes)
     _ba_m = _re.search(r'BothAchievers×([0-9.%]+)', notes)
     _oc_m = _re.search(r'OnlyCMR×([0-9.%]+)', notes)
@@ -5229,6 +5236,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # Per-txn rate: extract from scheme notes "₹{rate}/txn×"
     _kcd_per_txn_m = _re.search(r"₹([0-9]+)/txn", notes) if "KCD" in vertical else None
     _kcd_per_txn   = int(_kcd_per_txn_m.group(1)) if _kcd_per_txn_m else 0
+    # For OnlyCMR employees (per_txn=0), also extract the effective rate from notes
+    # and show the OnlyCMR rate so user can see what rate was applied
+    if _kcd_per_txn == 0 and "OnlyCMR" in notes:
+        _onlycmr_m = _re.search(r"Rs([0-9.]+)/txn", notes)
+        if not _onlycmr_m: _onlycmr_m = _re.search(r"₹([0-9]+)/txn\*([0-9.]+) \| .* \| OnlyCMR", notes)
+        # Fall back: show 0 but note BA_Multiplier column will show "Only CMR 50%"
+        _kcd_per_txn = 0  # per_txn=0 is correct; BA Multiplier shows the context
 
     return {
         "CMR% (auto)":         round(cmr_pct, 1),
@@ -5252,13 +5266,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Renewal Txns":        rnl_count,
         # CMR+1 / SPS block -> "NA" for 0-90D (these columns only apply to SPS 91D+)
         "CMR+1 Sent":          ("NA" if (_is_new_joiner and _is_csd) else
-                                (cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0)
-                                 if (_is_csd and cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0) > 0)
-                                 else "")),
+                                (_c1_sent if (_is_csd and _c1_sent > 0)
+                                 else (_mdc1_sent_val if (_is_csd and _is_csd_rm and _mdc1_sent_val > 0) else ""))),
         "CMR+1 Recd":          ("NA" if (_is_new_joiner and _is_csd) else
-                                (cmr_plus1_map.get(emp_id, {}).get("mdc1_recd", 0)
-                                 if (_is_csd and cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0) > 0)
-                                 else "")),
+                                (_c1_map.get("mdc1_recd", 0) if (_is_csd and _c1_sent > 0)
+                                 else (_mdc1_recd_val if (_is_csd and _is_csd_rm and _mdc1_sent_val > 0) else ""))),
         "MDC1 CMR+1%":         ("NA" if (_is_new_joiner and _is_csd) else
                                 (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                                  if (cmr_plus1_sent > 0 and _is_csd) else "")),
@@ -6489,7 +6501,7 @@ if calc_btn:
                 # Base incentive
                 "Inc. Payout Mult","Productivity Score","Receipt Txns",
                 "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
-                "Base Incentive (₹)",
+                "BA Multiplier","Base Incentive (₹)",
                 # Spot bifurcation (matches sir's FNT-1 / FNT-2 / 28-30 sections)
                 "FNT-1 Prod Count","FNT-1 Spot (₹)",
                 "FNT-2 Prod Count","FNT-2 Spot (₹)",
@@ -6518,7 +6530,9 @@ if calc_btn:
             "Productivity Score","Receipt Txns",
             "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
+                "BA Multiplier",
             "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
+            "BA Multiplier",
             # Spot bifurcation (matches sir's FNT-1 / FNT-2 sections)
             "FNT-1 Spot (₹)","FNT-2 Spot (₹)",
             "WK-1 Prod Spot (₹)","Excellent Spot (₹)",
