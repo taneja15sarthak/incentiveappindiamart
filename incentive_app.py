@@ -93,7 +93,8 @@ WK1_PRODUCT_CATEGORIES = {
 
 # IM Insta products (0.5 productivity)
 INSTA_PRODUCTS = {"IM InstaDiamond","IM InstaGold","IM InstaPlatinum",
-                  "IM insta Diamond","IM Insta Renewal"}
+                  "IM insta Diamond","IM Insta Renewal",
+                  "Lead Manager Pro Gold","Lead Manager Pro Platinum"}
 INSTA_KEYWORDS    = ["INSTA"]          # IM Insta = 0.5 productivity (KCD/CSD SPS)
 
 # MDC-1 products for per-employee MDC-1 CMR% calculation (CSD SPS)
@@ -2165,7 +2166,7 @@ def load_structure_dump(uploaded_file):
                 elif grp_up == "90+D":
                     vintage = _resolve_vintage(subgrp_val, vintage)
                     vbucket = "90+ Days"
-                    team    = "SPS (CSD 91D+)"
+                    team    = "90+ Days (CSD)"     # distinct from SPS — no booster eligibility
                 elif grp_up in ("0-90D", "0-90"):
                     vintage = _resolve_vintage(subgrp_val, vintage)
                     if vintage not in ("0-30D","31-90D"): vintage = "31-90D"
@@ -2224,6 +2225,8 @@ def load_structure_dump(uploaded_file):
                     team = "SPS (CSD 91D+)"
                 elif any(x in vbucket_up for x in ["0-90 DAYS", "0-90DAYS"]):
                     team = "0-90 Days (CSD new)"
+                elif "90+ DAYS" in vbucket_up or "90+DAYS" in vbucket_up or vbucket_up == "90+ DAYS":
+                    team = "90+ Days (CSD)"         # non-SPS 90+ Days
                 else:
                     team = "SPS (CSD 91D+)"
             elif "KCD" in vertical:
@@ -2907,18 +2910,16 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     else:
         prod_score_for_gate, _, _ = calc_productivity(rnl_prods, rnl_modes, "csd_new")
 
-    _use_slab_gate = S.get("pop_use_slab_gate", False)
-    _both_achiev_on = S.get("both_achievers_on", False)
-    _both_pct = S.get("both_achievers_pct", 1.25)
-    _cmr_only = S.get("cmr_only_pct", 0.50)
+    # For 0-90D: PoP gate is always CMR Slab1 achieved (scheme says "First Slab of CMR target eligibility")
+    # _use_slab_gate / _both_achiev_on are NOT used for 0-90D PoP — removed from here
 
     pop = 0
     pop_reason = ""
-    _cmr_qualified = (cmr_slab >= 1) if _use_slab_gate else (cmr_pct_achieved >= (pop_cmr_floor if pop_cmr_floor is not None else POP_CMR_FLOOR))
+    # CMR gate: Slab 1 must be achieved (cmr_slab >= 1) — regardless of flat floor %
+    _cmr_qualified = (cmr_slab >= 1)
 
     if not _cmr_qualified:
-        pop_reason = (f"PoP blocked: CMR slab not achieved (slab={cmr_slab})" if _use_slab_gate
-                      else f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {pop_cmr_floor or POP_CMR_FLOOR}% min")
+        pop_reason = f"PoP blocked: CMR Slab 1 not achieved (slab={cmr_slab}, {cmr_pct_achieved:.1f}%)"
     elif prod_score_for_gate < min_txn:
         pop_reason = f"PoP blocked: {prod_score_for_gate} txns < {min_txn} min"
     else:
@@ -2933,14 +2934,9 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
             pop = sum(pop_for_product(p, S["prod_to_pop"]) for p in eligible)
             pop_reason = f"PoP: {prod_score_for_gate} txns x CMR {cmr_pct_achieved:.1f}%"
 
-        # Both Achievers multiplier (May'26 only)
-        if _use_slab_gate and _both_achiev_on:
-            if _pcdv_slab_hit and cmr_slab >= 1:
-                pop = round(pop * _both_pct, 0)
-                pop_reason += f" | Both Achievers {_both_pct:.0%}"
-            else:
-                pop = round(pop * _cmr_only, 0)
-                pop_reason += f" | Only CMR Achiever {_cmr_only:.0%}"
+        # 0-90D PoP: NO multiplier — full amount if CMR Slab1 achieved and min txns met
+        # "Both Achievers" multiplier applies to 90+ SPS base incentive only, not 0-90D PoP
+        pop_reason += " | PoP: full amount (CMR Slab1 achieved)"
 
     notes = (f"CSD {vintage} | {metric_label}:{round(pcdv)} | clients:{int(client_c)} | "
              f"CMR slab:{cmr_slab} | {pop_reason}")
@@ -2997,24 +2993,18 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
 
     total = per_txn * eff_txn_count * mdc1_mult * booster
 
-    # ── Both Achievers (May scheme): PCDV slab hit AND CMR slab hit → 125%
-    #    Only CMR slab hit (PCDV below any threshold) → 50% of min slab rate
-    if S.get("both_achievers_on", False):
-        _pcdv_hit = per_txn > 0  # PCDV cleared at least the lowest threshold
-        _cmr_hit  = cmr_slab >= 1
-        if _pcdv_hit and _cmr_hit:
-            total = round(total * S.get("both_achievers_pct", 1.25), 0)
-            _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
-        elif _cmr_hit and not _pcdv_hit:
-            # Only CMR achieved → 50% of minimum slab rate
-            _min_per_txn = min((r for _, r, _ in slabs), default=0)
-            total = round(_min_per_txn * eff_txn_count * mdc1_mult * booster
-                          * S.get("cmr_only_pct", 0.50), 0)
-            _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
-        else:
-            _ba_note = ""
-    else:
-        _ba_note = ""
+    # ── May scheme for 90+ SPS ──────────────────────────────────────────────────
+    # FAQ Q13: "Only CMR achieved (no PCDV slab) → 50% payout of min slab rate"
+    # There is NO 125% "Both Achievers" multiplier for 90+ SPS base incentive.
+    # "Both Achievers" 125% applies only to 0-90D PoP scheme.
+    _ba_note = ""
+    if cmr_slab >= 1 and per_txn == 0 and S.get("both_achievers_on", False):
+        # Only CMR target achieved, PCDV below any slab → 50% of min slab rate
+        _min_per_txn = min((r for _, r, _ in slabs), default=0)
+        total = round(_min_per_txn * eff_txn_count * mdc1_mult * booster
+                      * S.get("cmr_only_pct", 0.50), 0)
+        _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
+    # If PCDV slab hit AND CMR slab hit → full payout (no extra 125% multiplier for 90+)
 
     notes = (f"CSD SPS {vintage} | {metric_label}:{round(pcdv)} | CMR slab:{cmr_slab} | "
              f"₹{per_txn}/txn×{eff_txn_count} | MDC1:{mdc1_mult:.1f}(CMR+1:{_mdc1_for_mult:.0f}%|CMR:{mdc1_cmr_display:.0f}%) "
@@ -5113,7 +5103,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _boost_val = S.get("boost_mult", 1.2)
 
     # SPS vintage flag: MDC1 multiplier only applies to 91D+ employees, not new joiners
-    _is_sps_vintage = vintage not in ("0-30D",)
+    _is_sps_vintage = vintage not in ("0-30D", "31-90D")  # MDC-1 mult only for 91D+
 
     if _is_csd_rm:
         # ── CSD Rel Mgr output values ──
@@ -5300,9 +5290,8 @@ def _derive_scheme_type(vintage, team, vertical, designation):
         if vintage in ("0-30D","31-90D"): return f"New Joiner {vintage}"
         if _d == "L2" or "REL" in _d or "RM-" in _d:
             return "Rel Mgr SPS" if "SPS" in _t else "Rel Mgr 31-90D"
-        if "90+ DAYS" in _t.replace("_"," ") or "90+D" in _t:
-            # 90+ Days group: uses SPS CALC but NO booster — different label
-            return f"CSD 90+D {vintage}"
+        if "90+ DAYS" in _t.replace("_"," ") or "90+DAYS" in _t.replace(" ",""):
+            return f"CSD 90+D {vintage}"     # Non-SPS 90+ days group
         if "SPS" in _t or vintage in ("91-270D","270D+","SPS"):
             return f"CSD SPS {vintage}"
         return f"CSD {vintage}"
@@ -6018,8 +6007,9 @@ if calc_btn:
             "PCR Target (₹)":        int(s.get("PCR Target", 0)),
             "CMR Slab1 Target":   emp_targets["slab1"],
             "CMR Slab2 Target":   emp_targets["slab2"],
-            "SPS Group":  "SPS" if ("SPS" in str(s.get("Vintage Bucket","")).upper() or
-                                     "SPS" in str(s.get("Team","")).upper()) else "No",
+            "SPS Group":  ("SPS" if "SPS" in str(s.get("Team","")).upper()
+                          else ("90+D" if "90+ DAYS" in str(s.get("Team","")).upper()
+                                else "No")),
             "MDC1 Sent":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0),
             "MDC1 Recd":  mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0),
         })
