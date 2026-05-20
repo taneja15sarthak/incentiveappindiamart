@@ -3366,87 +3366,6 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
              f" {vintage} | PCDV:{pcdv_val:.0f} | Rs{per_txn}/txn*{txn_prod_raw:.1f} | "
              f"HC:{highest_coll:.0f} | Incr:{incremental:.0f} | SS+:{ss_mult}{_ba_note}")
     return total, notes
-    team_up = str(team).upper()
-    loc_up  = str(location).upper()
-    is_hvri = any(c in loc_up for c in ["HYDERABAD","VASHI","RAIPUR","INDORE"]) or "HVRI" in team_up
-    is_roi  = "ROI" in team_up
-    is_nagpur = "NAGPUR" in team_up or "PHARMA" in team_up
-    is_listing = "LISTING" in team_up
-    is_catalog = "CATALOG" in team_up
-
-    # Select slab table
-    if is_listing:
-        slabs = S.get("kcd_sam_listing", [])
-        achv  = (net_dv / collection_target * 100) if collection_target > 0 else 0
-        per_txn = next((r2 if cmr_col_val == 2 else r1
-                        for t, r1, r2 in slabs if achv >= t), 0)
-    elif is_catalog:
-        slabs = S.get("kcd_sam_catalog", [])
-        achv  = (net_dv / collection_target * 100) if collection_target > 0 else 0
-        per_txn = next((r2 if cmr_col_val == 2 else r1
-                        for t, r1, r2 in slabs if achv >= t), 0)
-        btl_mult = 1.2 if btl_sales >= 2 else 1.0
-    elif is_hvri:
-        slabs = S.get("kcd_sam_hvri", [])
-        per_txn = next((r2 if cmr_col_val == 2 else r1
-                        for t, r1, r2 in slabs if pcdv >= t), 0)
-    elif is_roi:
-        slabs = S.get("kcd_sam_roi", [])
-        per_txn = next((r2 if cmr_col_val == 2 else r1
-                        for t, r1, r2 in slabs if pcdv >= t), 0)
-    elif is_nagpur:
-        slabs = S.get("kcd_sam_nagpur", [])
-        per_txn = next((r2 if cmr_col_val == 2 else r1
-                        for t, r1, r2 in slabs if pcdv >= t), 0)
-    else:  # Regular
-        slabs = S.get("kcd_sam_regular", [])
-        per_txn = next((r2 if cmr_col_val == 2 else r1
-                        for t, r1, r2 in slabs if pcdv >= t), 0)
-
-    # SS+ multiplier
-    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
-        ss_mult = 0.5
-    else:
-        ss_mult = 1.0
-
-    # BTL multiplier (Catalog only)
-    btl_m = 1.2 if (is_catalog and btl_sales >= 2) else 1.0
-
-    base = round(per_txn * txn_count * ss_mult * btl_m, 0)
-
-    # Incremental: from Scheme_Params (SAM Nagpur uses separate rate)
-    _sam_incr = S.get("kcd_sam_incr", [])
-    incr_rate = S.get("kcd_sam_nagpur_incr", 0.0045) if is_nagpur else S.get("kcd_sam_incr_rate", 0.0065)
-    incr_thresh_pcdv = 0
-    incr_thresh_pct  = 0
-    for rec in _sam_incr:
-        t = str(rec.get("Team","")).upper()
-        if ((is_listing and t == "LISTING") or (is_catalog and t == "CATALOG") or
-            (is_hvri and t == "HVRI") or (is_roi and t == "ROI") or
-            (is_nagpur and t == "NAGPUR") or
-            (not any([is_listing, is_catalog, is_hvri, is_roi, is_nagpur]) and t == "REGULAR")):
-            incr_rate = float(rec.get("Incr_Rate_%", 0.65)) / 100
-            incr_thresh_pcdv = float(rec.get("Incr_Threshold_PCDV", 0) or 0)
-            incr_thresh_pct  = float(rec.get("Incr_Threshold_Pct", 0) or 0)
-            break
-
-    # Compute incremental
-    incr = 0.0
-    if incr_thresh_pct > 0 and collection_target > 0:
-        achv2 = (net_dv / collection_target * 100)
-        if achv2 > incr_thresh_pct:
-            incr = round(max(0, net_dv - collection_target) * incr_rate, 0)
-    elif incr_thresh_pcdv > 0 and pcdv > incr_thresh_pcdv:
-        incr = round(net_dv * incr_rate, 0)  # pcdv above threshold -> incr on full DV
-
-    team_label = ("Listing" if is_listing else "Catalog" if is_catalog else
-                  "HVRI" if is_hvri else "ROI" if is_roi else
-                  "Nagpur" if is_nagpur else "Regular")
-    notes = (f"KCD SAM (L2) {team_label} {vintage} | PCDV:{round(pcdv)} | "
-             f"Rs{per_txn}/txn*{txn_count} | SS+:{ss_mult} | Incr:{incr:.0f}")
-    return round(base + incr, 0), notes
-
-
 def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
                  ss_cmr_pct, ss_sent, S, collection_target=0, metric_label="PCDV"):
     """KCD ROI incentive — same rates as Regular but lower PCDV thresholds (8K/11K/14K)."""
@@ -5163,11 +5082,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     import re as _re
 
-    # CMR+1 Sent/Recd: from prev-month upload if available, else MDC1 for Rel Mgr
+    # CMR+1 Sent/Recd: from next-month (June) renewal data via cmr_plus1_map
     _c1_map = cmr_plus1_map.get(emp_id, {})
     _c1_sent = _c1_map.get("mdc1_sent", 0)
-    _mdc1_sent_val = mdc1_cmr_map.get(emp_id, {}).get("mdc1_sent", 0)
-    _mdc1_recd_val = mdc1_cmr_map.get(emp_id, {}).get("mdc1_recd", 0)
 
     # Both Achievers / Only CMR multiplier label (extracted from scheme notes)
     _ba_m = _re.search(r'BothAchievers×([0-9.%]+)', notes)
@@ -5278,11 +5195,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Renewal Txns":        rnl_count,
         # CMR+1 / SPS block -> "NA" for 0-90D (these columns only apply to SPS 91D+)
         "CMR+1 Sent":          ("NA" if (_is_new_joiner and _is_csd) else
-                                (_c1_sent if (_is_csd and _c1_sent > 0)
-                                 else (_mdc1_sent_val if (_is_csd and _is_csd_rm and _mdc1_sent_val > 0) else ""))),
+                                (_c1_sent if (_is_csd and _c1_sent > 0) else "")),
         "CMR+1 Recd":          ("NA" if (_is_new_joiner and _is_csd) else
-                                (_c1_map.get("mdc1_recd", 0) if (_is_csd and _c1_sent > 0)
-                                 else (_mdc1_recd_val if (_is_csd and _is_csd_rm and _mdc1_sent_val > 0) else ""))),
+                                (_c1_map.get("mdc1_recd", 0) if (_is_csd and _c1_sent > 0) else "")),
         "MDC1 CMR+1%":         ("NA" if (_is_new_joiner and _is_csd) else
                                 (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                                  if (cmr_plus1_sent > 0 and _is_csd) else "")),
@@ -5749,19 +5664,25 @@ if _l2_name_col_rnl and struct_map:
 _rnl_for_plus1 = renewal_df_raw if (renewal_df_raw is not None and len(renewal_df_raw) > 0) else renewal_df
 cmr_plus1_map = calc_mdc1_cmr_per_employee(_rnl_for_plus1, mdc_client_counts_map or None,
                                             month_offset=1, sel_month_str=sel_month)
-# Also add L2 RM CMR+1 via L2 name col
-if _l2_name_col_rnl and struct_map and len(cmr_plus1_map) == 0:
+# Add L2 RM CMR+1 via employee name column in renewal file
+# Always run this (not gated on cmr_plus1_map being empty) so Rel Mgr always gets CMR+1
+_l2_plus1_mdc1 = {}
+if _l2_name_col_rnl and struct_map:
     try:
         _l2_plus1_mdc1 = calc_mdc1_cmr_per_employee(_rnl_for_plus1,
                                                       emp_col_override=_l2_name_col_rnl,
                                                       month_offset=1, sel_month_str=sel_month)
-        for _eid3, _sd3 in struct_map.items():
-            if str(_sd3.get("Designation","")).upper() == "L2":
-                _n3 = str(_sd3.get("Employee Name","")).strip()
-                if _n3 and _n3 in _l2_plus1_mdc1:
-                    cmr_plus1_map[_eid3] = _l2_plus1_mdc1[_n3]
     except Exception:
         pass
+# Also try L2 by EMP ID directly (same as L1 — renewal file may have L2 IDs)
+for _eid3, _sd3 in struct_map.items():
+    if str(_sd3.get("Designation","")).upper() == "L2":
+        if _eid3 not in cmr_plus1_map:
+            # Try match by employee name
+            _n3 = str(_sd3.get("Employee Name","")).strip()
+            if _n3 and _n3 in _l2_plus1_mdc1:
+                cmr_plus1_map[_eid3] = _l2_plus1_mdc1[_n3]
+        # If still not found, cmr_plus1_map[_eid3] remains empty (no fallback to MDC1)
 
 # Build emp hierarchy fallback from receipt
 emp_df = build_emp_list(receipt_df)
@@ -6577,6 +6498,7 @@ if calc_btn:
                 "KCD Incentive Multiplier","KCD Base Incentive (₹)","KCD Incremental (₹)",
                 "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
                 "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
+                "BA Multiplier",
                 # Spot bifurcation (matches sir's FNT-1 / FNT-2 / 28-30 sections)
                 "FNT-1 Spot (₹)","FNT-2 Spot (₹)",
                 "IM Insta Spot (₹)","MCATs Spot (₹)",
