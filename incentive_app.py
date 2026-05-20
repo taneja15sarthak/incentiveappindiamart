@@ -4489,15 +4489,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     # For March the slabs are calibrated to PCR; for April to PCDV.
     use_pcr = sb.get("use_pcr", False)
 
-    dv_for_pcdv = net_deal_val if net_deal_val > 0 else net_dv   # prefer deal value
     # PCR = Net Collection / Client-A (actual clients)
-    # PCDV = Net Deal Value / Client-C (calculated/weighted clients) — ALL CSD employees
-    # KCD: both use Client-A
+    # PCDV = Net Deal Value / Client-A (deal value based, NOT collection)
+    # KCD T&C: "PCDV = Net Deal Value / Client-A" — never fall back to Net Collection for KCD
+    dv_for_pcdv = net_deal_val if net_deal_val > 0 else (net_dv if not "KCD" in vertical else 0)
     _client_c_val = float(cfg_row.get("Client-C", 0) or 0)
     _is_csd = "CSD" in vertical
 
     # PCR denominator: Client-C for CSD (per sir's FSF formula: =Net_Collection/Client_C)
-    #                  Client-A for KCD
+    #                  Client-A for KCD (actual, min 50)
     _pcr_denom  = (_client_c_val if (_is_csd and _client_c_val > 0) else client_cnt)
     _pcr_denom  = _pcr_denom if _pcr_denom > 0 else 1
     pcr_val     = (net_dv / _pcr_denom) if _pcr_denom > 0 else 0
@@ -5221,7 +5221,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # ── KCD columns matching sir's kcd_calc.xlsx layout ────────
         "KCD Collection Target (₹)": int(collection_target) if "KCD" in vertical else "",
         "KCD Highest Collection (₹)": int(highest_coll)      if "KCD" in vertical else "",
-        "KCD PCDV Target":            round(pcr_target_v, 0)  if "KCD" in vertical else "",
+        "KCD PCDV Target":            (round(highest_coll / client_cnt, 0)
+                                     if ("KCD" in vertical and ("LISTING" in str(team).upper() or "CATALOG" in str(team).upper()))
+                                     else (min((t for t,_,_ in (
+                                         S.get("kcd_nagpur_slabs",[]) if ("NAGPUR" in str(team).upper() or "PHARMA" in str(team).upper())
+                                         else S.get("kcd_hvri_slabs",[]) if any(h in str(team).upper() for h in ("HVRI",))
+                                         else S.get("kcd_roi_slabs", S.get("kcd_91_270_slabs",[])) if "ROI" in str(team).upper()
+                                         else {"270D+": S.get("kcd_270_slabs",[]), "91-270D": S.get("kcd_91_270_slabs",[])}.get(
+                                             vintage, S.get("kcd_0_90_slabs",[]))
+                                     )), default=round(pcr_target_v,0))
+                                          if "KCD" in vertical else "")) if "KCD" in vertical else "",
         "KCD PCDV%":                  round(pcr_pct * 100, 2) if "KCD" in vertical else "",
         # WK productive transaction counts
         "KCD WK-1 Txns":  weekly_txn.get(1, 0) if ("KCD" in vertical and weekly_txn) else "",
