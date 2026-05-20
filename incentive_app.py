@@ -62,7 +62,8 @@ UPSELL_TIER3 = {
 # Product column values → service tier (when Upsell is blank)
 PROD_TIER1 = {"Renewal","MDC Annual","TS1Renewal","TS Pro-1","TS pro-1","Maxi Pro-1"}
 PROD_TIER2 = {"TS2Renewal","WS Renewal","IVE Renewal","Combo 2YR","Maxi Pro-2",
-              "TS Pro-2","Maximiser","VEXPS-12","VEXPS-MYR","VEXPG-12","VEXPG-MYR",
+              "TS Pro-2","Maximiser","MYR","myr","Combo 2YR",
+              "VEXPS-12","VEXPS-MYR","VEXPG-12","VEXPG-MYR",
               "VEXPD-12","VEXPD-MYR","VEXPP-12","VEXPP-MYR"}
 PROD_TIER3 = {"TS3Renewal","SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal",
               "Pref SS Renewal","Pref LS Renewal","CL Renewal","IL Renewal",
@@ -1710,17 +1711,20 @@ def enrich_receipt(df):
         upsell = _str(row[upsell_col]) if upsell_col else ""
         prod   = _str(row[prod_col])   if prod_col   else ""
 
-        if upsell:
+        # If upsell col is a boolean flag ("Yes"/"No") from pre-enriched file,
+        # it carries no tier info — fall through to product-based lookup.
+        _upsell_is_flag = upsell.strip().lower() in ("yes", "no", "1", "true")
+        if upsell and not _upsell_is_flag:
             if upsell in UPSELL_TIER1:  return 1
             if upsell in UPSELL_TIER2:  return 2
             if upsell in UPSELL_TIER3:  return 3
             if "MYR" in upsell.upper(): return 2
-            return 3   # unknown upsell → highest tier
-        else:
-            if prod in PROD_TIER1: return 1
-            if prod in PROD_TIER2: return 2
-            if prod in PROD_TIER3: return 3
-            return 0
+            return 3   # unknown upsell product name → T3
+        # Use product column for tier (covers pure renewals + boolean-flag upsell rows)
+        if prod in PROD_TIER1: return 1
+        if prod in PROD_TIER2: return 2
+        if prod in PROD_TIER3: return 3
+        return 0
 
     df["Service_Tier"] = df.apply(_tier, axis=1)
 
@@ -4064,7 +4068,20 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     if "Productivity" in rec.columns:
         _prod_vals = rec["Productivity"].fillna(0).astype(float)
         prod_rows  = rec[_prod_vals > 0]
-        svc_tiers  = prod_rows["Service_Tier"].tolist() if "Service_Tier" in prod_rows.columns else []
+        if "Service_Tier" in prod_rows.columns:
+            svc_tiers = prod_rows["Service_Tier"].tolist()
+        elif "Service" in prod_rows.columns:
+            # Enriched receipt has Service string (e.g. "MDC-Annual||TS-1") but not int tier
+            def _svc_to_tier(s):
+                s = str(s)
+                if "MDC-Annual" in s or "TS-1" in s: return 1
+                if "MDC-MYR" in s or "TS-2" in s:   return 2
+                if "TS-3" in s or "Maxi-2" in s:    return 3
+                return 0
+            svc_tiers = [_svc_to_tier(v) for v in prod_rows["Service"].tolist()]
+            svc_tiers = [t for t in svc_tiers if t > 0]  # drop 0s (non-tier rows)
+        else:
+            svc_tiers = []
         insta_cnt_receipt    = int((_prod_vals == 0.5).sum())
         prod_score_receipt     = float(_prod_vals.sum())
         prod_score_receipt_int = int((_prod_vals == 1.0).sum())
@@ -4637,6 +4654,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     base_inc = pop_inc = spot_inc = 0
     _pop_tier1 = _pop_tier2 = _pop_tier3 = 0
     _pcdv_amount = _incr_amount = _final_pcdv = 0
+    # Compute MDC tier counts for ALL CSD employees (shown in Exec-CSD cols 21-23)
+    if svc_tiers is not None:
+        _pop_tier1 = len([t for t in svc_tiers if t == 1])
+        _pop_tier2 = len([t for t in svc_tiers if t == 2])
+        _pop_tier3 = len([t for t in svc_tiers if t == 3])
     _fnt1_spot = _fnt2_spot = _im_star_spot = 0  # Spot bifurcation tracking
     _im_insta_spot        = 0   # KCD only
     _mcats_spot           = 0   # KCD only
@@ -5243,14 +5265,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Listing Client":      int(listing_c) if listing_c >= 0 else "",
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
-        # ── PoP tier counts (0-90D CSD: filled; SPS/KCD: NA) — FSF cols 21-23 ──
-        "MDC-Annual||TS-1":           (_pop_tier1 if (_is_new_joiner and _is_csd) else "NA"),
-        "MDC-MYR||TS-2||Maxi-A||VE": (_pop_tier2 if (_is_new_joiner and _is_csd) else "NA"),
-        "TS-3||Maxi-2":               (_pop_tier3 if (_is_new_joiner and _is_csd) else "NA"),
-        # ── PCDV breakdown (0-90D CSD: filled; SPS/KCD: NA) — FSF cols 33-35 ──
-        "PCDV Amount":           (int(_pcdv_amount)       if (_is_new_joiner and _is_csd) else "NA"),
-        "Incremental 3% Amount": (round(_incr_amount, 2)  if (_is_new_joiner and _is_csd) else "NA"),
-        "Final PCDV Amount":     (round(_final_pcdv, 2)   if (_is_new_joiner and _is_csd) else "NA"),
+        # ── PoP tier counts (ALL CSD: filled; non-CSD: blank) — FSF cols 21-23 ──
+        "MDC-Annual||TS-1":           (_pop_tier1 if _is_csd else ""),
+        "MDC-MYR||TS-2||Maxi-A||VE": (_pop_tier2 if _is_csd else ""),
+        "TS-3||Maxi-2":               (_pop_tier3 if _is_csd else ""),
+        # ── PCDV breakdown (0-90D CSD: filled; SPS CSD: blank) — FSF cols 33-35 ──
+        "PCDV Amount":           (int(_pcdv_amount)       if (_is_new_joiner and _is_csd) else ("" if _is_csd else "")),
+        "Incremental 3% Amount": (round(_incr_amount, 2)  if (_is_new_joiner and _is_csd) else ("" if _is_csd else "")),
+        "Final PCDV Amount":     (round(_final_pcdv, 2)   if (_is_new_joiner and _is_csd) else ("" if _is_csd else "")),
         # ── Spot bifurcation ────────────────────────────────────────
         "FNT-1 Prod Count":    fnt1_prod_count,
         "FNT-1 Spot (₹)":     int(_fnt1_spot),
@@ -5713,11 +5735,15 @@ if enrich_btn:
                     u = _se(row[upsell_col_e]) if upsell_col_e else ""
                     p = _se(row[prod_col_e]) if prod_col_e else ""
                     e = _se(row.get("Exp",""))
-                    if u == "Combo 1YR": return "MDC-Annual||TS-1"
-                    if u in {"Maximiser","Combo 2YR","VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6"}:
-                        return "MDC-MYR||TS-2||Maxi-A||VE"
-                    if "MYR" in u.upper() and e == "MDC": return "MDC-MYR||TS-2||Maxi-A||VE"
-                    if u != "": return "TS-3||Maxi-2"
+                    if u in ("", "Yes", "No", "yes", "no"):
+                        # Generic boolean flag — no tier info, use product
+                        pass
+                    elif u == "Combo 1YR": return "MDC-Annual||TS-1"
+                    elif u in UPSELL_TIER1: return "MDC-Annual||TS-1"
+                    elif u in UPSELL_TIER2: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    elif "MYR" in u.upper(): return "MDC-MYR||TS-2||Maxi-A||VE"
+                    elif u in UPSELL_TIER3: return "TS-3||Maxi-2"
+                    elif u != "": return "TS-3||Maxi-2"
                     if p in PROD_TIER1: return "MDC-Annual||TS-1"
                     if p in PROD_TIER2: return "MDC-MYR||TS-2||Maxi-A||VE"
                     if p in PROD_TIER3: return "TS-3||Maxi-2"
@@ -6347,7 +6373,8 @@ if calc_btn:
             "Employee ID","Employee Name","L2","L3","L4",
             "Client-A (aggregated)","Client-C (aggregated)",
             "Location","Joining Bucket","Joining Date",
-            # PoP tier counts (FSF cols 21-23: 0-90D filled; SPS NA)
+            "Scheme Type","SPS Group",
+            # PoP tier counts (FSF cols 21-23: all CSD employees)
             "MDC-Annual||TS-1","MDC-MYR||TS-2||Maxi-A||VE","TS-3||Maxi-2",
             # Financial block (FSF cols 24-31)
             "Collection (\u20b9)","Refund (\u20b9)","Net Collection (\u20b9)","PCR",
@@ -6356,7 +6383,7 @@ if calc_btn:
             "PCDV Amount","Incremental 3% Amount","Final PCDV Amount",
             # CMR targets + renewal stats (FSF cols 36-40)
             "CMR Slab1 Target","CMR Slab2 Target",
-            "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
+            "CMR Sent","CMR Received","CMR% (auto)","CMR Slab",
             # FSF col 42: Incentive = PoP; col 43: Productivity = receipt prod count
             "PoP Incentive (\u20b9)","Productivity Score","Base Incentive (\u20b9)",
             # SPS block (NA for 0-90D)
