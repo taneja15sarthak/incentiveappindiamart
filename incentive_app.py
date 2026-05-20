@@ -462,24 +462,36 @@ def load_slab_config(uploaded_file):
     if uploaded_file is None:
         return defaults
 
+    def _read_sheet(f, sheet):
+        """Read a sheet with header=1 (data starts row 2). Fall back to header=0 if
+        the sheet has too few rows (ValueError: Passed header=1 but only N lines)."""
+        try:
+            df = pd.read_excel(f, sheet_name=sheet, header=1)
+            df = df.dropna(how="all")
+            # Sanity-check: if all columns are Unnamed the header row was actually row 0
+            if len(df.columns) > 0 and all(str(c).startswith("Unnamed") for c in df.columns):
+                raise ValueError("header row appears to be row 0")
+            return df
+        except Exception:
+            try:
+                df = pd.read_excel(f, sheet_name=sheet, header=0)
+                return df.dropna(how="all")
+            except Exception:
+                return pd.DataFrame()   # empty DF — caller falls back to default
+
     xl = pd.ExcelFile(uploaded_file)
     config = {}
-    # Start with March defaults for all standard sheets
+    # Standard sheets — use loaded version or fall back to default
     for sheet_name, default_df in defaults.items():
         if sheet_name in xl.sheet_names:
-            df_loaded = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=1)
-            df_loaded = df_loaded.dropna(how="all")
-            config[sheet_name] = df_loaded
+            config[sheet_name] = _read_sheet(uploaded_file, sheet_name) or default_df
         else:
-            config[sheet_name] = default_df   # fall back to default
+            config[sheet_name] = default_df
 
-    # Also load any April-specific sheets present in the uploaded file
-    # (e.g. CSD_Spot_Apr, CSD_New_Slabs_Apr, KCD_Regular_270_Apr, etc.)
-    april_sheets = [s for s in xl.sheet_names if s not in defaults]
-    for sheet_name in april_sheets:
-        df_loaded = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=1)
-        df_loaded = df_loaded.dropna(how="all")
-        config[sheet_name] = df_loaded
+    # Any extra sheets in the uploaded file (Apr/May variants etc.)
+    for sheet_name in xl.sheet_names:
+        if sheet_name not in config:
+            config[sheet_name] = _read_sheet(uploaded_file, sheet_name)
 
     return config
 
