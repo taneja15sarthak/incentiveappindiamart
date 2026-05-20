@@ -2867,36 +2867,42 @@ def pop_for_product(prod_str, prod_to_pop):
 
 def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
                  rnl_prods, rnl_modes, vintage, S, svc_tiers=None,
-                 pop_cmr_floor=None, metric_label="PCDV"):
+                 pop_cmr_floor=None, metric_label="PCDV",
+                 prod_score_receipt=None):
     """
     CSD 0-30D / 31-90D base + PoP.
     - Base: fixed PCDV slab × CMR multiplier
-    - PoP gate (May'26): CMR Slab1 must be achieved (individual target)
-    - Both Achievers (May'26): PCDV slab hit AND CMR Slab1 hit → PoP × 125%
-                               Only CMR Slab1 hit (no PCDV slab) → PoP × 50%
-    - April/March: flat pop_cmr_floor gate (55%/50%), no Both Achievers mult
+    - PoP: T1×500 + T2×1000 + T3×1500 from RECEIPT service tiers (sir's formula)
+    - min_txn gate uses RECEIPT productive count (svc_tiers), NOT renewal count
+    - _final_pcdv = PCDV_slab + Incremental (BEFORE CMR mult) — matches FSF col
+    - Returns 9 values: base_total, pop, notes, tier1, tier2, tier3, pcdv_amt, incr_amt, final_pcdv
     """
     min_txn = S["min_txn_0_30"] if vintage == "0-30D" else S["min_txn_31_90"]
 
     # Base incentive: fixed payout from PCDV slab table
     _slabs = S["csd_new_slabs"]  # [(threshold, payout), ...] sorted descending
     base   = next((r for t, r in _slabs if pcdv >= t), 0)
-    _pcdv_slab_hit = base > 0   # True if PCDV qualifies for any slab
+    _pcdv_slab_hit = base > 0
     _incr_threshold = _slabs[0][0] if _slabs else 2800
     incr  = max(0, pcdv - _incr_threshold) * client_c * S["csd_new_incr_rate"] if pcdv > _incr_threshold else 0
     # CMR multiplier: Slab 2 → 120%, Slab 1 → 100%, below Slab 1 → 0%
     mult  = S["csd_slab2_mult"] if cmr_slab == 2 else (1.0 if cmr_slab >= 1 else 0.0)
     _base_before_cap = (base + incr) * mult
-    base_total = min(_base_before_cap, S.get("new_joiner_cap", 20000))
+    base_total = round(_base_before_cap, 0)   # combined cap with PoP applied in route_calc
 
-    # Productivity (Annual + MYR only; IM Insta excluded)
-    prod_score, _, reg_count = calc_productivity(rnl_prods, rnl_modes, "csd_new")
+    # Tier counts from receipt (sir's MDC-Annual||TS-1 / MDC-MYR||... / TS-3||... cols)
+    _tier1 = len([t for t in (svc_tiers or []) if t == 1])
+    _tier2 = len([t for t in (svc_tiers or []) if t == 2])
+    _tier3 = len([t for t in (svc_tiers or []) if t == 3])
+    _receipt_prod_count = _tier1 + _tier2 + _tier3
 
-    # ── PoP eligibility ────────────────────────────────────────────────────────
-    # May scheme: gate = CMR Slab1 achieved (cmr_slab >= 1), not flat floor %
-    # April/March: gate = flat pop_cmr_floor %
-    # Detect May by checking if Scheme_Params has Both_Achievers configured
-    # (or if pop_cmr_floor was explicitly passed as None, use slab gate)
+    # PoP min-txn gate: use RECEIPT tier count (not renewal-based prod_score)
+    # Key fix: 123024 has 7 receipt txns but 0 received Annual renewals → was wrongly blocked
+    if svc_tiers is not None:
+        prod_score_for_gate = _receipt_prod_count
+    else:
+        prod_score_for_gate, _, _ = calc_productivity(rnl_prods, rnl_modes, "csd_new")
+
     _use_slab_gate = S.get("pop_use_slab_gate", False)
     _both_achiev_on = S.get("both_achievers_on", False)
     _both_pct = S.get("both_achievers_pct", 1.25)
@@ -2907,23 +2913,23 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
     _cmr_qualified = (cmr_slab >= 1) if _use_slab_gate else (cmr_pct_achieved >= (pop_cmr_floor if pop_cmr_floor is not None else POP_CMR_FLOOR))
 
     if not _cmr_qualified:
-        pop_reason = f"PoP blocked: CMR slab not achieved (slab={cmr_slab})" if _use_slab_gate else f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {pop_cmr_floor or POP_CMR_FLOOR}% min"
-    elif prod_score < min_txn:
-        pop_reason = f"PoP blocked: {prod_score} txns < {min_txn} min"
+        pop_reason = (f"PoP blocked: CMR slab not achieved (slab={cmr_slab})" if _use_slab_gate
+                      else f"PoP blocked: CMR {cmr_pct_achieved:.1f}% < {pop_cmr_floor or POP_CMR_FLOOR}% min")
+    elif prod_score_for_gate < min_txn:
+        pop_reason = f"PoP blocked: {prod_score_for_gate} txns < {min_txn} min"
     else:
-        # Calculate raw PoP from service tiers
-        if svc_tiers:
-            pop = sum(TIER_REWARD.get(int(t), 0) for t in svc_tiers
-                      if isinstance(t, (int, float)) and t in (1, 2, 3))
-            pop_reason = f"PoP: {len([t for t in svc_tiers if t in (1,2,3)])} txns (receipt tiers)"
+        # PoP = T1×₹500 + T2×₹1000 + T3×₹1500 (sir's formula from receipt tiers)
+        if svc_tiers is not None:
+            pop = _tier1 * 500 + _tier2 * 1000 + _tier3 * 1500
+            pop_reason = f"PoP: T1={_tier1}x500 + T2={_tier2}x1000 + T3={_tier3}x1500 = {pop}"
         else:
             eligible = [p for p, m in zip(rnl_prods, rnl_modes)
                         if str(m).upper() in ("ANNUAL","MULTI YEAR","MULTIYEAR","MYR")
                         and not is_insta(p)]
             pop = sum(pop_for_product(p, S["prod_to_pop"]) for p in eligible)
-            pop_reason = f"PoP: {prod_score} txns × CMR {cmr_pct_achieved:.1f}%"
+            pop_reason = f"PoP: {prod_score_for_gate} txns x CMR {cmr_pct_achieved:.1f}%"
 
-        # ── Both Achievers multiplier (May'26 only) ───────────────────────────
+        # Both Achievers multiplier (May'26 only)
         if _use_slab_gate and _both_achiev_on:
             if _pcdv_slab_hit and cmr_slab >= 1:
                 pop = round(pop * _both_pct, 0)
@@ -2934,7 +2940,11 @@ def calc_csd_new(pcdv, client_c, cmr_slab, cmr_pct_achieved,
 
     notes = (f"CSD {vintage} | {metric_label}:{round(pcdv)} | clients:{int(client_c)} | "
              f"CMR slab:{cmr_slab} | {pop_reason}")
-    return round(base_total, 0), round(pop, 0), notes
+    # PCDV breakdown matching FSF Exec-CSD columns
+    _pcdv_amount = round(base, 0)          # FSF col: "PCDV Amount"
+    _incr_amount = round(incr, 2)          # FSF col: "Incremental 3% Amount"
+    _final_pcdv  = round(base + incr, 2)  # FSF col: "Final PCDV Amount" (BEFORE CMR mult)
+    return round(base_total, 0), round(pop, 0), notes, _tier1, _tier2, _tier3, _pcdv_amount, _incr_amount, _final_pcdv
 
 
 def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
@@ -4088,7 +4098,17 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     else:
         ref = refund_df[refund_df[ref_id_col].astype(str) == eid_str] if ref_id_col else refund_df.iloc[0:0]
     _ref_wt_col = find_col(refund_df, ["WT Amount","WT AMT","WT_AMT","Refund Amount","Amount"])
-    total_ref = ref[_ref_wt_col].fillna(0).sum() if (_ref_wt_col and len(ref) > 0) else 0.0
+    _reason_col = find_col(refund_df, ["Reason","REASON","Refund Reason"])
+    if _ref_wt_col and len(ref) > 0 and _ref_wt_col in ref.columns:
+        _wt_vals = ref[_ref_wt_col].fillna(0).astype(float).copy()
+        if _reason_col and _reason_col in ref.columns:
+            # "Order verification failed" -> WT Amount x 2 (per scheme rule)
+            _ovf_mask = ref[_reason_col].astype(str).str.strip().str.lower().str.contains(
+                "order verification failed", na=False)
+            _wt_vals[_ovf_mask] = _wt_vals[_ovf_mask] * 2
+        total_ref = _wt_vals.sum()
+    else:
+        total_ref = 0.0
     # Deal Loss is always 0 -- it is a separate manual entry and not derived from the refund file.
     # Net Deal Value = Deal Value - 0 = Deal Value (before refund).
     deal_loss = 0
@@ -4615,6 +4635,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     prod_score_sps, insta_cnt_sps, _ = calc_productivity(rnl_prods, rnl_modes, "csd_sps")
 
     base_inc = pop_inc = spot_inc = 0
+    _pop_tier1 = _pop_tier2 = _pop_tier3 = 0
+    _pcdv_amount = _incr_amount = _final_pcdv = 0
     _fnt1_spot = _fnt2_spot = _im_star_spot = 0  # Spot bifurcation tracking
     _im_insta_spot        = 0   # KCD only
     _mcats_spot           = 0   # KCD only
@@ -4675,14 +4697,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 spot_inc = int(spot_inc) + _im_star_spot
         elif vintage == "0-30D":
             # 0-30D: fixed slab base + PoP, combined cap = 20,000
-            base_inc, pop_inc, notes = calc_csd_new(
+            base_inc, pop_inc, notes, _pop_tier1, _pop_tier2, _pop_tier3, _pcdv_amount, _incr_amount, _final_pcdv = calc_csd_new(
                 pcdv, client_cnt, cmr_slab, cmr_pct,
                 rnl_prods, rnl_modes, vintage, S,
                 svc_tiers=svc_tiers,
                 pop_cmr_floor=S.get("pop_cmr_floor", POP_CMR_FLOOR),
-                metric_label=metric_label)
-            # Combined cap: Total = min(base+PoP, 20000)
-            # We store full PoP and apply cap at output (shows true PoP earned)
+                metric_label=metric_label,
+                prod_score_receipt=prod_score_receipt)
+            # Combined cap: min(PCDV*CMR_mult + PoP, 20000) per FSF
             _cap = S.get("new_joiner_cap", 20000)
             if base_inc + pop_inc > _cap:
                 notes += f" | COMBINED_CAP:{_cap}"
@@ -4717,13 +4739,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pop_inc = 0
             else:
                 # Use calc_csd_new -- same fixed PCDV slab as 0-30D
-                base_inc, pop_inc, notes = calc_csd_new(
+                base_inc, pop_inc, notes, _pop_tier1, _pop_tier2, _pop_tier3, _pcdv_amount, _incr_amount, _final_pcdv = calc_csd_new(
                     pcdv, client_cnt, cmr_slab, cmr_pct,
                     rnl_prods, rnl_modes, vintage, S,
                     svc_tiers=svc_tiers,
                     pop_cmr_floor=S.get("pop_cmr_floor", POP_CMR_FLOOR),
-                    metric_label=metric_label)
-            # Combined cap: Total = min(base+PoP, 20000)
+                    metric_label=metric_label,
+                    prod_score_receipt=prod_score_receipt)
+            # Combined cap: min(PCDV*CMR_mult + PoP, 20000) per FSF
             if not _is_rel_mgr_31:
                 _cap_31 = S.get("new_joiner_cap", 20000)
                 if base_inc + pop_inc > _cap_31:
@@ -5133,9 +5156,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "CMR Slab":            cmr_note,
         "SS+ Sent":            cmr_data.get("ss_sent", 0),
         "SS+ Received":        cmr_data.get("ss_received", 0),
-        "MDC-1 CMR%":          (round(float(mdc1_cmr_pct) * 100 if float(mdc1_cmr_pct) <= 1 else float(mdc1_cmr_pct), 1)
-                         if (mdc1_cmr_pct is not None and _is_csd)
-                         else ""),
+        "MDC-1 CMR%":          ("NA" if (_is_new_joiner and _is_csd)
+                         else (round(float(mdc1_cmr_pct) * 100 if float(mdc1_cmr_pct) <= 1 else float(mdc1_cmr_pct), 1)
+                               if (mdc1_cmr_pct is not None and _is_csd) else "")),
         "PCR":                 round(pcr_val, 0),
         "PCDV":                round(pcdv_val, 0),
         "Slab Metric Used":    metric_label,
@@ -5143,25 +5166,31 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Insta Txns (0.5×)":   insta_cnt_receipt,  # receipt-based (sir's col AR Insta rows)
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
-        # MDC1 CMR+1% = PREVIOUS month's MDC-1 CMR% (April data when running May)
-        # Only populated when a separate CMR+1/previous-month renewal file is uploaded
-        # When cmr_plus1_sent=0 (no separate file), show blank — NOT same as current MDC-1%
-        "CMR+1 Sent":          (cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0)
+        # CMR+1 / SPS block -> "NA" for 0-90D (these columns only apply to SPS 91D+)
+        "CMR+1 Sent":          ("NA" if (_is_new_joiner and _is_csd) else
+                                (cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0)
                                  if (_is_csd and cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0) > 0)
-                                 else ""),
-        "CMR+1 Recd":          (cmr_plus1_map.get(emp_id, {}).get("mdc1_recd", 0)
+                                 else "")),
+        "CMR+1 Recd":          ("NA" if (_is_new_joiner and _is_csd) else
+                                (cmr_plus1_map.get(emp_id, {}).get("mdc1_recd", 0)
                                  if (_is_csd and cmr_plus1_map.get(emp_id, {}).get("mdc1_sent", 0) > 0)
-                                 else ""),
-        "MDC1 CMR+1%":         (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
-                         if (cmr_plus1_sent > 0 and _is_csd)
-                         else ""),
-        "CMR+1 Multiplier":    _mdc1_mult_val if (_is_csd and _is_sps_vintage) else "",
-        "Inc. Payout Mult":    _inc_payout_mult if _is_csd else "",
-        "Inc. Per Txn (₹)":    int(_per_txn_rate) if _is_csd and _prod_score > 0 else "",
-        "Net Incentive (₹)":   int(_net_inc_before_boost) if _is_csd else "",
-        # SPS Booster: show for all CSD SPS employees (1.0 = no boost; 1.2 = boosted)
-        "SPS Booster":         _boost_val if (_is_csd and _is_sps_vintage) else "",
-        "Gross Inc w/ Boost (₹)": int(base_inc) if _is_csd else "",
+                                 else "")),
+        "MDC1 CMR+1%":         ("NA" if (_is_new_joiner and _is_csd) else
+                                (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
+                                 if (cmr_plus1_sent > 0 and _is_csd) else "")),
+        "CMR+1 Multiplier":    ("NA" if (_is_new_joiner and _is_csd) else
+                                (_mdc1_mult_val if (_is_csd and _is_sps_vintage) else "")),
+        "Inc. Payout Mult":    ("NA" if (_is_new_joiner and _is_csd) else
+                                (_inc_payout_mult if _is_csd else "")),
+        "Inc. Per Txn (₹)":    ("NA" if (_is_new_joiner and _is_csd) else
+                                (int(_per_txn_rate) if _is_csd and _prod_score > 0 else "")),
+        "Net Incentive (₹)":   ("NA" if (_is_new_joiner and _is_csd) else
+                                (int(_net_inc_before_boost) if _is_csd else "")),
+        # SPS Booster: NA for 0-90D, value for SPS 91D+ employees
+        "SPS Booster":         ("NA" if (_is_new_joiner and _is_csd) else
+                                (_boost_val if (_is_csd and _is_sps_vintage) else "")),
+        "Gross Inc w/ Boost (₹)": ("NA" if (_is_new_joiner and _is_csd) else
+                                   (int(base_inc) if _is_csd else "")),
         # ── KCD columns matching sir's kcd_calc.xlsx layout ────────
         "KCD Collection Target (₹)": int(collection_target) if "KCD" in vertical else "",
         "KCD Highest Collection (₹)": int(highest_coll)      if "KCD" in vertical else "",
@@ -5214,6 +5243,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Listing Client":      int(listing_c) if listing_c >= 0 else "",
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
+        # ── PoP tier counts (0-90D CSD: filled; SPS/KCD: NA) — FSF cols 21-23 ──
+        "MDC-Annual||TS-1":           (_pop_tier1 if (_is_new_joiner and _is_csd) else "NA"),
+        "MDC-MYR||TS-2||Maxi-A||VE": (_pop_tier2 if (_is_new_joiner and _is_csd) else "NA"),
+        "TS-3||Maxi-2":               (_pop_tier3 if (_is_new_joiner and _is_csd) else "NA"),
+        # ── PCDV breakdown (0-90D CSD: filled; SPS/KCD: NA) — FSF cols 33-35 ──
+        "PCDV Amount":           (int(_pcdv_amount)       if (_is_new_joiner and _is_csd) else "NA"),
+        "Incremental 3% Amount": (round(_incr_amount, 2)  if (_is_new_joiner and _is_csd) else "NA"),
+        "Final PCDV Amount":     (round(_final_pcdv, 2)   if (_is_new_joiner and _is_csd) else "NA"),
         # ── Spot bifurcation ────────────────────────────────────────
         "FNT-1 Prod Count":    fnt1_prod_count,
         "FNT-1 Spot (₹)":     int(_fnt1_spot),
@@ -5934,6 +5971,7 @@ if calc_btn:
             "Calc Month":         sel_month if sel_month else "All",
             "Vertical":           s.get("Vertical", ""),
             "Vintage":            s.get("Vintage", ""),
+            "Joining Bucket":     s.get("Vintage", ""),  # FSF alias: 0-30D / 31-90D / 91-270D / 270D+
             "Team":               s.get("Team", ""),
             "Vintage Bucket":     s.get("Vintage Bucket", ""),
             "Scheme Type":        inc.get("Scheme Type", ""),
@@ -6305,28 +6343,31 @@ if calc_btn:
         # ── Sheet 2: Exec-CSD -- CSD L1 employees only ────────────────────────────
         csd_res = res[res["Vertical"] == "CSD"].copy() if "Vertical" in res.columns else res.iloc[0:0]
         csd_cols = [c for c in [
-            # Hierarchy & identity (matches sir's first block)
-            "Employee ID","Employee Name","Location","Vintage Bucket",
-            "Scheme Type","SPS Group",
-            "L2","L3","Client-A (aggregated)","Client-C (aggregated)",
-            "Joining Date",            # Financial
-            "Collection (₹)","Refund (₹)","Net Collection (₹)","PCR",
-            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV","Slab Metric Used",
-            # CMR
+            # Identity + hierarchy (FSF cols 1-20)
+            "Employee ID","Employee Name","L2","L3","L4",
+            "Client-A (aggregated)","Client-C (aggregated)",
+            "Location","Joining Bucket","Joining Date",
+            # PoP tier counts (FSF cols 21-23: 0-90D filled; SPS NA)
+            "MDC-Annual||TS-1","MDC-MYR||TS-2||Maxi-A||VE","TS-3||Maxi-2",
+            # Financial block (FSF cols 24-31)
+            "Collection (\u20b9)","Refund (\u20b9)","Net Collection (\u20b9)","PCR",
+            "Deal Value (\u20b9)","Deal Loss (\u20b9)","Net Deal Value (\u20b9)","PCDV",
+            # PCDV breakdown (FSF cols 33-35: 0-90D filled; SPS NA)
+            "PCDV Amount","Incremental 3% Amount","Final PCDV Amount",
+            # CMR targets + renewal stats (FSF cols 36-40)
             "CMR Slab1 Target","CMR Slab2 Target",
-            "CMR Sent","CMR Received","CMR% (auto)","CMR Slab",
-            "MDC1 Sent","MDC1 Recd",
+            "Renewals Sent","Renewals Received","CMR% (auto)","CMR Slab",
+            # FSF col 42: Incentive = PoP; col 43: Productivity = receipt prod count
+            "PoP Incentive (\u20b9)","Productivity Score","Base Incentive (\u20b9)",
+            # SPS block (NA for 0-90D)
             "MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier",
-            # Base incentive (SPS 90+D section)
-            "Inc. Payout Mult","Productivity Score","Insta Txns (0.5×)","Receipt Txns",
-            "Inc. Per Txn (₹)","Net Incentive (₹)","SPS Booster","Gross Inc w/ Boost (₹)",
-            # Summary
-            "Base Incentive (₹)","PoP Incentive (₹)",
-            # Spot bifurcation (matches sir's FNT-1 / FNT-2 sections)
-            "FNT-1 Prod Count","FNT-1 Spot (₹)",
-            "FNT-2 Prod Count","FNT-2 Spot (₹)",
-            "Spot Incentive (₹)",
-            "Total Incentive (₹)","Scheme",
+            "Inc. Payout Mult","Insta Txns (0.5\u00d7)","Receipt Txns",
+            "Inc. Per Txn (\u20b9)","Net Incentive (\u20b9)","SPS Booster","Gross Inc w/ Boost (\u20b9)",
+            # Spot bifurcation
+            "FNT-1 Prod Count","FNT-1 Spot (\u20b9)",
+            "FNT-2 Prod Count","FNT-2 Spot (\u20b9)",
+            "IM Star Pro+ Spot (\u20b9)","Spot Incentive (\u20b9)",
+            "Total Incentive (\u20b9)","Scheme",
         ] if c in res.columns]
         if not csd_res.empty:
             # Exec-CSD: L1 ONLY (L3/L4/L5/L6 managers excluded)
