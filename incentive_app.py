@@ -4072,7 +4072,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             svc_tiers = [t for t in svc_tiers if t > 0]  # drop 0s (non-tier rows)
         else:
             svc_tiers = []
-        insta_cnt_receipt    = int((_prod_vals == 0.5).sum())
+        # Count insta rows by product name (Productivity=0 in file, not 0.5)
+        _insta_prod_mask = rec[_prod_col].isin(INSTA_PRODUCTS) if _prod_col else pd.Series(False, index=rec.index)
+        insta_cnt_receipt    = int(_insta_prod_mask.sum()) or int((_prod_vals == 0.5).sum())
         prod_score_receipt     = float(_prod_vals.sum())
         prod_score_receipt_int = int((_prod_vals == 1.0).sum())
         _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
@@ -4804,6 +4806,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     cmr_plus1_pct=_cmr_plus1,
                     ext_tat=sb.get("ext_tat", S.get("boost_tat_thr", 1)), d60=sb.get("d60", S.get("boost_60d_thr", 10)),
                     is_sps=is_sps_employee, S=S)
+                _pcdv_amount = round(pcdv, 0)
+                _incr_amount = 0
+                _final_pcdv  = round(pcdv, 0)
             else:
                 base_inc, notes = calc_csd_sps(
                     pcdv, prod_score_receipt or 0, txn_count, cmr_slab, vintage,
@@ -4814,6 +4819,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     metric_label=metric_label, is_sps=is_sps_employee,
                     mdc1_cmr_plus1=(cmr_plus1_pct * 100 if cmr_plus1_pct <= 1
                                     else cmr_plus1_pct) if cmr_plus1_sent > 0 else None)
+                # PCDV breakdown for 90+ SPS output columns
+                _pcdv_amount = round(pcdv, 0)    # PCDV value used for slab lookup
+                _incr_amount = 0                  # No incremental 3% for 90+ SPS scheme
+                _final_pcdv  = round(pcdv, 0)    # Same as PCDV for 90+
             # Spot: config-driven -- April config has "CSD_Spot_Apr"; March has "CSD_Spot"
             # CSD RM has a SEPARATE spot scheme (slides 3+): min 2.5 prod, base 2000/3500
             if S.get("has_apr_spot") or S.get("has_may_spot"):
@@ -5141,8 +5150,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         else:
             _per_txn_rate = 0
 
-        # Incentive Payout Multiplier = MDC1 mult (only for SPS, blank for new joiners)
-        _inc_payout_mult = (_mdc1_mult_val if _is_sps_vintage else 0.0)
+        # Incentive Payout Multiplier = per-txn slab rate in ₹ (e.g. 2000, 2400)
+        # This is the base rate from the PCDV slab table, before MDC1 mult and booster
+        _inc_payout_mult = (int(_per_txn_rate) if _is_sps_vintage else 0)
 
     # Add IM Insta and MCATs to KCD spot total
     if "KCD" in vertical:
@@ -5264,9 +5274,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "MDC-MYR||TS-2||Maxi-A||VE": (_pop_tier2 if _is_csd else ""),
         "TS-3||Maxi-2":               (_pop_tier3 if _is_csd else ""),
         # ── PCDV breakdown (0-90D CSD: filled; SPS CSD: blank) — FSF cols 33-35 ──
-        "PCDV Amount":           (int(_pcdv_amount)       if (_is_new_joiner and _is_csd) else ("" if _is_csd else "")),
-        "Incremental 3% Amount": (round(_incr_amount, 2)  if (_is_new_joiner and _is_csd) else ("" if _is_csd else "")),
-        "Final PCDV Amount":     (round(_final_pcdv, 2)   if (_is_new_joiner and _is_csd) else ("" if _is_csd else "")),
+        "PCDV Amount":           (int(_pcdv_amount)      if _is_csd else ""),
+        "Incremental 3% Amount": (round(_incr_amount, 2) if _is_csd else ""),
+        "Final PCDV Amount":     (round(_final_pcdv, 2)  if _is_csd else ""),
         # ── Spot bifurcation ────────────────────────────────────────
         "FNT-1 Prod Count":    fnt1_prod_count,
         "FNT-1 Spot (₹)":     int(_fnt1_spot),
