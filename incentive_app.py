@@ -5255,6 +5255,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Listing Client":      int(listing_c) if listing_c >= 0 else "",
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
+        # Gross Incentive = min(Base+PoP, 20000) for 0-90D CSD; base+pop for all others
+        "Gross Incentive (₹)": (int(min(base_inc + pop_inc, S.get("new_joiner_cap", 20000)))
+                                if (_is_new_joiner and _is_csd)
+                                else int(base_inc + pop_inc)),
         # ── PoP tier counts (ALL CSD: filled; non-CSD: blank) — FSF cols 21-23 ──
         "MDC-Annual||TS-1":           (_pop_tier1 if _is_csd else ""),
         "MDC-MYR||TS-2||Maxi-A||VE": (_pop_tier2 if _is_csd else ""),
@@ -5274,10 +5278,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "IM Insta Spot (₹)":   int(_im_insta_spot),
         "MCATs Spot (₹)":      int(_mcats_spot),
         "Spot Incentive (₹)":  int(spot_inc),
-        "Total Incentive (₹)": int(min(base_inc + pop_inc, S.get("new_joiner_cap", 20000))
-                               + spot_inc
-                               if vintage in ("0-30D","31-90D") and "CSD" in vertical
-                               else base_inc + pop_inc + spot_inc),
+        "Total Incentive (₹)": (int(min(base_inc + pop_inc, S.get("new_joiner_cap", 20000)) + spot_inc)
+                               if (_is_new_joiner and _is_csd)
+                               else int(base_inc + pop_inc + spot_inc)),
         "Scheme":              notes,
         "Scheme Type":         _derive_scheme_type(vintage, team, vertical, designation),
     }
@@ -6376,6 +6379,7 @@ if calc_btn:
             "CMR Sent","CMR Received","CMR% (auto)","CMR Slab",
             # FSF col 42: Incentive = PoP; col 43: Productivity = receipt prod count
             "PoP Incentive (\u20b9)","Productivity Score","Base Incentive (\u20b9)",
+            "Gross Incentive (₹)",
             # SPS block (NA for 0-90D)
             "MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier",
             "Inc. Payout Mult","Insta Txns (0.5\u00d7)","Receipt Txns",
