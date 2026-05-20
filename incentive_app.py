@@ -6219,11 +6219,11 @@ if calc_btn:
 
             # ── 9. Main totals (all sheets) ───────────────────────────────────
             rule("Gross Incentive (₹)",
-                 "={base}{R}+{pop}{R}+{spot}{R}",
-                 "=Base + PoP + Spot Incentive", _green)
+                 '=IF(OR({jbkt}{R}="0-30D",{jbkt}{R}="31-90D"),MIN({base}{R}+{pop}{R},20000),{base}{R}+{pop}{R})',
+                 "=MIN(Base+PoP,20000) for 0-90D; Base+PoP for 90+", _green)
             rule("Total Incentive (₹)",
-                 "={base}{R}+{pop}{R}+{spot}{R}",
-                 "=Base Incentive + PoP Incentive + Spot Incentive", _green)
+                 "={gi}{R}+{spot}{R}",
+                 "=Gross Incentive + Spot Incentive", _green)
             rule("Balance Incentive (₹)",
                  "=IF({gi}{R}>0,{gi}{R}-{pi}{R},0)",
                  "=Gross Incentive − Paid Incentive", _money)
@@ -6276,6 +6276,7 @@ if calc_btn:
                 "kss_r":  ci("KCD SS+ Recd"),
                 "aop":    ci("AOP Target (₹)"),
                 "aopp":   ci("AOP Achievement %"),
+                "jbkt":   ci("Joining Bucket"),
                 "base":   ci("Base Incentive (₹)"),
                 "pop":    ci("PoP Incentive (₹)"),
                 "spot":   ci("Spot Incentive (₹)"),
