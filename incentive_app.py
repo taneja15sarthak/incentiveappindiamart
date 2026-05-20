@@ -484,14 +484,17 @@ def load_slab_config(uploaded_file):
     # Standard sheets — use loaded version or fall back to default
     for sheet_name, default_df in defaults.items():
         if sheet_name in xl.sheet_names:
-            config[sheet_name] = _read_sheet(uploaded_file, sheet_name) or default_df
+            _loaded = _read_sheet(uploaded_file, sheet_name)
+            config[sheet_name] = _loaded if (_loaded is not None and not _loaded.empty) else default_df
         else:
             config[sheet_name] = default_df
 
     # Any extra sheets in the uploaded file (Apr/May variants etc.)
     for sheet_name in xl.sheet_names:
         if sheet_name not in config:
-            config[sheet_name] = _read_sheet(uploaded_file, sheet_name)
+            _extra = _read_sheet(uploaded_file, sheet_name)
+            if _extra is not None and not _extra.empty:
+                config[sheet_name] = _extra
 
     return config
 
