@@ -711,6 +711,8 @@ def parse_slabs(cfg):
     kcd_270_slabs    = to_kcd_slabs(_kcd_key("KCD_Regular_270_May",    "KCD_Regular_270_Apr",    "KCD_Regular_270D"))
     kcd_91_270_slabs = to_kcd_slabs(_kcd_key("KCD_Regular_91_270_May", "KCD_Regular_91_270_Apr", "KCD_Regular_91_270D"))
     kcd_0_90_slabs   = to_kcd_slabs(_kcd_key("KCD_New_0_90_May",       "KCD_New_0_90_Apr",       "KCD_Regular_0_90D"))
+    if not kcd_0_90_slabs:  # Fallback to hardcoded default when sheet missing in Slab Config
+        kcd_0_90_slabs = to_kcd_slabs("KCD_Regular_0_90D") if "KCD_Regular_0_90D" in cfg else [(14000,2500,3000),(11000,2000,2400),(8000,1500,1800)]
     kcd_hvri_slabs   = to_kcd_slabs(_kcd_key("KCD_HVRI_May",           "KCD_HVRI_Apr",           "KCD_HVRI"))
     kcd_nagpur_slabs = to_kcd_slabs(_kcd_key("KCD_Nagpur_May",         "KCD_Nagpur_Apr",         "KCD_Nagpur_Pharma"))
 
@@ -5101,6 +5103,16 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     import re as _re
 
+    # Both Achievers / Only CMR multiplier label (extracted from scheme notes)
+    _ba_m = _re.search(r'BothAchievers×([0-9.%]+)', notes)
+    _oc_m = _re.search(r'OnlyCMR×([0-9.%]+)', notes)
+    if _ba_m:
+        _ba_mult_str = f"Both Achievers {_ba_m.group(1)}"
+    elif _oc_m:
+        _ba_mult_str = f"Only CMR {_oc_m.group(1)}"
+    else:
+        _ba_mult_str = ""
+
     # Extract booster from scheme notes string — try multiple patterns
     _bm = _re.search(r'boost:([0-9.]+)', notes) or _re.search(r'Booster×([0-9.]+)', notes) or _re.search(r'boost.*?([0-9.]+)', notes)
     _boost_val = float(_bm.group(1)) if _bm else 1.0
@@ -5121,6 +5133,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # Show the slab rate even if base=0 (helps diagnose why it's 0)
         # Per Txn = slab_rate × productivity (shows what it would be if CMR met)
         _per_txn_rate = _inc_payout_mult  # show the base slab rate (before CMR mult)
+        # Extract CMR+1 2D multiplier from Rel Mgr scheme notes "Cross:NNN%"
+        _cross_m = __import__("re").search(r"Cross:([0-9]+)%", notes)
+        _cmr1_from_notes = (float(_cross_m.group(1)) / 100 if _cross_m and float(_cross_m.group(1)) > 0 else 0.0)
         _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
         _mdc1_mult_val = 0.0
     else:
@@ -5201,7 +5216,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                                 (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
                                  if (cmr_plus1_sent > 0 and _is_csd) else "")),
         "CMR+1 Multiplier":    ("NA" if (_is_new_joiner and _is_csd) else
-                                (_mdc1_mult_val if (_is_csd and _is_sps_vintage) else "")),
+                                (_cmr1_from_notes if _is_csd_rm
+                                 else (_mdc1_mult_val if (_is_csd and _is_sps_vintage) else ""))),
         "Inc. Payout Mult":    ("NA" if (_is_new_joiner and _is_csd) else
                                 (_inc_payout_mult if _is_csd else "")),
         "Inc. Per Txn (₹)":    ("NA" if (_is_new_joiner and _is_csd) else
@@ -5266,6 +5282,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Base Incentive (₹)":  int(base_inc),
         "PoP Incentive (₹)":   int(pop_inc),
         # Gross Incentive = min(Base+PoP, 20000) for 0-90D CSD; base+pop for all others
+        "BA Multiplier":       _ba_mult_str if (_is_csd or "KCD" in vertical) else "",
         "Gross Incentive (₹)": (int(min(base_inc + pop_inc, S.get("new_joiner_cap", 20000)))
                                 if (_is_new_joiner and _is_csd)
                                 else int(base_inc + pop_inc)),
@@ -5300,7 +5317,8 @@ def _derive_scheme_type(vintage, team, vertical, designation):
     """Human-readable scheme branch label shown in Scheme Type column."""
     _t = str(team).upper(); _v = str(vertical).upper(); _d = str(designation).upper().strip()
     if "CSD" in _v:
-        if vintage in ("0-30D","31-90D"): return f"New Joiner {vintage}"
+        if vintage in ("0-30D","31-90D") and _d not in ("L2",) and "REL" not in _d and "RM-" not in _d:
+            return f"New Joiner {vintage}"
         if _d == "L2" or "REL" in _d or "RM-" in _d:
             return "Rel Mgr SPS" if "SPS" in _t else "Rel Mgr 31-90D"
         if "90+ DAYS" in _t.replace("_"," ") or "90+DAYS" in _t.replace(" ",""):
@@ -6391,9 +6409,10 @@ if calc_btn:
             # FSF col 42: Incentive = PoP; col 43: Productivity = receipt prod count
             "PoP Incentive (\u20b9)","Productivity Score","Base Incentive (\u20b9)",
             "Gross Incentive (₹)",
+            "BA Multiplier",
             # SPS block (NA for 0-90D)
             "MDC-1 CMR%","CMR+1 Sent","CMR+1 Recd","MDC1 CMR+1%","CMR+1 Multiplier",
-            "Inc. Payout Mult","Insta Txns (0.5\u00d7)","Receipt Txns",
+            "Inc. Payout Mult","Productivity Score","Base Incentive (₹)","Insta Txns (0.5\u00d7)","Receipt Txns",
             "Inc. Per Txn (\u20b9)","Net Incentive (\u20b9)","SPS Booster","Gross Inc w/ Boost (\u20b9)",
             # Spot bifurcation
             "FNT-1 Prod Count","FNT-1 Spot (\u20b9)",
