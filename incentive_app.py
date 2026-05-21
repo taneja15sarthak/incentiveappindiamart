@@ -2442,27 +2442,31 @@ def load_structure_dump(uploaded_file):
                         mask = mask & vert_mask
                 matched = l2_agg[mask]
                 if len(matched) == 0:
+                    # Try without vert filter (fallback)
+                    matched = l2_agg[l2_agg["_l2_id"] == eid]
+                if len(matched) == 0:
                     continue
                 row_agg = matched.iloc[0]
-                # Always overwrite for L2/ILP using aggregated L1 values
-                # (even if Client Count was floored to 50 by the min-50 rule)
-                if True:
-                    if client_a and client_a in row_agg.index:
-                        result[eid]["Client Count"] = float(row_agg[client_a])
-                        result[eid]["Client-A"]     = float(row_agg[client_a])
-                    if client_c and client_c in row_agg.index:
-                        result[eid]["Client-C"] = float(row_agg[client_c])
-                    if "Listing" in row_agg.index:
-                        result[eid]["Listing Clients"] = float(row_agg.get("Listing", 0))
-                    if "Base" in row_agg.index:
-                        result[eid]["Base Clients"] = float(row_agg.get("Base", 0))
-                    # L1 count for effective team size (min 4 per FSF)
-                    if _cnt_col in row_agg.index:
-                        l1_cnt = int(row_agg[_cnt_col])
-                        eff_team = (4 if (result[eid].get("Client Count", 0) > 375 and l1_cnt < 4)
-                                    else max(3, l1_cnt))
-                        result[eid]["L1 Count"] = l1_cnt
-                        result[eid]["Effective Team Size"] = eff_team
+                if client_a and client_a in row_agg.index:
+                    result[eid]["Client Count"] = float(row_agg[client_a])
+                    result[eid]["Client-A"]     = float(row_agg[client_a])
+                if client_c and client_c in row_agg.index:
+                    result[eid]["Client-C"] = float(row_agg[client_c])
+                if "Listing" in row_agg.index:
+                    result[eid]["Listing Clients"] = float(row_agg.get("Listing", 0))
+                if "Base" in row_agg.index:
+                    result[eid]["Base Clients"] = float(row_agg.get("Base", 0))
+                # L1 count — try merged column first, fallback to direct count
+                if _cnt_col in row_agg.index and row_agg[_cnt_col] > 0:
+                    l1_cnt = int(row_agg[_cnt_col])
+                else:
+                    # Direct count from l1_cnt_agg
+                    _direct = l1_cnt_agg[l1_cnt_agg["_l2_id"] == eid]
+                    l1_cnt = int(_direct["_l1_count"].sum()) if len(_direct) > 0 else 0
+                eff_team = (4 if (result[eid].get("Client Count", 0) > 375 and l1_cnt < 4)
+                            else max(3, l1_cnt))
+                result[eid]["L1 Count"] = l1_cnt
+                result[eid]["Effective Team Size"] = eff_team
 
     return result
 
@@ -2792,7 +2796,7 @@ def calc_cmr_per_employee(renewal_df):
     df = renewal_df.copy()
 
     # ── Detect column names flexibly ─────────────────────────
-    emp_id_col  = find_col(df, ["EMP ID", "Emp ID", "EmpID", "Employee ID", "EMPID"])
+    emp_id_col  = find_col(df, ["EMP ID", "Emp ID", "EmpID", "Employee ID", "EMPID", "Emp_ID", "emp id", "EMPLOYEEID", "CC Emp ID"])
     status_col  = find_col(df, ["Status", "STATUS", "status"])
     product_col = find_col(df, ["DCR Services", "WS/MDC Main", "WS/MDC", "Product",
                                 "PRODUCT", "Prod", "Service", "SERVICE", "WS MDC Main"])
@@ -5769,6 +5773,12 @@ with st.expander("Loaded file summary"):
     c4.metric("Refund rows",           len(refund_df))
     c5.metric("Renewal rows",          len(renewal_df) if renewal_df is not None else 0)
     st.metric("CMR% auto-calc for",    len(cmr_map))
+    if len(cmr_map) == 0 and renewal_df is not None and len(renewal_df) > 0:
+        _eid_debug = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID", "EMPID", "CC Emp ID", "emp id"])
+        st.warning(f"⚠️ CMR map empty! renewal_df has {len(renewal_df)} rows but EMP ID col found: {_eid_debug!r}. "
+                   f"Columns: {list(renewal_df.columns[:8])}", icon="⚠️")
+    elif len(cmr_map) > 0:
+        st.caption(f"renewal_df rows: {len(renewal_df) if renewal_df is not None else 0} | cmr_map entries: {len(cmr_map)}")
     if cmr_targets:
         st.success(f"✅ CMR Targets loaded for {len(cmr_targets)} employees")
     else:
@@ -6261,15 +6271,10 @@ if calc_btn:
                  "=CMR+1 Recd / CMR+1 Sent", _pct1)
 
             # ── 4. KCD targets & achievement ────────────────────────────────
-            rule("KCD PCDV Target",
-                 "=IF({ca}{R}>0,{ct}{R}/{ca}{R},0)",
-                 "=KCD Collection Target / Client-A", _pct1)
-            rule("KCD PCDV%",
-                 "=IF({pt}{R}>0,{pcdv}{R}/{pt}{R},0)",
-                 "=PCDV / KCD PCDV Target", _pct1)
-            rule("KCD Highest Collection (₹)",
-                 "={ca}{R}*{hcm}{R}" if ci("KCD HC Multiplier") else "={ca}{R}*0",
-                 "=Client-A × HC Multiplier (team-specific)", _money)
+            # KCD PCDV Target and PCDV%: no formula — Python computes correctly per team
+            # (Collection Target only applies to Listing/Catalog; slab teams use HC/CA)
+            # KCD HC: no formula — Python computes correctly per team/vintage
+            # (formula would need to know HC multiplier per team which varies)
 
             # ── 5. CSD SPS incentive derivations ────────────────────────────
             rule("Inc. Per Txn (₹)",
