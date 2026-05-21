@@ -5801,7 +5801,12 @@ with st.expander("Loaded file summary"):
             f"Cols: {list(renewal_df.columns[:5]) if _rnl_rows > 0 else 'N/A'}",
             icon="⚠️")
     else:
-        st.caption(f"✅ renewal_df={_rnl_rows} rows (filter: {_fdbg}) | cmr_map={len(cmr_map)} employees")
+        # Spot check: look up specific employees in cmr_map
+        _check_ids = ["115695", "116699", "55513"]
+        _found = {k: cmr_map.get(k, {}).get('renewal_sent', 'NOT IN MAP') for k in _check_ids}
+        _sample_keys = list(cmr_map.keys())[:3]
+        st.caption(f"✅ renewal_df={_rnl_rows} | cmr_map={len(cmr_map)} | "
+                   f"spot-check {_found} | sample keys={_sample_keys}")
     if cmr_targets:
         st.success(f"✅ CMR Targets loaded for {len(cmr_targets)} employees")
     else:
