@@ -4031,7 +4031,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     txn_count = len(rec)
 
     # Deal Value (WT) = deal value column (different from collection)
-    dv_col    = find_col(receipt_df, ["Deal Val (WT)", "Deal Val (WOT)", "Deal Value (WT)", "DealVal_WT"])
+    dv_col    = find_col(receipt_df, ["Deal Val (WT)", "Deal Val (WOT)", "Deal Value (WT)", "Deal Value", "DealVal_WT"])
     gross_deal_val = rec[dv_col].fillna(0).sum() if dv_col else 0.0
     _prod_col = find_col(receipt_df, ["Prod", "Product", "PRODUCT"])
     prods     = rec[_prod_col].fillna("").tolist() if _prod_col else []
@@ -4057,6 +4057,7 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         # Count insta rows by product name (Productivity=0 in file, not 0.5)
         _insta_prod_mask = rec[_prod_col].isin(INSTA_PRODUCTS) if _prod_col else pd.Series(False, index=rec.index)
         insta_cnt_receipt    = int(_insta_prod_mask.sum()) or int((_prod_vals == 0.5).sum())
+
         prod_score_receipt     = float(_prod_vals.sum())
         prod_score_receipt_int = int((_prod_vals == 1.0).sum())
         _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
@@ -4976,7 +4977,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _base_c = max(client_cnt - _cat_c, 1)
             base_inc, notes = calc_kcd_catalog(
                 kcd_net_dv, kcd_txn, kcd_col, vintage,
-                sb.get("btl_sales", 0), ss_cmr_pct, ss_sent_count, collection_target, S,
+                (btl_count or sb.get("btl_sales", 0)), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
                               if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
