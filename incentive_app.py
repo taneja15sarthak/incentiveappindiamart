@@ -1654,7 +1654,12 @@ def filter_by_month(receipt_df, refund_df, renewal_df, selected_month):
                     except Exception:
                         pass
                 return False
+            n_before = len(rnl)
             rnl = rnl[rnl[rnl_m].apply(_match)]
+            n_after = len(rnl)
+            # Store count in a module-level var for debugging
+            import builtins
+            builtins._renewal_filter_debug = (n_before, n_after, selected_month)
 
     return r, ref, rnl
 
@@ -5410,6 +5415,8 @@ with st.sidebar:
     receipt_file    = st.file_uploader("1. Receipt file",           type=["xlsx", "xlsb"])
     refund_file     = st.file_uploader("2. Refund file",            type=["xlsx", "xlsb"])
     renewal_file    = st.file_uploader("3. Renewal file",           type=["xlsx", "xlsb"])
+    if renewal_file:
+        st.sidebar.caption(f"📎 Renewal: {renewal_file.name}")
     structure_file  = st.file_uploader("4. Employee Structure Dump",type=["xlsx", "xlsb"])
     slab_cfg_file   = st.file_uploader("5. Slab Config (optional)",   type=["xlsx", "xlsb"])
 
@@ -5675,10 +5682,19 @@ if sel_month:
             icon="🚨"
         )
     else:
-        st.info(f"📅 **{sel_month}** -- "
-                f"Receipt: {len(receipt_df)} rows | "
-                f"Refund: {len(refund_df)} rows | "
-                f"Renewal: {len(renewal_df) if renewal_df is not None else 0} rows")
+        rnl_count = len(renewal_df) if renewal_df is not None else 0
+        if rnl_count == 0 and renewal_df_raw is not None and len(renewal_df_raw) > 0:
+            st.warning(
+                f"⚠️ **{sel_month}** -- Renewal: **0 rows** after month filter "
+                f"(raw has {len(renewal_df_raw)} rows). "
+                "The renewal file month format may not match. "
+                "Check that months in the renewal file are formatted as e.g. May apostrophe 26.",
+                icon="⚠️")
+        else:
+            st.info(f"📅 **{sel_month}** -- "
+                    f"Receipt: {len(receipt_df)} rows | "
+                    f"Refund: {len(refund_df)} rows | "
+                    f"Renewal: {rnl_count} rows")
 else:
     receipt_df, refund_df, renewal_df = receipt_df_raw, refund_df_raw, renewal_df_raw
 
@@ -5773,12 +5789,19 @@ with st.expander("Loaded file summary"):
     c4.metric("Refund rows",           len(refund_df))
     c5.metric("Renewal rows",          len(renewal_df) if renewal_df is not None else 0)
     st.metric("CMR% auto-calc for",    len(cmr_map))
-    if len(cmr_map) == 0 and renewal_df is not None and len(renewal_df) > 0:
-        _eid_debug = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID", "EMPID", "CC Emp ID", "emp id"])
-        st.warning(f"⚠️ CMR map empty! renewal_df has {len(renewal_df)} rows but EMP ID col found: {_eid_debug!r}. "
-                   f"Columns: {list(renewal_df.columns[:8])}", icon="⚠️")
-    elif len(cmr_map) > 0:
-        st.caption(f"renewal_df rows: {len(renewal_df) if renewal_df is not None else 0} | cmr_map entries: {len(cmr_map)}")
+    import builtins as _bt
+    _fdbg = getattr(_bt, '_renewal_filter_debug', None)
+    _rnl_rows = len(renewal_df) if renewal_df is not None else 0
+    if len(cmr_map) == 0:
+        _eid_debug = find_col(renewal_df, ["EMP ID", "Emp ID", "EmpID", "Employee ID", "EMPID", "CC Emp ID", "emp id"]) if _rnl_rows > 0 else None
+        st.warning(
+            f"⚠️ CMR map empty! "
+            f"renewal_df={_rnl_rows} rows (filter: {_fdbg}). "
+            f"EMP ID col: {_eid_debug!r}. "
+            f"Cols: {list(renewal_df.columns[:5]) if _rnl_rows > 0 else 'N/A'}",
+            icon="⚠️")
+    else:
+        st.caption(f"✅ renewal_df={_rnl_rows} rows (filter: {_fdbg}) | cmr_map={len(cmr_map)} employees")
     if cmr_targets:
         st.success(f"✅ CMR Targets loaded for {len(cmr_targets)} employees")
     else:
