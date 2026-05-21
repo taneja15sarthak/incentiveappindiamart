@@ -5045,7 +5045,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         _wk1_spot = 0
         _wk1_rates = S.get("kcd_wk1_spot", {})
         _wk1_counts = wk1_prod_counts or {}
-        if _wk1_rates and _wk1_counts:
+        if _wk1_rates and _wk1_counts and base_inc > 0:  # Monthly Base Incentive mandatory (FAQ Q5)
             _wk1_total_prods = sum(_wk1_counts.values())
             if _wk1_total_prods >= 2:  # min 2 prods in WK-1 period
                 for cat, rate_info in _wk1_rates.items():
@@ -5077,10 +5077,12 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         _insta_elig = (any(v >= _insta_min_w for v in weekly_prod_counts.values())
                        or (prod_score_receipt or 0) >= _insta_min_m)
         _insta_rate   = S.get("insta_l2_rate", 150) if _is_sam else S.get("insta_l1_rate", 300)
-        _im_insta_spot = int(insta_cnt_receipt * _insta_rate) if (_insta_elig and insta_cnt_receipt) else 0
+        # Monthly Base Incentive mandatory for IM Insta spot (same gate as other KCD spots)
+        _im_insta_spot = int(insta_cnt_receipt * _insta_rate) if (base_inc > 0 and _insta_elig and insta_cnt_receipt) else 0
 
         # ── KCD MCATs Renewals Spot ───────────────────────────────────────────
-        _mcats_spot = calc_mcats_renewal(int(sb.get("btl_sales", 0)), S, is_l2=_is_sam)
+        # FAQ Q6: Monthly Base Incentive is mandatory to earn MCATs incentive
+        _mcats_spot = calc_mcats_renewal(int(sb.get("btl_sales", 0)), S, is_l2=_is_sam) if base_inc > 0 else 0
 
         # ── KCD Min Productivity Gate (L1 only) ──────────────────────────────
         # Scheme: min 2 per week OR 8/month (6/month for CSD-to-KCD new joiners)
@@ -5111,6 +5113,35 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _is_csd     = "CSD" in vertical
 
     import re as _re
+
+    # KCD team classification for column logic
+    _kcd_t_up  = str(team).upper()
+    _is_kcd    = "KCD" in vertical
+    _kcd_is_lst_cat = _is_kcd and ("LISTING" in _kcd_t_up or "CATALOG" in _kcd_t_up)
+    _kcd_is_slab    = _is_kcd and not _kcd_is_lst_cat   # Regular/ROI/HVRI/Nagpur
+    # HC per vintage for slab-based teams (per sir's PPT)
+    _kcd_hc_mult = (
+        32000 if ("NAGPUR" in _kcd_t_up or "PHARMA" in _kcd_t_up) else
+        17000 if "ROI" in _kcd_t_up else
+        17000 if "HVRI" in _kcd_t_up else
+        (14000 if vintage in ("0-30D","31-90D") else
+         17000 if vintage == "91-270D" else 19000)  # Regular
+    ) if _kcd_is_slab else 0
+    _kcd_hc_slab = int(client_cnt * _kcd_hc_mult) if _kcd_is_slab else 0   # Highest Collection for slab teams
+    # Collection target for formula-based teams (Listing/Catalog)
+    _is_new_kcd = vintage in ("0-30D","31-90D")
+    _kcd_cat_rate_ct = int(S.get("KCD_Target_Listing_Base_New",   5000) if _is_new_kcd else S.get("KCD_Target_Listing_Base",   7000))
+    _kcd_lst_rate_ct = int(S.get("KCD_Target_Listing_Client_New",15000) if _is_new_kcd else S.get("KCD_Target_Listing_Client",22000))
+    _kcd_lst_c_ct  = float(cfg_row.get("Listing Client",  cfg_row.get("Listing Clients",  0)) or 0)
+    _kcd_cat_c_ct  = float(cfg_row.get("Catalog Client",  cfg_row.get("Catalog Clients",  0)) or 0)
+    _kcd_coll_tgt  = int(_kcd_cat_c_ct * _kcd_cat_rate_ct + _kcd_lst_c_ct * _kcd_lst_rate_ct) if _kcd_is_lst_cat else 0
+    if _kcd_is_lst_cat and _kcd_coll_tgt == 0:   # no client split → all as catalog rate
+        _kcd_coll_tgt = int(client_cnt * _kcd_cat_rate_ct)
+    # PCDV Target = HC/CA (slab) OR Collection_Target/CA (formula)
+    _kcd_pcdv_tgt = (round(_kcd_hc_slab / client_cnt, 0) if (_kcd_is_slab and client_cnt > 0) else
+                     round(_kcd_coll_tgt / client_cnt, 0) if (_kcd_is_lst_cat and client_cnt > 0) else 0)
+    # KCD PCDV% = PCDV / PCDV_Target × 100
+    _kcd_pcdv_pct = round(pcdv_val / _kcd_pcdv_tgt * 100, 2) if _kcd_pcdv_tgt > 0 else 0.0
 
     # CMR+1 Sent/Recd: from next-month (June) renewal data via cmr_plus1_map
     _c1_map = cmr_plus1_map.get(emp_id, {})
@@ -5146,9 +5177,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # Show the slab rate even if base=0 (helps diagnose why it's 0)
         # Per Txn = slab_rate × productivity (shows what it would be if CMR met)
         _per_txn_rate = _inc_payout_mult  # show the base slab rate (before CMR mult)
-        # Extract CMR+1 2D multiplier from Rel Mgr scheme notes "Cross:NNN%"
-        _cross_m = __import__("re").search(r"Cross:([0-9]+)%", notes)
-        _cmr1_from_notes = (float(_cross_m.group(1)) / 100 if _cross_m and float(_cross_m.group(1)) > 0 else 0.0)
+        # Extract CMR+1% from Rel Mgr scheme notes "CMR+1:NNN%" → map to multiplier
+        _cmr1_pct_m = __import__("re").search(r"CMR[+]1:([0-9.]+)%", notes)
+        if _cmr1_pct_m:
+            _cmr1_pct_val = float(_cmr1_pct_m.group(1))
+            if _cmr1_pct_val > 35:   _cmr1_from_notes = 1.20
+            elif _cmr1_pct_val >= 25: _cmr1_from_notes = 1.00
+            else:                     _cmr1_from_notes = 0.50
+        else:
+            _cmr1_from_notes = 0.0
         _net_inc_before_boost = round(base_inc / _boost_val, 0) if _boost_val != 0 else base_inc
         _mdc1_mult_val = 0.0
     else:
@@ -5246,19 +5283,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Gross Inc w/ Boost (₹)": ("NA" if (_is_new_joiner and _is_csd) else
                                    (int(base_inc) if _is_csd else "")),
         # ── KCD columns matching sir's kcd_calc.xlsx layout ────────
-        "KCD Collection Target (₹)": int(collection_target) if "KCD" in vertical else "",
-        "KCD Highest Collection (₹)": int(highest_coll)      if "KCD" in vertical else "",
-        "KCD PCDV Target":            (round(highest_coll / client_cnt, 0)
-                                     if ("KCD" in vertical and ("LISTING" in str(team).upper() or "CATALOG" in str(team).upper()))
-                                     else (min((t for t,_,_ in (
-                                         S.get("kcd_nagpur_slabs",[]) if ("NAGPUR" in str(team).upper() or "PHARMA" in str(team).upper())
-                                         else S.get("kcd_hvri_slabs",[]) if any(h in str(team).upper() for h in ("HVRI",))
-                                         else S.get("kcd_roi_slabs", S.get("kcd_91_270_slabs",[])) if "ROI" in str(team).upper()
-                                         else {"270D+": S.get("kcd_270_slabs",[]), "91-270D": S.get("kcd_91_270_slabs",[])}.get(
-                                             vintage, S.get("kcd_0_90_slabs",[]))
-                                     )), default=round(pcr_target_v,0))
-                                          if "KCD" in vertical else "")) if "KCD" in vertical else "",
-        "KCD PCDV%":                  round(pcr_pct * 100, 2) if "KCD" in vertical else "",
+        # Collection Target: formula teams (Listing/Catalog) only; slab teams → "-"
+        "KCD Collection Target (₹)": (_kcd_coll_tgt if _kcd_is_lst_cat else ("-" if _is_kcd else "")),
+        # Highest Collection: slab teams only (Regular/ROI/HVRI/Nagpur); formula teams → "-"
+        "KCD Highest Collection (₹)": (_kcd_hc_slab if _kcd_is_slab else ("-" if _is_kcd else "")),
+        # PCDV Target = HC/CA (slab) or Coll_Tgt/CA (formula)
+        "KCD PCDV Target":            (_kcd_pcdv_tgt if _is_kcd else ""),
+        # KCD PCDV% = PCDV / PCDV_Target × 100
+        "KCD PCDV%":                  (_kcd_pcdv_pct if _is_kcd else ""),
         # WK productive transaction counts
         "KCD WK-1 Txns":  weekly_txn.get(1, 0) if ("KCD" in vertical and weekly_txn) else "",
         "KCD WK-2 Txns":  weekly_txn.get(2, 0) if ("KCD" in vertical and weekly_txn) else "",
@@ -5316,9 +5348,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "MDC-MYR||TS-2||Maxi-A||VE": (_pop_tier2 if _is_csd else ""),
         "TS-3||Maxi-2":               (_pop_tier3 if _is_csd else ""),
         # ── PCDV breakdown (0-90D CSD: filled; SPS CSD: blank) — FSF cols 33-35 ──
-        "PCDV Amount":           (int(_pcdv_amount)      if _is_csd else ""),
-        "Incremental 3% Amount": (round(_incr_amount, 2) if _is_csd else ""),
-        "Final PCDV Amount":     (round(_final_pcdv, 2)  if _is_csd else ""),
+        "PCDV Amount":           (int(_pcdv_amount)       if (_is_new_joiner and _is_csd) else ("-" if _is_csd else "")),
+        "Incremental 3% Amount": (round(_incr_amount, 2)  if (_is_new_joiner and _is_csd) else ("-" if _is_csd else "")),
+        "Final PCDV Amount":     (round(_final_pcdv, 2)   if (_is_new_joiner and _is_csd) else ("-" if _is_csd else "")),
         # ── Spot bifurcation ────────────────────────────────────────
         "FNT-1 Prod Count":    fnt1_prod_count,
         "FNT-1 Spot (₹)":     int(_fnt1_spot),
@@ -7094,8 +7126,10 @@ if calc_btn:
 
         # ── Renewal Data ─────────────────────────────────────────────────────
         try:
-            if renewal_df is not None and len(renewal_df) > 0:
-                rnl_exp = renewal_df.copy()
+            # Use unfiltered raw renewal data so all months show in Renewal Data sheet
+            _rnl_for_export = renewal_df_raw if (renewal_df_raw is not None and len(renewal_df_raw) > 0) else renewal_df
+            if _rnl_for_export is not None and len(_rnl_for_export) > 0:
+                rnl_exp = _rnl_for_export.copy()
                 # Drop unnamed/blank-header columns
                 rnl_exp = rnl_exp.loc[:, ~rnl_exp.columns.astype(str).str.lower().str.startswith("unnamed")]
                 rnl_exp = rnl_exp.loc[:, rnl_exp.columns.astype(str).str.strip() != ""]
