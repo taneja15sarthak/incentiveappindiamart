@@ -2068,7 +2068,7 @@ def load_structure_dump(uploaded_file):
     for _, row in df.iterrows():
         if not emp_col:
             break
-        eid = str(row[emp_col]).strip()
+        eid = str(row[emp_col]).split(".")[0].strip()
         if not eid or eid.lower() in ("nan", ""):
             continue
 
@@ -2555,7 +2555,7 @@ def load_cmr_targets(uploaded_file):
 
         result = {}
         for _, row in df.iterrows():
-            eid = str(row[emp_col]).strip()
+            eid = str(row[emp_col]).split(".")[0].strip()
             if not eid or eid.lower() in ("nan", ""):
                 continue
             s1 = float(row[slab1_col]) if slab1_col and pd.notna(row[slab1_col]) else 0.70
@@ -2708,7 +2708,7 @@ def load_kcd_targets(uploaded_file):
                     emp_col = find_col(df, ["employeeid","Employee ID","EmpID","Emp ID","level2_id"])
                     if not emp_col: continue
                     for _, row in df.iterrows():
-                        eid = str(row[emp_col]).strip().split('.')[0]
+                        eid = str(row[emp_col]).split(".")[0].strip().split('.')[0]
                         if not eid or eid.lower() in ("nan","direct",""): continue
                         def _n(keys):
                             for k in keys:
@@ -2743,7 +2743,7 @@ def load_kcd_targets(uploaded_file):
         lt_col    = find_col(df, ["Listing Target","Ltarget"])
         cat_t_col = find_col(df, ["Catalog Target","Ctarget"])
         for _, row in df.iterrows():
-            eid = str(row[emp_col]).strip().split('.')[0]
+            eid = str(row[emp_col]).split(".")[0].strip().split('.')[0]
             if not eid or eid.lower() in ("nan", ""): continue
             def _nv(c):
                 if not c: return 0.0
@@ -5802,15 +5802,7 @@ with st.expander("Loaded file summary"):
             icon="⚠️")
     else:
         # Spot check: look up specific employees in cmr_map
-        _check_ids = ["115695", "116699", "55513"]
-        _found = {k: cmr_map.get(k, {}).get('renewal_sent', 'NOT IN MAP') for k in _check_ids}
-        _struct_sample = list(struct_map.keys())[:5]
-        _cmr_sample = list(cmr_map.keys())[:5]
-        # Cross-check: does struct_map key exist in cmr_map?
-        _cross = {k: ('✓' if k in cmr_map else f'MISS(try:{repr(cmr_map.get(str(int(float(k))) if str(k).replace(".","").isdigit() else k))})') for k in _struct_sample}
-        st.caption(f"✅ cmr_map={len(cmr_map)} | spot={_found}")
-        st.caption(f"struct keys: {_struct_sample} | cmr keys: {_cmr_sample}")
-        st.caption(f"cross-check: {_cross}")
+        st.caption(f"✅ cmr_map={len(cmr_map)} employees | renewal_df={_rnl_rows} rows")
     if cmr_targets:
         st.success(f"✅ CMR Targets loaded for {len(cmr_targets)} employees")
     else:
