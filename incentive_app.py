@@ -6194,12 +6194,7 @@ if calc_btn:
             rule("Net Deal Value (₹)",  "={dv}{R}-{dl}{R}",              "=Deal Value − Deal Loss", _money)
 
             # ── 2. Per-client metrics (PCR / PCDV) ───────────────────────────
-            rule("PCR",
-                 '=IF(ISNUMBER(SEARCH("KCD",{vt}{R})),IF({ca}{R}>0,{nc}{R}/{ca}{R},0),IF({cc}{R}>0,{nc}{R}/{cc}{R},IF({ca}{R}>0,{nc}{R}/{ca}{R},0)))',
-                 "=Net Collection / Client-A (KCD, min 50) or Client-C (CSD)", _pct1)
-            rule("PCDV",
-                 '=IF(ISNUMBER(SEARCH("KCD",{vt}{R})),IF({ca}{R}>0,{ndv}{R}/{ca}{R},0),IF({cc}{R}>0,{ndv}{R}/{cc}{R},IF({ca}{R}>0,{ndv}{R}/{ca}{R},0)))',
-                 "=Net DV / Client-A (KCD, min 50) or Client-C (CSD)", _pct1)
+            # PCR and PCDV: no Excel formula — Python-computed values are correct per vertical
 
             # ── 3. CMR family ────────────────────────────────────────────────
             rule("CMR% (auto)",
