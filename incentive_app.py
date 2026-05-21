@@ -6031,7 +6031,7 @@ if calc_btn:
             "Employee ID":        emp_id,
             "Employee Name":      emp_name,
             "Designation":        s.get("Designation", ""),
-        "Client-A (aggregated)": int(float(s.get("Client Count", 0) or 0)),
+        "Client-A (aggregated)": max(int(float(s.get("Client Count", 0) or 0)), 50) if "KCD" in str(s.get("Vertical","")) else int(float(s.get("Client Count", 0) or 0)),
         "Client-C (aggregated)": (round(float(s.get("Client-C", 0) or 0), 1)
                                    if float(s.get("Client-C", 0) or 0) > 0
                                    else ""),
@@ -6194,10 +6194,12 @@ if calc_btn:
             rule("Net Deal Value (₹)",  "={dv}{R}-{dl}{R}",              "=Deal Value − Deal Loss", _money)
 
             # ── 2. Per-client metrics (PCR / PCDV) ───────────────────────────
-            rule("PCR",   "=IF({cc}{R}>0,{nc}{R}/{cc}{R},IF({ca}{R}>0,{nc}{R}/{ca}{R},0))",
-                 "=Net Collection / Client-C (CSD) or Client-A (KCD)",  _pct1)
-            rule("PCDV",  "=IF({cc}{R}>0,{ndv}{R}/{cc}{R},IF({ca}{R}>0,{ndv}{R}/{ca}{R},0))",
-                 "=Net DV / Client-C (CSD) or Client-A (KCD)", _pct1)
+            rule("PCR",
+                 '=IF(ISNUMBER(SEARCH("KCD",{vt}{R})),IF({ca}{R}>0,{nc}{R}/{ca}{R},0),IF({cc}{R}>0,{nc}{R}/{cc}{R},IF({ca}{R}>0,{nc}{R}/{ca}{R},0)))',
+                 "=Net Collection / Client-A (KCD, min 50) or Client-C (CSD)", _pct1)
+            rule("PCDV",
+                 '=IF(ISNUMBER(SEARCH("KCD",{vt}{R})),IF({ca}{R}>0,{ndv}{R}/{ca}{R},0),IF({cc}{R}>0,{ndv}{R}/{cc}{R},IF({ca}{R}>0,{ndv}{R}/{ca}{R},0)))',
+                 "=Net DV / Client-A (KCD, min 50) or Client-C (CSD)", _pct1)
 
             # ── 3. CMR family ────────────────────────────────────────────────
             rule("CMR% (auto)",
@@ -6312,6 +6314,7 @@ if calc_btn:
                 "dl":     ci("Deal Loss (₹)"),
                 "ndv":    ci("Net Deal Value (₹)"),
                 "ca":     ci("Client-A (aggregated)") or ci("Client-A"),
+                "vt":     ci("Vertical"),
                 "cc":     ci("Client-C (aggregated)") or ci("Client-C"),
                 "rs":     ci("CMR Sent"),
                 "rr":     ci("CMR Received"),
