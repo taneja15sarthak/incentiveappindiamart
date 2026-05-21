@@ -4718,8 +4718,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 spot_inc = int(spot_inc) + _im_star_spot
         elif vintage == "0-30D":
             # 0-30D: fixed slab base + PoP, combined cap = 20,000
+            # CSD 0-30D: incremental uses Client-C (calculated), not Client-A
+            _csd_client_c = _client_c_val if _client_c_val > 0 else client_cnt
             base_inc, pop_inc, notes, _pop_tier1, _pop_tier2, _pop_tier3, _pcdv_amount, _incr_amount, _final_pcdv = calc_csd_new(
-                pcdv, client_cnt, cmr_slab, cmr_pct,
+                pcdv, _csd_client_c, cmr_slab, cmr_pct,
                 rnl_prods, rnl_modes, vintage, S,
                 svc_tiers=svc_tiers,
                 pop_cmr_floor=S.get("pop_cmr_floor", POP_CMR_FLOOR),
@@ -4760,8 +4762,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pop_inc = 0
             else:
                 # Use calc_csd_new -- same fixed PCDV slab as 0-30D
+                # CSD 31-90D: incremental uses Client-C (calculated), not Client-A
+                _csd_client_c = _client_c_val if _client_c_val > 0 else client_cnt
                 base_inc, pop_inc, notes, _pop_tier1, _pop_tier2, _pop_tier3, _pcdv_amount, _incr_amount, _final_pcdv = calc_csd_new(
-                    pcdv, client_cnt, cmr_slab, cmr_pct,
+                    pcdv, _csd_client_c, cmr_slab, cmr_pct,
                     rnl_prods, rnl_modes, vintage, S,
                     svc_tiers=svc_tiers,
                     pop_cmr_floor=S.get("pop_cmr_floor", POP_CMR_FLOOR),
@@ -5212,8 +5216,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "MDC-1 CMR%":          ("NA" if (_is_new_joiner and _is_csd)
                          else (round(float(mdc1_cmr_pct) * 100 if float(mdc1_cmr_pct) <= 1 else float(mdc1_cmr_pct), 1)
                                if (mdc1_cmr_pct is not None and _is_csd) else "")),
-        "PCR":                 round(pcr_val, 0),
-        "PCDV":                round(pcdv_val, 0),
+        "PCR":                 round(pcr_val, 2),
+        "PCDV":                round(pcdv_val, 2),
         "Slab Metric Used":    metric_label,
         "Productivity Score":  _prod_score,
         "Insta Txns (0.5×)":   insta_cnt_receipt,  # receipt-based (sir's col AR Insta rows)
