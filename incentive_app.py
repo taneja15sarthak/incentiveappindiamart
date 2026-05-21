@@ -1645,13 +1645,14 @@ def filter_by_month(receipt_df, refund_df, renewal_df, selected_month):
         rnl_m = find_col(rnl, ["Month", "MONTH"])
         if rnl_m:
             def _match(val):
-                try:
-                    s = str(val).strip()
-                    parsed = pd.to_datetime(s, format="%b'%y", errors="coerce")
-                    if pd.notna(parsed):
-                        return parsed.month == target_month and parsed.year == target_year
-                except Exception:
-                    pass
+                s = str(val).strip()
+                for fmt in ("%b'%y", "%b-%y", "%b/%y", "%B'%y", "%B-%y"):
+                    try:
+                        parsed = pd.to_datetime(s, format=fmt, errors="coerce")
+                        if pd.notna(parsed):
+                            return parsed.month == target_month and parsed.year == target_year
+                    except Exception:
+                        pass
                 return False
             rnl = rnl[rnl[rnl_m].apply(_match)]
 
