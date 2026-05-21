@@ -5804,9 +5804,13 @@ with st.expander("Loaded file summary"):
         # Spot check: look up specific employees in cmr_map
         _check_ids = ["115695", "116699", "55513"]
         _found = {k: cmr_map.get(k, {}).get('renewal_sent', 'NOT IN MAP') for k in _check_ids}
-        _sample_keys = list(cmr_map.keys())[:3]
-        st.caption(f"✅ renewal_df={_rnl_rows} | cmr_map={len(cmr_map)} | "
-                   f"spot-check {_found} | sample keys={_sample_keys}")
+        _struct_sample = list(struct_map.keys())[:5]
+        _cmr_sample = list(cmr_map.keys())[:5]
+        # Cross-check: does struct_map key exist in cmr_map?
+        _cross = {k: ('✓' if k in cmr_map else f'MISS(try:{repr(cmr_map.get(str(int(float(k))) if str(k).replace(".","").isdigit() else k))})') for k in _struct_sample}
+        st.caption(f"✅ cmr_map={len(cmr_map)} | spot={_found}")
+        st.caption(f"struct keys: {_struct_sample} | cmr keys: {_cmr_sample}")
+        st.caption(f"cross-check: {_cross}")
     if cmr_targets:
         st.success(f"✅ CMR Targets loaded for {len(cmr_targets)} employees")
     else:
