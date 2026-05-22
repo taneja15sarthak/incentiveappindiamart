@@ -4224,8 +4224,18 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         im_col      = find_col(receipt_df, ["IM Varient", "IM Variant", "IM Upsell"])
         if pref_ss_col:
             pref_ss_count = int((rec[pref_ss_col].fillna("").astype(str).str.upper().str.strip() == "YES").sum())
-        if btl_col:
-            btl_count = int((rec[btl_col].fillna("").astype(str).str.upper().str.strip() == "YES").sum())
+        # BTL (Base-to-Listing) productivity for KCD Catalog:
+        # Rows where Base Client Type in {MDC, WS, MDC-TS, IVE}
+        # OR Unique col in {IM Star Pro, Preferred Star Pro, Preferred Leader Pro,
+        #                   IM Leader Pro, Preferred Star}
+        _btl_base_types = {'MDC', 'WS', 'MDC-TS', 'IVE'}
+        _btl_unique_prods = {'IM Star Pro', 'Preferred Star Pro', 'Preferred Leader Pro',
+                              'IM Leader Pro', 'Preferred Star'}
+        _bct_col    = find_col(receipt_df, ["Base Client Type", "Base_Client_Type", "BaseClientType"])
+        _unique_col = find_col(receipt_df, ["Unique", "UNIQUE"])
+        _bct_mask   = rec[_bct_col].isin(_btl_base_types) if _bct_col else pd.Series(False, index=rec.index)
+        _uniq_mask  = rec[_unique_col].isin(_btl_unique_prods) if _unique_col else pd.Series(False, index=rec.index)
+        btl_count   = int((_bct_mask & _uniq_mask).sum())  # AND: both criteria must be met
         if im_col:
             im_var_count = int((rec[im_col].fillna("").astype(str).str.upper().str.strip() == "YES").sum())
     else:
@@ -4815,14 +4825,23 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             # Spot: config-driven -- April config has "CSD_Spot_Apr"; March has "CSD_Spot"
             # CSD RM has a SEPARATE spot scheme (slides 3+): min 2.5 prod, base 2000/3500
             if S.get("has_apr_spot") or S.get("has_may_spot"):
-                spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
-                    nr_upsell_count, S,
-                    fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
-                    is_rm=(_desig_str == "L2"),
-                    monthly_base_inc=base_inc,
-                    team_size=cfg_row.get("Effective Team Size", 1) if _desig_str == "L2" else 1)
-                # IM Star Pro+ New Sale Spot (28-30 Apr): Rel Mgr only, ₹1000/sale
-                if _desig_str == "L2":
+                _is_90plus_csd = vintage not in ("0-30D", "31-90D")
+                _is_rm_desig   = (_desig_str == "L2")
+                # May spot: L1 Exec eligible only for 90+ vintage (per PPT)
+                # May spot: FNT2 (17-31 May) has NO spot, so pass fnt2_count=0
+                _fnt2_for_spot = 0 if S.get("has_may_spot") else fnt2_prod_count
+                # L1 Exec: skip spot if May and 0-90D vintage (only 90+ eligible in May)
+                if not _is_rm_desig and S.get("has_may_spot") and not _is_90plus_csd:
+                    spot_inc, _fnt1_spot, _fnt2_spot = 0, 0, 0
+                else:
+                    spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
+                        nr_upsell_count, S,
+                        fnt1_count=fnt1_prod_count, fnt2_count=_fnt2_for_spot,
+                        is_rm=_is_rm_desig,
+                        monthly_base_inc=base_inc,
+                        team_size=cfg_row.get("Effective Team Size", 1) if _is_rm_desig else 1)
+                # IM Star Pro+ New Sale Spot: Rel Mgr only, ₹1000/sale (April only)
+                if _is_rm_desig and S.get("has_apr_spot") and not S.get("has_may_spot"):
                     _im_star_spot = int(im_star_pro_count * S.get("im_star_rate", 1000))
                     spot_inc = int(spot_inc) + _im_star_spot
             elif S.get("has_mar_spot"):
@@ -4902,7 +4921,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _ilp_rec  = sam_ilp_targets.get(emp_id, {})
                 _ilp_tgt  = _ilp_rec.get("target", 0) if isinstance(_ilp_rec, dict) else float(_ilp_rec or 0)
                 _ilp_rate = _ilp_rec.get("rate_95") if isinstance(_ilp_rec, dict) else None
-                _bt_count = int(sb.get("btl_sales", 0))
+                _bt_count = int(btl_count or sb.get("btl_sales", 0))  # from receipt (Base Client Type AND Unique)
                 # Use client breakdown from ILP target file when available
                 if isinstance(_ilp_rec, dict):
                     catalog_c  = float(_ilp_rec.get("catalog",  catalog_c)  or catalog_c)
@@ -5023,17 +5042,25 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         _wk1_spot = 0
         _wk1_rates = S.get("kcd_wk1_spot", {})
         _wk1_counts = wk1_prod_counts or {}
-        if _wk1_rates and _wk1_counts and base_inc > 0:  # Monthly Base Incentive mandatory (FAQ Q5)
+        if _wk1_rates and _wk1_counts:
+            _wk1_base_mult = 0.5 if base_inc == 0 else 1.0  # 50% if base not achieved (PPT)
             _wk1_total_prods = sum(_wk1_counts.values())
             if _wk1_total_prods >= 2:  # min 2 prods in WK-1 period
                 for cat, rate_info in _wk1_rates.items():
                     _cat_count = _wk1_counts.get(cat, 0)
+                    _cat_myr   = _wk1_counts.get(cat + "_MYR", 0)  # MYR sub-count if tracked
+                    _cat_ann   = _cat_count - _cat_myr  # annual count
                     if _cat_count > 0:
                         if isinstance(rate_info, dict):
-                            _ann_rate = rate_info.get("l2_annual" if _is_sam else "l1_annual", 0)
+                            _pref = "l2" if _is_sam else "l1"
+                            _ann_rate = rate_info.get(f"{_pref}_annual", 0)
+                            _myr_rate = rate_info.get(f"{_pref}_myr",    0)
                         else:
                             _ann_rate = int(rate_info) if not _is_sam else int(rate_info) // 2
-                        _wk1_spot += _cat_count * _ann_rate
+                            _myr_rate = _ann_rate * 2  # MYR = 2× annual (per PPT pattern)
+                        # If MYR tracking not available, use annual rate for all
+                        _wk1_spot += (_cat_ann * _ann_rate) + (_cat_myr * _myr_rate)
+                _wk1_spot = int(_wk1_spot * _wk1_base_mult)  # 50% if monthly base not achieved
 
         # ── Excellent Incentive Spot (04 May only) ───────────────────────────────
         # Uses pre-computed per-employee count (passed via parameter to avoid full-df scan)
@@ -5270,6 +5297,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # KCD PCDV% = PCDV / PCDV_Target × 100
         "KCD PCDV%":                  (_kcd_pcdv_pct if _is_kcd else ""),
         # WK productive transaction counts
+        "BTL Productivity Count":   (int(btl_count) if ("KCD" in vertical and ("CATALOG" in str(team).upper() or "LISTING" in str(team).upper())) else ""),
         "KCD WK-1 Txns":  weekly_txn.get(1, 0) if ("KCD" in vertical and weekly_txn) else "",
         "KCD WK-2 Txns":  weekly_txn.get(2, 0) if ("KCD" in vertical and weekly_txn) else "",
         "KCD WK-3 Txns":  weekly_txn.get(3, 0) if ("KCD" in vertical and weekly_txn) else "",
@@ -6532,7 +6560,7 @@ if calc_btn:
             "KCD Total Incentive (₹)","KCD Gross Incentive (₹)",
                 "BA Multiplier",
             "KCD Group","KCD Delhi Loc Incentive","KCD Rem",
-            "BA Multiplier",
+            "BTL Productivity Count","BA Multiplier",
             # Spot bifurcation (matches sir's FNT-1 / FNT-2 sections)
             "FNT-1 Spot (₹)","FNT-2 Spot (₹)",
             "WK-1 Prod Spot (₹)","Excellent Spot (₹)",
