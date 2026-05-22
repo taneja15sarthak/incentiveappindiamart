@@ -48,14 +48,14 @@ PURE_RENEWAL_PRODUCTS = {
 }
 
 # Upsell column values → service tier
-UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","Maxi Pro-1","TS pro-1"}
+UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","TS pro-1"}
 UPSELL_TIER2 = {
-    "MYR","Combo 2YR","Maximiser","TS Pro-2","Maxi Pro-2",
+    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2",
     "VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6",
     "VEXPD-12","VEXPG-6","VEXPG-MYR","VEXPP-12","VEXPP-MYR","VEXPD-MYR",
 }
 UPSELL_TIER3 = {
-    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi pro-3","Maximiser-2",
+    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi Pro-2","Maxi pro-3","Maximiser-2",
     "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro",
 }
 
