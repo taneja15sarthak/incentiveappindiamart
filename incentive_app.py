@@ -3648,12 +3648,10 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
         spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
         fnt2_spot = spot  # attribute to FNT-2 as fallback
 
-    # CSD FNT Spot Both Achievers gate (FAQ: PCDV & CMR mandatory → 100%; not both → 50%)
-    # monthly_base_inc == 0 means PCDV slab was NOT achieved → apply 50% on spot
+    # CSD Productivity Spot gate: Monthly Base Incentive is MANDATORY (PPT)
+    # If base incentive = 0, spot = 0 (hard block, not 50%)
     if spot > 0 and monthly_base_inc == 0:
-        fnt1_spot = int(fnt1_spot * 0.5)
-        fnt2_spot = int(fnt2_spot * 0.5)
-        spot      = fnt1_spot + fnt2_spot
+        return 0, 0, 0
     return spot, fnt1_spot, fnt2_spot
 
 
