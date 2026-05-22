@@ -3091,123 +3091,91 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
                      cmr_plus1_pct, ext_tat, d60, is_sps, S,
                      emp_cmr_slab1=None, emp_cmr_slab2=None):
     """
-    CSD Relationship Manager (L2) incentive -- exact FSF Rel Mgr-CSD formula.
+    CSD Relationship Manager incentive (Slide 6-7 of CSD_Magnificent_May_Scheme.pptx).
 
-    April scheme uses PCDV (deal value) for per-txn slab lookup,
-    and PCR (collection) for display only.
-
-    Slab lookup: PCDV thresholds × CMR% (individual Slab1/Slab2 targets)
-    Cross multiplier: CMR% × MDC-1 CMR%
-    CMR+1 multiplier: May MDC-1 CMR%
-    SPS booster: IF(SPS AND ext_tat<1 AND 60D<10%)
+    Logic:
+    1. PCDV slab lookup gives (r1=Slab1_rate, r2=Slab2_rate)
+    2. CMR tier:  >= slab2 target → use r2; >= slab1 target → use r1; else → 0
+       The rate ENCODES the CMR tier — no separate cmr_mult or cross 2D table.
+    3. Both Achievers (PCDV hit + CMR hit) → per_txn × prod × 1.25
+       Only CMR (PCDV not hit, CMR hit) → lowest_slab_rate × prod × 0.50
+       PCDV hit, CMR not hit → Base = 0
+       Neither → Base = 0
+    4. × CMR+1 multiplier (>35%→1.2, 25-35%→1.0, <25%→0.5)
+    5. × Booster (SPS: if ext_tat<1 AND 60D<10%)
     """
-    # ── AF: Per-txn from CSD_RM slab (PCDV x CMR%) ─────────────────────────
-    slabs = S.get("csd_rm_slabs", [])
-    # Use per-employee individual CMR targets if available, else global defaults
+    cmr_pct_v = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
+
+    # Individual CMR slab targets (per-employee, from email/config)
     _cmr_slab1 = float(emp_cmr_slab1) if emp_cmr_slab1 is not None else S.get("rm_cmr_slab1", 60)
     _cmr_slab2 = float(emp_cmr_slab2) if emp_cmr_slab2 is not None else S.get("rm_cmr_slab2", 65)
-    _cmr_min   = S.get("rm_cmr_min",   53)
-    cmr_pct_v  = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
 
-    # CMR eligibility tier: <min → 0, min to slab1 → 50%, slab1 to slab2 → 100%, slab2+ → 120%
-    # The 50%/100%/120% are applied to the per-txn rate via cmr_mult
-    if cmr_pct_v >= _cmr_slab2:
-        cmr_mult = 1.20   # Slab2 → 120%
-    elif cmr_pct_v >= _cmr_slab1:
-        cmr_mult = 1.00   # Slab1 → 100%
-    elif cmr_pct_v >= _cmr_min:
-        cmr_mult = 0.50   # min threshold to slab1 → 50% (Only CMR achiever minimum tier)
-    else:
-        cmr_mult = 0.0    # Below minimum → no incentive
+    # ── PCDV slab → (r1, r2) rates ──────────────────────────────────────────
+    slabs = S.get("rm_slabs", [])
+    if not slabs:
+        slabs = [(2900, 1250, 1500), (2700, 1000, 1200), (2500, 750, 900)]
 
-    per_txn = 0
+    r1, r2 = 0, 0
     _pcdv_hit = False
-    for (thresh, r1, r2) in sorted(slabs, reverse=True):
+    for thresh, _r1, _r2 in sorted(slabs, reverse=True):
         if pcdv >= thresh:
-            per_txn = r1   # base rate for this slab; cmr_mult applied below
-            _pcdv_hit = True
+            r1, r2, _pcdv_hit = _r1, _r2, True
             break
-    # Fallback to hardcoded May rates if slab config is wrong
-    _DEFAULT_RM_SLABS = [(2900, 1250, 1500), (2700, 1000, 1200), (2500, 750, 900)]
-    if per_txn == 0 and pcdv >= 2500:
-        for (thresh, r1, r2) in _DEFAULT_RM_SLABS:
-            if pcdv >= thresh:
-                per_txn = r1
-                _pcdv_hit = True
-                break
 
-    # Apply CMR multiplier to per_txn (slab2 uses r2 which bakes in 120%; we use cmr_mult instead)
-    # Effective per_txn after CMR eligibility
-    per_txn_eff = round(per_txn * cmr_mult, 0) if cmr_mult > 0 else 0
-
-    # ── Both Achievers / Only CMR applied to RAW base ──────────────────────
-    # Per scheme: "Both Achievers (PCDV+CMR) → 125% & Only CMR Achievers → 50%"
-    # This is applied to the BASE (per_txn × prod) BEFORE Cross / CMR+1 / Booster
+    # ── Select per_txn based on CMR tier ──────────────────────────────────
+    _cmr_slab2_hit = cmr_pct_v >= _cmr_slab2
     _cmr_slab1_hit = cmr_pct_v >= _cmr_slab1
+    _cmr_hit = _cmr_slab1_hit  # either slab qualifies as "CMR achieved"
+
+    if _cmr_slab2_hit:
+        per_txn = r2   # top rate
+    elif _cmr_slab1_hit:
+        per_txn = r1   # base rate
+    else:
+        per_txn = 0    # CMR not achieved
+
+    # per_txn_eff for display (same as per_txn — no separate cmr_mult)
+    per_txn_eff = per_txn
+
+    # ── Both Achievers / Only CMR / Zero ────────────────────────────────────
     _ba_note = ""
-    if S.get("both_achievers_on", False) and cmr_pct_v >= _cmr_min:
-        if _pcdv_hit and _cmr_slab1_hit:
-            # Both Achievers: per_txn × prod × 125%
-            raw_base = per_txn * float(prod_raw or 0) * S.get("both_achievers_pct", 1.25)
+    prod = float(prod_raw or 0)
+    if S.get("both_achievers_on", False):
+        if _pcdv_hit and _cmr_hit:
+            # Both hit → 125%
+            raw_base = per_txn * prod * S.get("both_achievers_pct", 1.25)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
-        elif _cmr_slab1_hit and not _pcdv_hit:
-            # Only CMR: 50% of lowest slab rate × prod (no PCDV qualifier, lowest slab)
-            _min_per_txn = min((r1 for _, r1, _ in slabs if r1 > 0), default=0) if slabs else 0
-            if _min_per_txn == 0:
-                _DEFAULT_RM_SLABS_SORTED = sorted([(2900,1250,1500),(2700,1000,1200),(2500,750,900)])
-                _min_per_txn = _DEFAULT_RM_SLABS_SORTED[0][1]
-            raw_base = _min_per_txn * float(prod_raw or 0) * S.get("cmr_only_pct", 0.50)
+        elif _cmr_hit and not _pcdv_hit:
+            # Only CMR (PCDV not hit, CMR hit) → 50% of lowest slab rate for CMR tier
+            _lowest = (slabs[-1][2] if _cmr_slab2_hit else slabs[-1][1]) if slabs else 0
+            raw_base = _lowest * prod * S.get("cmr_only_pct", 0.50)
             _ba_note = f" | OnlyCMR×{S.get('cmr_only_pct',0.50):.0%}"
         else:
-            raw_base = per_txn * float(prod_raw or 0)
+            # PCDV hit but CMR not hit, OR neither hit → 0
+            raw_base = 0
     else:
-        raw_base = per_txn * float(prod_raw or 0)
+        raw_base = per_txn * prod
 
-    # ── AH: Base (after BA/OnlyCMR) × CMR multiplier ────────────────────────
-    ah = raw_base * cmr_mult
-
-    # ── AI: Cross Multiplier (2D: CMR% x MDC-1 CMR%) ────────────────────────
-    mdc = mdc1_cmr_pct * 100 if mdc1_cmr_pct <= 1 else mdc1_cmr_pct
-    cmr = cmr_pct_v
-    if cmr >= 65:
-        if mdc >= 45:   ai = 1.30
-        elif mdc >= 40: ai = 1.20
-        elif mdc >= 35: ai = 1.10
-        else:           ai = 1.00
-    elif cmr >= 60:
-        if mdc >= 45:   ai = 1.20
-        elif mdc >= 40: ai = 1.10
-        elif mdc >= 35: ai = 1.00
-        else:           ai = 0.75
-    elif cmr >= _cmr_min:
-        if mdc >= 45:   ai = 1.10
-        elif mdc >= 40: ai = 1.00
-        else:           ai = 0.50
-    else:
-        ai = 0.0
-
-    # ── AJ = AH * AI ────────────────────────────────────────────────────────
-    aj = ah * ai
-
-    # ── AK: CMR+1 (MDC-1) Multiplier ────────────────────────────────────────
+    # ── CMR+1 (MDC-1 next-month renewal) multiplier ─────────────────────────
     cp1 = cmr_plus1_pct * 100 if cmr_plus1_pct <= 1 else cmr_plus1_pct
-    if aj >= 1:
-        if cp1 > 35:    ak = aj * 1.20
-        elif cp1 >= 25: ak = aj * 1.00
-        else:           ak = aj * 0.50
+    if raw_base >= 1:
+        if cp1 > 35:    ak = raw_base * 1.20
+        elif cp1 >= 25: ak = raw_base * 1.00
+        else:           ak = raw_base * 0.50
     else:
         ak = 0.0
 
-    # ── AN: SPS Booster ──────────────────────────────────────────────────────
+    # ── SPS Booster ──────────────────────────────────────────────────────────
     if is_sps and float(ext_tat or 99) < 1 and float(d60 or 100) < 10 and ak >= 1:
-        an = ak * 1.20
+        total = round(ak * 1.20, 0)
+        _boost_note = " | Boost:120%"
     else:
-        an = ak
+        total = round(ak, 0)
+        _boost_note = ""
 
-    total = round(max(0, an), 0)
-    notes = (f"CSD RM | PCR:{pcr:.0f} | CMR:{cmr:.0f}% | MDC1:{mdc:.0f}% | "
+    notes = (f"CSD RM | PCR:{pcr:.0f} | CMR:{cmr_pct_v:.0f}% | MDC1:{mdc1_cmr_pct*100 if mdc1_cmr_pct<=1 else mdc1_cmr_pct:.0f}% | "
              f"PerTxn:{per_txn_eff} | Prod:{prod_raw:.1f} | "
-             f"Cross:{ai:.0%} | CMR+1:{cp1:.0f}% | SPS:{is_sps}{_ba_note} | Total:{total:.0f}")
+             f"CMR+1:{cp1:.0f}% | SPS:{is_sps}{_ba_note}{_boost_note} | Total:{total:.0f}")
     return total, notes
 
 
