@@ -4880,6 +4880,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         _is_sam   = _desig_up == "L2" or any(k in _desig_up for k in
                     ("SAM", "SR. ACCOUNT", "SR.ACCOUNT", "SENIOR ACCOUNT MANAGER"))
         _is_ilp_desig = _desig_up == "ILP" or "ILP" in _desig_up
+        # Init KCD pre-dict vars so they are never unbound
+        _kcd_pcdv_tgt = 0.0; _kcd_pcdv_pct = 0.0; _kcd_pcdv_pct_early = 0.0
+        _kcd_hc_slab = 0; _kcd_coll_tgt = 0; _kcd_is_slab = False; _kcd_is_lst_cat = False
         if not _is_sam and "SAM" in str(team).upper(): _is_sam = True
         if not _is_ilp_desig and "ILP" in str(team).upper(): _is_ilp_desig = True
 
@@ -5007,8 +5010,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_roi(
                 pcdv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - highest_coll) * S.get("kcd_incr_rate", 0.014), 0) \
+                              if (kcd_net_dv > highest_coll and highest_coll > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
             if spot_inc == 0:
@@ -5019,8 +5022,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcdv, kcd_txn, kcd_col, vintage, "HVRI",
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             notes = notes.replace("KCD Regular", "KCD HVRI")
-            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - highest_coll) * S.get("kcd_incr_rate", 0.014), 0) \
+                              if (kcd_net_dv > highest_coll and highest_coll > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
         elif "NAGPUR" in team_up or "PHARMA" in team_up:
@@ -5029,8 +5032,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcdv, kcd_txn, kcd_col, vintage, "NAGPUR",
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             notes = notes.replace("KCD Regular", "KCD Nagpur")
-            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * S.get("kcd_incr_nagpur", 0.0085), 0) \
-                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - highest_coll) * S.get("kcd_incr_nagpur", 0.0085), 0) \
+                              if (kcd_net_dv > highest_coll and highest_coll > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
         else:
@@ -5041,8 +5044,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _incr_rate = (S.get("kcd_incr_nagpur", 0.0085)
                           if ("NAGPUR" in team_up or "PHARMA" in team_up)
                           else S.get("kcd_incr_rate", 0.014))
-            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * _incr_rate, 0) \
-                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - highest_coll) * _incr_rate, 0) \
+                              if (kcd_net_dv > highest_coll and highest_coll > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
             if spot_inc == 0:
