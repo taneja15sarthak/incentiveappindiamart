@@ -3927,30 +3927,32 @@ def _read_file(f):
 
 def clean_receipt(df):
     """
-    Filter receipt file to valid cleared rows only.
-    Robust: if Status filter would remove everything, keeps all rows and warns.
+    Filter receipt file:
+    - EXCLUDE rows where B/C = Bounced or Cancelled
+    - INCLUDE both Status=Cleared AND Status=Pending (Pending not yet bounced/cancelled counts)
     """
     df = df.copy()
     # ── B/C filter: remove Bounced / Cancelled rows ──────────────────────────
-    if "B/C" in df.columns:
-        df = df[df["B/C"].isna() | (df["B/C"].astype(str).str.strip() == "")]
+    _bc_col = find_col(df, ["B/C", "BC", "B_C", "Bounce/Cancel"])
+    if _bc_col:
+        _bc_vals = df[_bc_col].astype(str).str.strip().str.upper()
+        df = df[~_bc_vals.isin(["BOUNCED", "CANCELLED", "CANCELED", "BOUNCE", "CANCEL"])]
 
-    # ── Status filter: keep only CLEARED rows ────────────────────────────────
+    # ── Status filter: keep CLEARED and PENDING (exclude blanks/unknown) ─────
     status_col = find_col(df, ["Status", "STATUS", "PAYMENT STATUS", "Payment Status"])
     if status_col:
-        cleared = df[df[status_col].astype(str).str.upper().str.strip() == "CLEARED"]
-        if len(cleared) > 0:
-            df = cleared
+        _status_vals = df[status_col].astype(str).str.upper().str.strip()
+        valid = _status_vals.isin(["CLEARED", "PENDING"])
+        valid_rows = df[valid]
+        if len(valid_rows) > 0:
+            df = valid_rows
         else:
-            # Status column exists but has no "CLEARED" rows -- show warning and keep all
-            unique_vals = df[status_col].astype(str).str.upper().str.strip().unique()[:8]
+            unique_vals = _status_vals.unique()[:8]
             st.warning(
-                f"⚠️ Receipt file: column '{status_col}' has no 'Cleared' rows. "
-                f"Found: {list(unique_vals)}. Using all rows (no status filter). "
-                "Check that you uploaded the correct receipt file.",
+                f"⚠️ Receipt file: no Cleared/Pending rows in '{status_col}'. "
+                f"Found: {list(unique_vals)}. Using all rows.",
                 icon="⚠️"
             )
-            # keep df as-is (no status filter applied)
 
     # ── NACH balance payment filter ───────────────────────────────────────────
     prod_col = find_col(df, ["Prod", "Product", "PRODUCT"])
