@@ -48,14 +48,14 @@ PURE_RENEWAL_PRODUCTS = {
 }
 
 # Upsell column values → service tier
-UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","TS pro-1"}
+UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","Maxi Pro-1","TS pro-1"}
 UPSELL_TIER2 = {
-    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2",
+    "MYR","Combo 2YR","Maximiser","TS Pro-2","Maxi Pro-2",
     "VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6",
     "VEXPD-12","VEXPG-6","VEXPG-MYR","VEXPP-12","VEXPP-MYR","VEXPD-MYR",
 }
 UPSELL_TIER3 = {
-    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi Pro-2","Maxi pro-3","Maximiser-2",
+    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi pro-3","Maximiser-2",
     "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro",
 }
 
@@ -1720,8 +1720,14 @@ def enrich_receipt(df):
     is_pure_renewal  = df["_is_pure_renewal"].astype(bool)
     has_upsell       = df["_has_upsell_on_receipt"].astype(bool)
 
+    # Rnl Remarks = "Retention" → NOT productive (these are retention renewals, not new upsells)
+    _rnl_rem_col = find_col(df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks", "Rnl_Remarks"])
+    _is_retention = pd.Series(False, index=df.index)
+    if _rnl_rem_col:
+        _is_retention = df[_rnl_rem_col].astype(str).str.strip().str.lower() == "retention"
+
     df["Productivity"] = (
-        is_upsell | (is_pure_renewal & ~has_upsell)
+        (is_upsell | (is_pure_renewal & ~has_upsell)) & ~_is_retention
     ).astype(int)
 
     # Step 5: Service tier
@@ -4963,7 +4969,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 base_clients=_base_c, list_clients=_list_c)
             # Incremental: gate on PCR% > 140% (collection-based), compute on Net DV
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
+                              if (_kcd_pcdv_pct > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
@@ -4979,9 +4985,17 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 (btl_count or sb.get("btl_sales", 0)), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (pcr_pct * 100 > 140 and (collection_target or 0) > 0) else 0
+                              if (_kcd_pcdv_pct > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
+            # BTL multiplier applied to total (base + incremental) per FAQ Q14:
+            # BTL=0 → BTL gate (no incentive); BTL=1 → 100%; BTL>=2 → 120%
+            _btl_c = btl_count or sb.get("btl_sales", 0)
+            if _btl_c == 0:
+                base_inc = 0   # BTL=0 → no incentive per FAQ Q14
+            elif _btl_c >= 2:
+                base_inc = round(base_inc * 1.2, 0)
+            # BTL=1 → 100% (no change)
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
             if spot_inc == 0:
                 spot_inc = calc_spot_kcd(pcdv, "Catalog_270D" if vintage == "270D+" else "Catalog_other",
@@ -4990,8 +5004,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             kcd_base_only, notes = calc_kcd_roi(
                 pcdv, kcd_txn, kcd_col, vintage,
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (pcr_pct * 100 > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * S.get("kcd_incr_rate", 0.014), 0) \
+                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
             if spot_inc == 0:
@@ -5002,8 +5016,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcdv, kcd_txn, kcd_col, vintage, "HVRI",
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             notes = notes.replace("KCD Regular", "KCD HVRI")
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (pcr_pct * 100 > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * S.get("kcd_incr_rate", 0.014), 0) \
+                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
         elif "NAGPUR" in team_up or "PHARMA" in team_up:
@@ -5012,8 +5026,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 pcdv, kcd_txn, kcd_col, vintage, "NAGPUR",
                 ss_cmr_pct, ss_sent_count, S, collection_target, metric_label)
             notes = notes.replace("KCD Regular", "KCD Nagpur")
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * S.get("kcd_incr_nagpur", 0.0085), 0) \
-                              if (pcr_pct * 100 > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * S.get("kcd_incr_nagpur", 0.0085), 0) \
+                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
         else:
@@ -5024,8 +5038,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
             _incr_rate = (S.get("kcd_incr_nagpur", 0.0085)
                           if ("NAGPUR" in team_up or "PHARMA" in team_up)
                           else S.get("kcd_incr_rate", 0.014))
-            kcd_incremental = round(max(0, kcd_net_dv - collection_target) * _incr_rate, 0) \
-                              if (pcr_pct * 100 > 140 and collection_target > 0) else 0
+            kcd_incremental = round(max(0, kcd_net_dv - _kcd_hc_slab) * _incr_rate, 0) \
+                              if (pcdv > _kcd_pcdv_tgt and _kcd_pcdv_tgt > 0) else 0
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
             if spot_inc == 0:
@@ -5693,7 +5707,29 @@ else:
     receipt_df, refund_df, renewal_df = receipt_df_raw, refund_df_raw, renewal_df_raw
 
 # ── Enrich receipt: Productivity + Service_Tier ───────────────
-receipt_df = enrich_receipt(receipt_df)
+# If the uploaded receipt is pre-enriched (already has Productivity column),
+# use its values directly — don't re-compute and overwrite them.
+_prod_col_existing = find_col(receipt_df, ["Productivity", "PRODUCTIVITY"])
+_is_pre_enriched = (
+    _prod_col_existing is not None
+    and receipt_df[_prod_col_existing].notna().sum() > 0
+    and receipt_df[_prod_col_existing].dtype in [int, float, 'int64', 'float64',
+                                                  'Int64', 'Int32', 'object']
+    and receipt_df[_prod_col_existing].astype(str).str.strip().isin(['0','1','0.0','0.5','1.0']).mean() > 0.7
+)
+if _is_pre_enriched:
+    # Pre-enriched: standardise column name to "Productivity" but trust the values
+    if _prod_col_existing != "Productivity":
+        receipt_df = receipt_df.rename(columns={_prod_col_existing: "Productivity"})
+    # Still run enrich to fill Service_Tier if missing, but do NOT overwrite Productivity
+    _svc_col_existing = find_col(receipt_df, ["Service_Tier","Service","SERVICE_TIER"])
+    if _svc_col_existing is None:
+        _enriched_temp = enrich_receipt(receipt_df)
+        receipt_df["Service_Tier"] = _enriched_temp.get("Service_Tier", 0)
+    st.sidebar.caption(f"✅ Pre-enriched receipt detected — using existing Productivity "
+                       f"({int((receipt_df['Productivity']==1).sum())} productive rows)")
+else:
+    receipt_df = enrich_receipt(receipt_df)
 
 # ── CMR% from month-filtered renewal data ────────────────────
 cmr_map     = calc_cmr_per_employee(renewal_df)
