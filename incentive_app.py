@@ -4959,6 +4959,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 collection_target=collection_target, S=S,
                 l1_count=int(sb.get("L1 Count", 4) or 4))
             kcd_base_only   = base_inc
+            _kcd_pcdv_pct_early = (round(kcd_net_dv / collection_target * 100, 2) if collection_target > 0 else 0.0)  # for Listing/Catalog gate
             kcd_incremental = 0  # already inside calc_kcd_sam
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(is_l2_sam=True, monthly_base_inc=base_inc)
         elif "LISTING" in team_up:
@@ -4971,7 +4972,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 base_clients=_base_c, list_clients=_list_c)
             # Incremental: gate on PCR% > 140% (collection-based), compute on Net DV
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (_kcd_pcdv_pct > 140 and (collection_target or 0) > 0) else 0
+                              if (_kcd_pcdv_pct_early > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
             spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
@@ -4987,7 +4988,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 (btl_count or sb.get("btl_sales", 0)), ss_cmr_pct, ss_sent_count, collection_target, S,
                 base_clients=_base_c, list_clients=_cat_c)
             kcd_incremental = round(max(0, kcd_net_dv - (collection_target or 0)) * S.get("kcd_incr_rate", 0.014), 0) \
-                              if (_kcd_pcdv_pct > 140 and (collection_target or 0) > 0) else 0
+                              if (_kcd_pcdv_pct_early > 140 and (collection_target or 0) > 0) else 0
             kcd_base_only = base_inc
             base_inc = kcd_base_only + kcd_incremental
             # BTL multiplier applied to total (base + incremental) per FAQ Q14:
