@@ -3258,10 +3258,11 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         slabs = S.get("kcd_sam_listing" if is_listing else "kcd_sam_catalog", [])
         is_cmr80 = cmr_pct >= 80
         per_txn = 0
-        for (thresh_pct, r1, r2) in sorted(slabs, reverse=True):
-            if pcr_pct_val >= thresh_pct:
-                per_txn = r2 if is_cmr80 else r1
-                break
+        if cmr_col_val > 0:   # col=0 means CMR not achieved → per_txn stays 0
+            for (thresh_pct, r1, r2) in sorted(slabs, reverse=True):
+                if pcr_pct_val >= thresh_pct:
+                    per_txn = r2 if is_cmr80 else r1
+                    break
 
         # Incremental = IF(PCR% > 140%, (Net_DV - CT) * SAM_incr_rate, 0)
         incr_rate = next((float(r.get("Incr_Rate_%",0.65))/100
@@ -3520,8 +3521,11 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
     if collection_target <= 0:
         return 0, "KCD Catalog -- target=0"
     achv    = (net_dv / collection_target) * 100
-    per_txn = next((r2 if cmr_col_val == 2 else r1
-                    for t, r1, r2 in S.get("kcd_catalog_slabs", []) if achv >= t), 0)
+    if cmr_col_val == 0:
+        per_txn = 0   # CMR not achieved → no per-txn incentive
+    else:
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in S.get("kcd_catalog_slabs", []) if achv >= t), 0)
     # Incremental computed separately in route_calc (needs PCR% gate not NDV% gate)
     btl_mult = 1.2 if btl_sales >= 2 else (1.0 if btl_sales == 1 else 0.0)
     # SS+ CMR gate per FAQ Q5: for <4 sent, use minimum received counts
@@ -5776,8 +5780,10 @@ if _is_pre_enriched:
     # Restore all pre-enriched columns (don't let enrich_receipt overwrite them)
     for _c, _vals in _saved_cols.items():
         receipt_df[_c] = _vals
-    st.sidebar.caption(f"✅ Pre-enriched receipt detected — using existing Productivity "
-                       f"({int((receipt_df['Productivity']==1).sum())} productive rows)")
+    _prod_after = int((receipt_df['Productivity']==1).sum())
+    _svc_present = "Service_Tier" in _saved_cols
+    st.sidebar.caption(f"✅ Pre-enriched: {_prod_after} productive rows | "
+                       f"saved_cols={list(_saved_cols.keys())[:4]} | svc_in_saved={_svc_present}")
 else:
     receipt_df = enrich_receipt(receipt_df)
 
