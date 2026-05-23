@@ -6986,6 +6986,8 @@ if calc_btn:
 
         # ── Receipt Data ─────────────────────────────────────────────────────
         try:
+            _debug_prod = int((receipt_df['Productivity']==1).sum()) if 'Productivity' in receipt_df.columns else -1
+            st.info(f"DEBUG: receipt_df at export has {len(receipt_df)} rows, Productivity=1: {_debug_prod}")
             rec_exp = receipt_df.copy()
             rec_exp = rec_exp.drop(columns=[c for c in
                 ["Service_Tier","_is_upsell",
