@@ -2877,13 +2877,30 @@ def get_cmr_slab(cmr_pct, sent_count, slab1_target, slab2_target):
 
 
 def get_kcd_cmr_col(cmr_pct, sent_count, slab1_target, slab2_target):
-    if sent_count <= 3:
-        return 1, "Forced col 1 (≤3 sent)"
-    if cmr_pct >= slab2_target:
-        return 2, f"CMR {cmr_pct:.1f}% ≥ {slab2_target}%"
-    if cmr_pct >= slab1_target:
-        return 1, f"CMR {cmr_pct:.1f}% ≥ {slab1_target}%"
-    return 0, f"CMR {cmr_pct:.1f}% < {slab1_target}%"
+    """
+    Per FAQ Q3: CMR col based on overall CMR sent/received.
+    Sent 0 → col1 (100%); Sent 1 → 1 rcvd → col1; Sent 2 → ≥1 rcvd → col1;
+    Sent 3 → ≥2 rcvd → col1; Sent ≥4 → use actual CMR%.
+    col=0 means CMR not achieved → per_txn=0.
+    """
+    recd = round(cmr_pct * sent_count / 100)   # approximate received from %
+    if sent_count == 0:
+        return 1, "No CMR sent (forced col 1)"
+    elif sent_count == 1:
+        if recd >= 1: return 1, "Sent 1, rcvd 1 (forced col 1)"
+        return 0, "Sent 1, rcvd 0"
+    elif sent_count == 2:
+        if recd >= 1: return 1, "Sent 2, rcvd ≥1 (forced col 1)"
+        return 0, f"Sent 2, rcvd {recd}<1"
+    elif sent_count == 3:
+        if recd >= 2: return 1, "Sent 3, rcvd ≥2 (forced col 1)"
+        return 0, f"Sent 3, rcvd {recd}<2"
+    else:  # sent >= 4: use actual CMR%
+        if cmr_pct >= slab2_target:
+            return 2, f"CMR {cmr_pct:.1f}% ≥ {slab2_target}%"
+        if cmr_pct >= slab1_target:
+            return 1, f"CMR {cmr_pct:.1f}% ≥ {slab1_target}%"
+        return 0, f"CMR {cmr_pct:.1f}% < {slab1_target}%"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3403,10 +3420,13 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
 
     # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 70%
     # ss_sent <= 2 → no penalty (not enough data to penalise)
-    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
-        ss_mult = 0.5
-    else:
-        ss_mult = 1.0
+    # SS+ CMR gate per FAQ Q5: for <4 sent, use minimum received counts
+    _ss_thr = S.get("kcd_ss_threshold", 72)
+    if ss_sent == 0:   ss_mult = 1.0
+    elif ss_sent == 1: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 1 else 0.5
+    elif ss_sent == 2: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 1 else 0.5
+    elif ss_sent == 3: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 2 else 0.5
+    else:              ss_mult = 1.0 if ss_cmr_pct >= _ss_thr else 0.5  # sent >=4: use %
 
     base = per_txn * txn_count * ss_mult
 
@@ -3453,10 +3473,13 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     per_txn = next((r2 if cmr_col_val == 2 else r1
                     for t, r1, r2 in S.get("kcd_listing_slabs", []) if achv >= t), 0)
     incr    = max(0, net_dv - collection_target) * S.get("kcd_incr_rate", 0.014)
-    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
-        ss_mult = 0.5
-    else:
-        ss_mult = 1.0
+    # SS+ CMR gate per FAQ Q5: for <4 sent, use minimum received counts
+    _ss_thr = S.get("kcd_ss_threshold", 72)
+    if ss_sent == 0:   ss_mult = 1.0
+    elif ss_sent == 1: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 1 else 0.5
+    elif ss_sent == 2: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 1 else 0.5
+    elif ss_sent == 3: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 2 else 0.5
+    else:              ss_mult = 1.0 if ss_cmr_pct >= _ss_thr else 0.5  # sent >=4: use %
     base = per_txn * txn_count * ss_mult
 
     # Both Achievers (May): DV target + CMR → 125%; Only CMR → 50%
@@ -3501,10 +3524,13 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
                     for t, r1, r2 in S.get("kcd_catalog_slabs", []) if achv >= t), 0)
     # Incremental computed separately in route_calc (needs PCR% gate not NDV% gate)
     btl_mult = 1.2 if btl_sales >= 2 else (1.0 if btl_sales == 1 else 0.0)
-    if ss_sent >= 3 and ss_cmr_pct < S.get("kcd_ss_threshold", 72):
-        ss_mult = 0.5
-    else:
-        ss_mult = 1.0
+    # SS+ CMR gate per FAQ Q5: for <4 sent, use minimum received counts
+    _ss_thr = S.get("kcd_ss_threshold", 72)
+    if ss_sent == 0:   ss_mult = 1.0
+    elif ss_sent == 1: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 1 else 0.5
+    elif ss_sent == 2: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 1 else 0.5
+    elif ss_sent == 3: ss_mult = 1.0 if (ss_cmr_pct * ss_sent / 100) >= 2 else 0.5
+    else:              ss_mult = 1.0 if ss_cmr_pct >= _ss_thr else 0.5  # sent >=4: use %
 
     # CATALOG: BTL=0 → 0 incentive (FAQ Q14 confirmed)
     if btl_mult == 0.0:
@@ -4889,15 +4915,18 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         if not _is_sam and "SAM" in str(team).upper(): _is_sam = True
         if not _is_ilp_desig and "ILP" in str(team).upper(): _is_ilp_desig = True
 
-        kcd_col, cmr_note = get_kcd_cmr_col(
-            cmr_pct, rnl_sent, sb.get("kcd_slab1_target", 72), sb.get("kcd_slab2_target", 80))
         team_up = team.upper()
 
         # KCD uses productive receipt count (not all receipt rows, not renewal count)
         kcd_txn = prod_score_receipt if prod_score_receipt and prod_score_receipt > 0 else txn_count
 
-        # SS+ sent count for penalty determination
+        # SS+ sent count for penalty determination — used for kcd_col (NOT overall CMR)
         ss_sent_count = cmr_data.get("ss_sent", 0)
+
+        # CMR col from OVERALL CMR% and overall renewal sent (FAQ Q3)
+        # SS+CMR% only affects the ss_mult penalty (100%/50%) via get_kcd_cmr_col separately
+        kcd_col, cmr_note = get_kcd_cmr_col(
+            cmr_pct, rnl_sent, sb.get("kcd_slab1_target", 72), sb.get("kcd_slab2_target", 80))
 
         # KCD: use Net Deal Value for incremental (not Net Collection)
         kcd_net_dv = net_deal_val if net_deal_val > 0 else net_dv
@@ -5736,11 +5765,17 @@ if _is_pre_enriched:
     # Pre-enriched: standardise column name to "Productivity" but trust the values
     if _prod_col_existing != "Productivity":
         receipt_df = receipt_df.rename(columns={_prod_col_existing: "Productivity"})
-    # Still run enrich to fill Service_Tier if missing, but do NOT overwrite Productivity
+    # Still run enrich to fill Service_Tier if missing, but do NOT overwrite existing columns
     _svc_col_existing = find_col(receipt_df, ["Service_Tier","Service","SERVICE_TIER"])
-    if _svc_col_existing is None:
+    # Cols written by enrich_receipt that we want to preserve from the uploaded enriched file
+    _enrich_written = ["Productivity","Service_Tier","Base to List Sale","AMR","IM Varient","Pref SS+","FNT","Deal Val (WOT)","_has_upsell_on_receipt","_is_pure_renewal","_is_upsell"]
+    _saved_cols = {c: receipt_df[c].copy() for c in _enrich_written if c in receipt_df.columns}
+    if _svc_col_existing is None and "Service_Tier" not in _saved_cols:
         _enriched_temp = enrich_receipt(receipt_df)
         receipt_df["Service_Tier"] = _enriched_temp.get("Service_Tier", 0)
+    # Restore all pre-enriched columns (don't let enrich_receipt overwrite them)
+    for _c, _vals in _saved_cols.items():
+        receipt_df[_c] = _vals
     st.sidebar.caption(f"✅ Pre-enriched receipt detected — using existing Productivity "
                        f"({int((receipt_df['Productivity']==1).sum())} productive rows)")
 else:
