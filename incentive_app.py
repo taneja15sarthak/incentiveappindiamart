@@ -2891,6 +2891,9 @@ def get_kcd_cmr_col(cmr_pct, sent_count, slab1_target, slab2_target):
 # ═══════════════════════════════════════════════════════════════
 
 def pcdv_slab(pcdv, slabs, col):
+    """col=0: CMR below slab1 → 0; col=1: slab1 rate; col=2: slab2 rate"""
+    if col == 0:
+        return 0, 0   # CMR not achieved → no per-txn incentive
     for thresh, r1, r2 in slabs:
         if pcdv >= thresh:
             return thresh, (r2 if col == 2 else r1)
@@ -3389,14 +3392,14 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
     """
     loc = str(location).upper()
     if "NAGPUR" in loc:
-        _, per_txn = pcdv_slab(pcdv, S.get("kcd_nagpur_slabs", []), cmr_col_val)
+        slabs = S.get("kcd_nagpur_slabs", [])
     elif any(c in loc for c in ["HYDERABAD", "VASHI", "RAIPUR", "INDORE"]):
-        _, per_txn = pcdv_slab(pcdv, S.get("kcd_hvri_slabs", []), cmr_col_val)
+        slabs = S.get("kcd_hvri_slabs", [])
     else:
         slabs = {"270D+": S.get("kcd_270_slabs", []),
                  "91-270D": S.get("kcd_91_270_slabs", [])}.get(
             vintage, S.get("kcd_0_90_slabs", []))
-        _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
+    _, per_txn = pcdv_slab(pcdv, slabs, cmr_col_val)
 
     # SS+ penalty: only when ss_sent >= 3 AND ss_cmr < 70%
     # ss_sent <= 2 → no penalty (not enough data to penalise)
@@ -4523,10 +4526,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         _lst_rate_hc    = int(S.get("KCD_Target_Listing_Client_New",15000) if _is_new_kcd_hc else S.get("KCD_Target_Listing_Client",22000))
         _lst_hc = float(cfg_row.get("Listing Client", cfg_row.get("Listing Clients", 0)) or 0)
         _cat_hc = float(cfg_row.get("Catalog Client", cfg_row.get("Catalog Clients", 0)) or 0)
-        # Separate rates: catalog clients at 7k, listing clients at 22k
-        highest_coll = _cat_hc * _cat_rate_hc + _lst_hc * _lst_rate_hc
-        if highest_coll == 0:
-            # No client split available — use all as catalog (base) rate
+        # Base clients earn at catalog rate (7k); listing at 22k
+        _base_hc = max(0, client_cnt - _cat_hc - _lst_hc)
+        highest_coll = (_base_hc + _cat_hc) * _cat_rate_hc + _lst_hc * _lst_rate_hc
+        if highest_coll == 0:   # no client split → use all as base rate
             highest_coll = client_cnt * _cat_rate_hc
     elif _is_kcd_sam:
         _hc_mult = S.get("hc_mult_sam", 17000)
@@ -5157,9 +5160,15 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _kcd_lst_rate_ct = int(S.get("KCD_Target_Listing_Client_New",15000) if _is_new_kcd else S.get("KCD_Target_Listing_Client",22000))
     _kcd_lst_c_ct  = float(cfg_row.get("Listing Client",  cfg_row.get("Listing Clients",  0)) or 0)
     _kcd_cat_c_ct  = float(cfg_row.get("Catalog Client",  cfg_row.get("Catalog Clients",  0)) or 0)
-    _kcd_coll_tgt  = int(_kcd_cat_c_ct * _kcd_cat_rate_ct + _kcd_lst_c_ct * _kcd_lst_rate_ct) if _kcd_is_lst_cat else 0
-    if _kcd_is_lst_cat and _kcd_coll_tgt == 0:   # no client split → all as catalog rate
-        _kcd_coll_tgt = int(client_cnt * _kcd_cat_rate_ct)
+    if _kcd_is_lst_cat:
+        # Base clients = CA - catalog_clients - listing_clients; they earn at catalog rate (7k)
+        _kcd_base_c = max(0, client_cnt - _kcd_cat_c_ct - _kcd_lst_c_ct)
+        _kcd_coll_tgt = int((_kcd_base_c + _kcd_cat_c_ct) * _kcd_cat_rate_ct
+                            + _kcd_lst_c_ct * _kcd_lst_rate_ct)
+        if _kcd_coll_tgt == 0:   # no client split → all at catalog/base rate
+            _kcd_coll_tgt = int(client_cnt * _kcd_cat_rate_ct)
+    else:
+        _kcd_coll_tgt = 0
     # PCDV Target = HC/CA (slab) OR Collection_Target/CA (formula)
     _kcd_pcdv_tgt = (round(_kcd_hc_slab / client_cnt, 0) if (_kcd_is_slab and client_cnt > 0) else
                      round(_kcd_coll_tgt / client_cnt, 0) if (_kcd_is_lst_cat and client_cnt > 0) else 0)
