@@ -6005,6 +6005,12 @@ if enrich_btn:
 
 
 if calc_btn:
+    # DEBUG — show receipt_df state immediately
+    _dbg_rows = len(receipt_df)
+    _dbg_prod = int((receipt_df['Productivity']==1).sum()) if 'Productivity' in receipt_df.columns else -1
+    _dbg_has_prod = "Productivity" in receipt_df.columns
+    _dbg_statuses = receipt_df["Status"].value_counts().to_dict() if "Status" in receipt_df.columns else {}
+    st.warning(f"🔍 DEBUG: {_dbg_rows} rows | Prod_col={_dbg_has_prod} | Prod=1: {_dbg_prod} | Statuses: {_dbg_statuses} | pre_enriched={_is_pre_enriched}", icon="🔍")
     results = []
     prog    = st.progress(0, "Calculating…")
 
@@ -6986,8 +6992,6 @@ if calc_btn:
 
         # ── Receipt Data ─────────────────────────────────────────────────────
         try:
-            _debug_prod = int((receipt_df['Productivity']==1).sum()) if 'Productivity' in receipt_df.columns else -1
-            st.info(f"DEBUG: receipt_df at export has {len(receipt_df)} rows, Productivity=1: {_debug_prod}")
             rec_exp = receipt_df.copy()
             rec_exp = rec_exp.drop(columns=[c for c in
                 ["Service_Tier","_is_upsell",
