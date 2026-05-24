@@ -7078,16 +7078,18 @@ if calc_btn:
                 rec_exp["Total Sale"] = 1
 
             # ── Productivity (sir col AR) ───────────────────────────────────────
-            # Sir: =IF(AQ3=1,1,IF(AND(BH3="Renewal",BG3=""),1,""))
-            # = 1 if TotalSale=1, OR if RenewalMap="Renewal" AND SaleMapping="", else ""
-            if "Renewal Map" in rec_exp.columns and "Sale Mapping" in rec_exp.columns:
-                def _calc_prod(r):
-                    if r.get("Total Sale",0) == 1: return 1
-                    return 1 if (r.get("Renewal Map","") == "Renewal" and
-                                 r.get("Sale Mapping","") == "") else ""
-                rec_exp["Productivity"] = rec_exp.apply(_calc_prod, axis=1)
-            else:
-                rec_exp["Productivity"] = rec_exp["Total Sale"]  # fallback
+            # Productivity: preserve if pre-enriched, else compute
+            _prod_pre_set = ("Productivity" in rec_exp.columns and
+                              pd.to_numeric(rec_exp["Productivity"], errors="coerce").isin([0,0.5,1]).mean() > 0.8)
+            if not _prod_pre_set:
+                if "Renewal Map" in rec_exp.columns and "Sale Mapping" in rec_exp.columns:
+                    def _calc_prod(r):
+                        if r.get("Total Sale",0) == 1: return 1
+                        return 1 if (r.get("Renewal Map","") == "Renewal" and
+                                     r.get("Sale Mapping","") == "") else ""
+                    rec_exp["Productivity"] = rec_exp.apply(_calc_prod, axis=1)
+                else:
+                    rec_exp["Productivity"] = rec_exp["Total Sale"]  # fallback
 
             # ── AMR (sir col BR) ────────────────────────────────────────────────
             # Sir: =IF(OR(AH3="Others",AH3="Retention",AH3="CMR+3"),"No","Yes")
@@ -7159,8 +7161,11 @@ if calc_btn:
             else:
                 rec_exp["Total Sale"] = 1  # default: every row is a sale
 
-            # Productivity: same as Total Sale
-            rec_exp["Productivity"] = rec_exp["Total Sale"]
+            # Productivity: preserve if pre-enriched, else compute from Total Sale
+            _prod_pre2 = ("Productivity" in rec_exp.columns and
+                           pd.to_numeric(rec_exp["Productivity"], errors="coerce").isin([0,0.5,1]).mean() > 0.8)
+            if not _prod_pre2:
+                rec_exp["Productivity"] = rec_exp["Total Sale"]
 
             # AMR: "Yes" if Remarks (AL col) is a renewal-type category
             # In sir's file: AL col values = "MDC","MDC-TS","WS","CMR+3","OTHERS","RETENTION" etc.
