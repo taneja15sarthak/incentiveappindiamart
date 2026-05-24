@@ -48,14 +48,14 @@ PURE_RENEWAL_PRODUCTS = {
 }
 
 # Upsell column values → service tier
-UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","Maxi Pro-1","TS pro-1"}
+UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","TS pro-1"}
 UPSELL_TIER2 = {
-    "MYR","Combo 2YR","Maximiser","TS Pro-2","Maxi Pro-2",
+    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2","Maxi Pro-2",
     "VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6",
     "VEXPD-12","VEXPG-6","VEXPG-MYR","VEXPP-12","VEXPP-MYR","VEXPD-MYR",
 }
 UPSELL_TIER3 = {
-    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi pro-3","Maximiser-2",
+    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi Pro-2","Maxi pro-3","Maximiser-2",
     "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro",
 }
 
@@ -3472,8 +3472,11 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     if collection_target <= 0:
         return 0, "KCD Listing -- target=0"
     achv    = (net_dv / collection_target) * 100
-    per_txn = next((r2 if cmr_col_val == 2 else r1
-                    for t, r1, r2 in S.get("kcd_listing_slabs", []) if achv >= t), 0)
+    if cmr_col_val == 0:
+        per_txn = 0   # CMR not achieved → no per-txn incentive
+    else:
+        per_txn = next((r2 if cmr_col_val == 2 else r1
+                        for t, r1, r2 in S.get("kcd_listing_slabs", []) if achv >= t), 0)
     incr    = max(0, net_dv - collection_target) * S.get("kcd_incr_rate", 0.014)
     # SS+ CMR gate per FAQ Q5: for <4 sent, use minimum received counts
     _ss_thr = S.get("kcd_ss_threshold", 72)
