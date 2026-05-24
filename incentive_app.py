@@ -3209,7 +3209,8 @@ def calc_csd_rel_mgr(pcr, pcdv, prod_raw, cmr_pct, mdc1_cmr_pct,
 def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
                  cmr_pct, ss_cmr_pct, ss_sent, btl_sales,
                  team, location, vintage,
-                 client_a, listing_c, catalog_c, collection_target, S, l1_count=4):
+                 client_a, listing_c, catalog_c, collection_target, S, l1_count=4,
+                 cmr_col_val=1):
     """
     KCD Sr. Account Manager (L2) incentive -- exact FSF KCD-SAM formula.
 
@@ -5000,7 +5001,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 team=team, location=location, vintage=vintage,
                 client_a=client_cnt, listing_c=listing_c, catalog_c=catalog_c,
                 collection_target=collection_target, S=S,
-                l1_count=int(sb.get("L1 Count", 4) or 4))
+                l1_count=int(sb.get("L1 Count", 4) or 4),
+                cmr_col_val=kcd_col)
             kcd_base_only   = base_inc
             _kcd_pcdv_pct_early = (round(kcd_net_dv / collection_target * 100, 2) if collection_target > 0 else 0.0)  # for Listing/Catalog gate
             kcd_incremental = 0  # already inside calc_kcd_sam
@@ -5330,9 +5332,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "Receipt Txns":        txn_count,
         "Renewal Txns":        rnl_count,
         # CMR+1 / SPS block -> "NA" for 0-90D (these columns only apply to SPS 91D+)
-        "CMR+1 Sent":          ("NA" if (_is_new_joiner and _is_csd) else
+        "CMR+1 Sent":          ("NA" if (_is_new_joiner and _is_csd and not _is_csd_rm) else
                                 (_c1_sent if (_is_csd and _c1_sent > 0) else "")),
-        "CMR+1 Recd":          ("NA" if (_is_new_joiner and _is_csd) else
+        "CMR+1 Recd":          ("NA" if (_is_new_joiner and _is_csd and not _is_csd_rm) else
                                 (_c1_map.get("mdc1_recd", 0) if (_is_csd and _c1_sent > 0) else "")),
         "MDC1 CMR+1%":         ("NA" if (_is_new_joiner and _is_csd) else
                                 (round(float(cmr_plus1_pct) * 100 if float(cmr_plus1_pct) <= 1 else float(cmr_plus1_pct), 1)
