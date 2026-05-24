@@ -6448,9 +6448,10 @@ if calc_btn:
             rule("Total Sale",
                  '=IF(OR({uniq}{R}="",{uniq}{R}="TS"),0,1)',
                  '=IF(Unique="" or "TS", 0, 1)', _pct1)
-            # Productivity: only apply formula if not pre-enriched
-            # (enriched file already has correct 0/1 values from analyst)
-            if not _already_enriched:
+            # Productivity: only apply formula if column doesn't already have valid 0/1 values
+            _prod_col_valid = ("Productivity" in df.columns and
+                               pd.to_numeric(df["Productivity"], errors="coerce").isin([0,0.5,1]).mean() > 0.8)
+            if not _prod_col_valid:
                 rule("Productivity",
                      "={tsale}{R}",
                      "=Total Sale (1=productive txn)", _pct1)
