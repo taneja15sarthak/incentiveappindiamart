@@ -5747,10 +5747,11 @@ if sel_month:
                 "Check that months in the renewal file are formatted as e.g. May apostrophe 26.",
                 icon="⚠️")
         else:
+            _p1 = int((receipt_df["Productivity"]==1).sum()) if "Productivity" in receipt_df.columns else "N/A"
             st.info(f"📅 **{sel_month}** -- "
                     f"Receipt: {len(receipt_df)} rows | "
                     f"Refund: {len(refund_df)} rows | "
-                    f"Renewal: {rnl_count} rows")
+                    f"Renewal: {rnl_count} rows | Productive: {_p1}")
 else:
     receipt_df, refund_df, renewal_df = receipt_df_raw, refund_df_raw, renewal_df_raw
 
@@ -6005,12 +6006,6 @@ if enrich_btn:
 
 
 if calc_btn:
-    # DEBUG — show receipt_df state immediately
-    _dbg_rows = len(receipt_df)
-    _dbg_prod = int((receipt_df['Productivity']==1).sum()) if 'Productivity' in receipt_df.columns else -1
-    _dbg_has_prod = "Productivity" in receipt_df.columns
-    _dbg_statuses = receipt_df["Status"].value_counts().to_dict() if "Status" in receipt_df.columns else {}
-    st.warning(f"🔍 DEBUG: {_dbg_rows} rows | Prod_col={_dbg_has_prod} | Prod=1: {_dbg_prod} | Statuses: {_dbg_statuses} | pre_enriched={_is_pre_enriched}", icon="🔍")
     results = []
     prog    = st.progress(0, "Calculating…")
 
