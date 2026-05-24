@@ -3300,7 +3300,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
         _ba_note = ""
         if S.get("both_achievers_on", False):
             _dv_hit  = per_txn > 0
-            _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+            _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
             if _dv_hit and _cmr_hit:
                 total = round(total * S.get("both_achievers_pct", 1.25), 0)
                 _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
@@ -3363,7 +3363,7 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
     _ba_note = ""
     if S.get("both_achievers_on", False):
         _pcdv_hit = per_txn > 0
-        _cmr_hit  = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _pcdv_hit and _cmr_hit:
             total = round(total * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
@@ -3389,7 +3389,7 @@ def calc_kcd_roi(pcdv, txn_count, cmr_col_val, vintage,
     # Both Achievers / Only CMR (KCD ROI PPT: "Both Achievers (PCDV+CMR) → 125%")
     _ba_note = ""
     if S.get("both_achievers_on", False):
-        _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if per_txn > 0 and _cmr_hit:
             base = round(base * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
@@ -3437,7 +3437,7 @@ def calc_kcd_regular(pcdv, txn_count, cmr_col_val, vintage, location,
     _ba_note = ""
     if S.get("both_achievers_on", False):
         _pcdv_hit = per_txn > 0
-        _cmr_hit  = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _pcdv_hit and _cmr_hit:
             base = round(base * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
@@ -3492,7 +3492,7 @@ def calc_kcd_listing(net_dv, txn_count, cmr_col_val, vintage,
     _ba_note = ""
     if S.get("both_achievers_on", False):
         _dv_hit  = per_txn > 0
-        _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _dv_hit and _cmr_hit:
             base = round(base * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
@@ -3551,7 +3551,7 @@ def calc_kcd_catalog(net_dv, txn_count, cmr_col_val, vintage,
     _ba_note = ""
     if S.get("both_achievers_on", False):
         _dv_hit  = per_txn > 0
-        _cmr_hit = ss_cmr_pct >= S.get("kcd_ss_threshold", 72)
+        _cmr_hit  = (cmr_col_val > 0) and (ss_cmr_pct >= S.get("kcd_ss_threshold", 72))
         if _dv_hit and _cmr_hit:
             base = round(base * S.get("both_achievers_pct", 1.25), 0)
             _ba_note = f" | BothAchievers×{S.get('both_achievers_pct',1.25):.0%}"
