@@ -3330,10 +3330,11 @@ def calc_kcd_sam(pcr_val, pcdv_val, net_dv, net_coll, txn_prod_raw,
 
     is_cmr80 = cmr_pct >= 80
     per_txn = 0
-    for (thresh_pcdv, r1, r2) in sorted(slabs, reverse=True):
-        if pcdv_val >= thresh_pcdv:          # ← PCDV not PCR
-            per_txn = r2 if is_cmr80 else r1
-            break
+    if cmr_col_val > 0:   # col=0 = CMR not achieved
+        for (thresh_pcdv, r1, r2) in sorted(slabs, reverse=True):
+            if pcdv_val >= thresh_pcdv:          # ← PCDV not PCR
+                per_txn = r2 if is_cmr80 else r1
+                break
 
     # Incremental: (Net_DV - Highest_Coll) * rate% when PCDV > highest slab threshold
     _team_key = ("NAGPUR" if is_nagpur else "HVRI" if is_hvri else
@@ -6447,9 +6448,12 @@ if calc_btn:
             rule("Total Sale",
                  '=IF(OR({uniq}{R}="",{uniq}{R}="TS"),0,1)',
                  '=IF(Unique="" or "TS", 0, 1)', _pct1)
-            rule("Productivity",
-                 "={tsale}{R}",
-                 "=Total Sale (1=productive txn)", _pct1)
+            # Productivity: only apply formula if not pre-enriched
+            # (enriched file already has correct 0/1 values from analyst)
+            if not _already_enriched:
+                rule("Productivity",
+                     "={tsale}{R}",
+                     "=Total Sale (1=productive txn)", _pct1)
             rule("Collection",
                  '=IF(OR(ISNUMBER(SEARCH("NACH",{mode_c}{R})),ISNUMBER(SEARCH("ECS",{mode_c}{R}))),"No","Yes")',
                  '=IF(Mode contains NACH/ECS,"No","Yes")', _grey)
