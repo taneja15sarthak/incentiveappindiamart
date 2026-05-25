@@ -1730,6 +1730,22 @@ def enrich_receipt(df):
         (is_upsell | (is_pure_renewal & ~has_upsell)) & ~_is_retention
     ).astype(int)
 
+    # ── NR Upsell/AMR column ──────────────────────────────────────────────
+    # "Yes" when: Rem col = "Upsell-NR" OR Rnl Remarks = CMR/CMR+1/CMR+2/CMR+3
+    if "NR Upsell/AMR" not in df.columns:
+        _rem_col2 = find_col(df, ["Rem", "Remarks", "REM", "REMARKS"])
+        _rnl_rem2 = find_col(df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks", "Rnl_Remarks"])
+        _cmr_vals = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
+        def _nr_upsell_amr(row):
+            rem_val = str(row[_rem_col2]).strip().upper() if _rem_col2 else ""
+            rnl_val = str(row[_rnl_rem2]).strip().upper() if _rnl_rem2 else ""
+            if rem_val == "UPSELL-NR":
+                return "Yes"
+            if rnl_val in {v.upper() for v in _cmr_vals}:
+                return "Yes"
+            return "No"
+        df["NR Upsell/AMR"] = df.apply(_nr_upsell_amr, axis=1)
+
     # Step 5: Service tier
     def _tier(row):
         if row["Productivity"] != 1:
@@ -1759,21 +1775,75 @@ def enrich_receipt(df):
     df["Service_Tier"] = df.apply(_tier, axis=1)
 
     # ── April-specific enrichment columns ─────────────────────────────────
-    # FNT: derive from Entry Date (FNT-1=Apr1-16, FNT-2=Apr20-30)
-    if "FNT" not in df.columns:
-        date_col = find_col(df, ["Entry Date", "Receipt Date", "Date"])
-        if date_col:
+        # FNT / WK: derive from Entry Date using configurable date ranges
+    # If period_dates set in session_state, use those; else fall back to day-based defaults
+    date_col_fnt = find_col(df, ["Entry Date", "Receipt Date", "Date"])
+    if date_col_fnt:
+        _pd = {}
+        try:
+            import streamlit as _st2
+            _pd = _st2.session_state.get("period_dates", {})
+        except: pass
+        import datetime as _dtt
+
+        def _assign_period(v, col_name):
+            """Assign FNT-1/FNT-2/WK-1..WK-4 based on configurable date ranges."""
+            try:
+                dt = pd.to_datetime(v, errors='coerce')
+                if pd.isna(dt):
+                    dt = pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(float(str(v))))
+                d = dt.date()
+                if col_name in _pd:
+                    s, e = _pd[col_name]
+                    return col_name if s <= d <= e else ""
+                # Fallback day-based defaults
+                if col_name == "FNT-1": return "FNT-1" if dt.day <= 16 else ""
+                if col_name == "FNT-2": return "FNT-2" if dt.day >= 17 else ""
+                if col_name == "WK-1":  return "WK-1"  if 1  <= dt.day <= 9  else ""
+                if col_name == "WK-2":  return "WK-2"  if 10 <= dt.day <= 16 else ""
+                if col_name == "WK-3":  return "WK-3"  if 17 <= dt.day <= 23 else ""
+                if col_name == "WK-4":  return "WK-4"  if dt.day >= 24       else ""
+                return ""
+            except: return ""
+
+        for _pname in ["FNT-1","FNT-2","WK-1","WK-2","WK-3","WK-4"]:
+            _col_label = _pname.replace("-","_")  # internal col name
+            if _pname not in df.columns and "FNT" not in _pname.split("-")[0] or True:
+                pass  # assign below
+
+        # Assign combined FNT column (each row gets one label or "")
+        if "FNT" not in df.columns:
             def _fnt(v):
                 try:
                     dt = pd.to_datetime(v, errors='coerce')
                     if pd.isna(dt):
-                        # Excel serial
                         dt = pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(float(str(v))))
+                    d = dt.date()
+                    for pname in ["FNT-1","FNT-2"]:
+                        if pname in _pd:
+                            s, e = _pd[pname]
+                            if s <= d <= e: return pname
+                    # Fallback
                     if dt.day <= 16: return "FNT-1"
-                    if dt.day >= 20: return "FNT-2"
-                    return ""  # Apr 17-19 gap
+                    return "FNT-2"
                 except: return ""
-            df["FNT"] = df[date_col].apply(_fnt)
+            df["FNT"] = df[date_col_fnt].apply(_fnt)
+
+        # Assign WK-1..WK-4 columns
+        for _wk, _day_range in [("WK-1",(1,9)),("WK-2",(10,16)),("WK-3",(17,23)),("WK-4",(24,31))]:
+            if _wk not in df.columns:
+                def _make_wk(v, wk=_wk, dr=_day_range):
+                    try:
+                        dt = pd.to_datetime(v, errors='coerce')
+                        if pd.isna(dt):
+                            dt = pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(float(str(v))))
+                        d = dt.date()
+                        if wk in _pd:
+                            s, e = _pd[wk]
+                            return wk if s <= d <= e else ""
+                        return wk if dr[0] <= dt.day <= dr[1] else ""
+                    except: return ""
+                df[_wk] = df[date_col_fnt].apply(_make_wk)
 
     # AMR: MYR Remarks column (non-blank = AMR/MYR row)
     if "AMR" not in df.columns:
@@ -4227,6 +4297,29 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         else:
             nr_upsell_count = 0
 
+        # Use pre-computed NR Upsell/AMR column from enriched receipt if available
+        _nr_amr_col = find_col(receipt_df, ["NR Upsell/AMR"])
+        if _nr_amr_col and _nr_amr_col in rec.columns:
+            _prod2     = rec["Productivity"].fillna(0).astype(float) > 0
+            _is_nr_amr = rec[_nr_amr_col].astype(str).str.strip().str.upper() == "YES"
+            _spot_q2   = _prod2 & _is_nr_amr
+            _date_c2   = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+            _dates_q2  = pd.to_datetime(rec[_date_c2], errors="coerce") if _date_c2 else pd.Series(dtype="datetime64[ns]")
+            # Use session_state period_dates if available
+            _pd2 = {}
+            try:
+                import streamlit as _stq; _pd2 = _stq.session_state.get("period_dates", {})
+            except: pass
+            def _in_period(dates_series, pname, def_range):
+                if pname in _pd2:
+                    import datetime as _dtp
+                    s, e = _pd2[pname]
+                    return dates_series.dt.date.between(s, e)
+                return dates_series.dt.day.between(def_range[0], def_range[1])
+            fnt1_prod_count = int((_spot_q2 & _in_period(_dates_q2, "FNT-1", (1,  16))).sum())
+            fnt2_prod_count = int((_spot_q2 & _in_period(_dates_q2, "FNT-2", (17, 31))).sum())
+            nr_upsell_count = int(_spot_q2.sum())
+
         # FNT-based spot counts (April)
         fnt_col = find_col(receipt_df, ["FNT", "Fortnight"])
         amr_col = find_col(receipt_df, ["AMR"])
@@ -4253,14 +4346,14 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             _spot_qual = _is_nr | _is_amr
             _dates2    = pd.to_datetime(rec[_date_col2], errors='coerce')
             fnt1_prod_count = int((_spot_qual & (_dates2.dt.day <= 16)).sum())
-            fnt2_prod_count = int((_spot_qual & (_dates2.dt.day >= 20)).sum())
+            fnt2_prod_count = int((_spot_qual & (_dates2.dt.day >= 17)).sum())
             nr_upsell_count = int(_spot_qual.sum())
         elif upsell_col_name:
             _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
             if _date_col:
                 _dates = pd.to_datetime(rec[_date_col], errors='coerce')
                 fnt1_prod_count = int((upsell_mask & (_dates.dt.day <= 16)).sum())
-                fnt2_prod_count = int((upsell_mask & (_dates.dt.day >= 20)).sum())
+                fnt2_prod_count = int((upsell_mask & (_dates.dt.day >= 17)).sum())
 
         # KCD multiplier counts
         pref_ss_col = find_col(receipt_df, ["Pref SS+", "PrefSS", "SS+"])
@@ -5499,6 +5592,41 @@ with st.sidebar:
 
     st.divider()
     st.header("⚙️ Scheme Settings")
+
+    # ── Period Date Ranges ────────────────────────────────────────────────
+    with st.expander("📅 Period Date Ranges", expanded=False):
+        st.caption("Set start/end dates for each period. Used to assign FNT and weekly labels to receipt rows.")
+        _cur_month = sel_month if 'sel_month' in dir() else "May-26"
+        # Default: May 2026
+        _def_yr, _def_mo = 2026, 5
+        try:
+            import datetime as _dt
+            _def_dt = pd.to_datetime(f"01-{_cur_month}", format="%d-%b-%y", errors="coerce")
+            if pd.notna(_def_dt):
+                _def_yr, _def_mo = _def_dt.year, _def_dt.month
+        except: pass
+
+        import datetime as _dt2
+        _periods = {
+            "FNT-1":  (_dt2.date(_def_yr, _def_mo, 1),  _dt2.date(_def_yr, _def_mo, 16)),
+            "FNT-2":  (_dt2.date(_def_yr, _def_mo, 17), _dt2.date(_def_yr, _def_mo, 31) if _def_mo in [1,3,5,7,8,10,12] else _dt2.date(_def_yr, _def_mo, 30)),
+            "WK-1":   (_dt2.date(_def_yr, _def_mo, 1),  _dt2.date(_def_yr, _def_mo, 9)),
+            "WK-2":   (_dt2.date(_def_yr, _def_mo, 10), _dt2.date(_def_yr, _def_mo, 16)),
+            "WK-3":   (_dt2.date(_def_yr, _def_mo, 17), _dt2.date(_def_yr, _def_mo, 23)),
+            "WK-4":   (_dt2.date(_def_yr, _def_mo, 24), _dt2.date(_def_yr, _def_mo, 31) if _def_mo in [1,3,5,7,8,10,12] else _dt2.date(_def_yr, _def_mo, 30)),
+        }
+        _period_dates = {}
+        _cols2 = st.columns(2)
+        for pi, (pname, (pdef_s, pdef_e)) in enumerate(_periods.items()):
+            with _cols2[pi % 2]:
+                st.write(f"**{pname}**")
+                _s = st.date_input(f"{pname} start", value=pdef_s, key=f"pd_{pname}_s",
+                                   label_visibility="collapsed")
+                _e = st.date_input(f"{pname} end",   value=pdef_e, key=f"pd_{pname}_e",
+                                   label_visibility="collapsed")
+                _period_dates[pname] = (_s, _e)
+        # Store in session state for use in enrich_receipt
+        st.session_state["period_dates"] = _period_dates
 
     metric_mode = st.radio(
         "Base metric",
