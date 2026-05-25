@@ -4237,15 +4237,30 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # AR (Productivity weight) column
     _ar_col    = find_col(receipt_df, ["Productivity"]) if "Productivity" in receipt_df.columns else None
 
+    # Check for individual WK-1/2/3/4 columns first (from enriched receipt)
+    _wk1_col = find_col(receipt_df, ["WK-1","WK1"])
+    _wk2_col = find_col(receipt_df, ["WK-2","WK2"])
+    _wk3_col = find_col(receipt_df, ["WK-3","WK3"])
+    _wk4_col = find_col(receipt_df, ["WK-4","WK4"])
+    _has_wk_cols = any(c in rec.columns for c in [_wk1_col,_wk2_col,_wk3_col,_wk4_col] if c)
     if _wk_col and len(rec) > 0:
         _ar_vals = rec[_ar_col].fillna(1.0).astype(float).values if _ar_col and _ar_col in rec.columns else None
         for _wi, _wlabel in enumerate(rec[_wk_col].fillna("").values):
             _wn = _wk_map.get(str(_wlabel).strip().upper())
             if _wn:
                 _ar = float(_ar_vals[_wi]) if _ar_vals is not None else 1.0
-                weekly_txn[_wn] += _ar  # sum of AR weights (sir's SUMIFS)
+                weekly_txn[_wn] += _ar
                 if _dv_col_w and _dv_col_w in rec.columns:
                     weekly_dv[_wn] += float(rec.iloc[_wi].get(_dv_col_w, 0) or 0)
+    elif _has_wk_cols and len(rec) > 0:
+        # Use individual WK-1..4 columns from enriched receipt
+        _ar_s2 = rec[_ar_col].fillna(1.0).astype(float) if _ar_col and _ar_col in rec.columns else pd.Series(1.0, index=rec.index)
+        _dv_s2 = rec[_dv_col_w].fillna(0) if _dv_col_w and _dv_col_w in rec.columns else pd.Series(0, index=rec.index)
+        for _wn, _wc in [(1,_wk1_col),(2,_wk2_col),(3,_wk3_col),(4,_wk4_col)]:
+            if _wc and _wc in rec.columns:
+                _mask = rec[_wc].fillna("").astype(str).str.strip().str.upper() == f"WK-{_wn}"
+                weekly_txn[_wn] = float(_ar_s2[_mask].sum())
+                weekly_dv[_wn]  = float(_dv_s2[_mask].sum())
     elif _rcol_w and len(rec) > 0:
         try:
             _rd   = pd.to_numeric(rec[_rcol_w], errors='coerce').fillna(0).astype(int)
@@ -5907,7 +5922,7 @@ if _is_pre_enriched:
     # Still run enrich to fill Service_Tier if missing, but do NOT overwrite existing columns
     _svc_col_existing = find_col(receipt_df, ["Service_Tier","Service","SERVICE_TIER"])
     # Cols written by enrich_receipt that we want to preserve from the uploaded enriched file
-    _enrich_written = ["Productivity","Service_Tier","Base to List Sale","AMR","IM Varient","Pref SS+","FNT","Deal Val (WOT)","_has_upsell_on_receipt","_is_pure_renewal","_is_upsell"]
+    _enrich_written = ["Productivity","Service_Tier","Service","Base to List Sale","AMR","IM Varient","Pref SS+","FNT","Deal Val (WOT)","Upsell","Pure Renewal","all Upsell","NR Upsell/AMR","WK-1","WK-2","WK-3","WK-4","_has_upsell_on_receipt","_is_pure_renewal","_is_upsell"]
     _saved_cols = {c: receipt_df[c].copy() for c in _enrich_written if c in receipt_df.columns}
     if _svc_col_existing is None and "Service_Tier" not in _saved_cols:
         _enriched_temp = enrich_receipt(receipt_df)
