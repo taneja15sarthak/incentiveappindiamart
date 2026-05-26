@@ -6126,6 +6126,13 @@ if enrich_btn:
                         lambda x: "Yes" if x in _ups_ids else "")
 
                 # Service column: MDC tier label (sir's assign_service)
+                # Case-normalised tier sets for Service column building
+                _U1 = {x.casefold() for x in UPSELL_TIER1}
+                _U2 = {x.casefold() for x in UPSELL_TIER2}
+                _U3 = {x.casefold() for x in UPSELL_TIER3}
+                _P1 = {x.casefold() for x in PROD_TIER1}
+                _P2 = {x.casefold() for x in PROD_TIER2}
+                _P3 = {x.casefold() for x in PROD_TIER3}
                 def _svc(row):
                     if row.get("Productivity",0) != 1: return ""
                     u = _se(row[upsell_col_e]) if upsell_col_e else ""
@@ -6137,14 +6144,14 @@ if enrich_btn:
                         # Generic boolean flag — no tier info, use product
                         pass
                     elif _u_cf == "combo 1yr": return "MDC-Annual||TS-1"
-                    elif _u_cf in _UPSELL_T1_LC: return "MDC-Annual||TS-1"
-                    elif _u_cf in _UPSELL_T2_LC: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    elif _u_cf in _U1: return "MDC-Annual||TS-1"
+                    elif _u_cf in _U2: return "MDC-MYR||TS-2||Maxi-A||VE"
                     elif "myr" in _u_cf:          return "MDC-MYR||TS-2||Maxi-A||VE"
-                    elif _u_cf in _UPSELL_T3_LC: return "TS-3||Maxi-2"
+                    elif _u_cf in _U3: return "TS-3||Maxi-2"
                     elif u != "":                  return "TS-3||Maxi-2"
-                    if _p_cf in _PROD_T1_LC: return "MDC-Annual||TS-1"
-                    if _p_cf in _PROD_T2_LC: return "MDC-MYR||TS-2||Maxi-A||VE"
-                    if _p_cf in _PROD_T3_LC: return "TS-3||Maxi-2"
+                    if _p_cf in _P1: return "MDC-Annual||TS-1"
+                    if _p_cf in _P2: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    if _p_cf in _P3: return "TS-3||Maxi-2"
                     return ""
                 rec_enriched["Service"] = rec_enriched.apply(_svc, axis=1)
 
