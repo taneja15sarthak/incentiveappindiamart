@@ -50,7 +50,7 @@ PURE_RENEWAL_PRODUCTS = {
 # Upsell column values → service tier
 UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","TS pro-1"}
 UPSELL_TIER2 = {
-    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2","Maxi Pro-2",
+    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2","TS pro-2",
     "VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6",
     "VEXPD-12","VEXPG-6","VEXPG-MYR","VEXPP-12","VEXPP-MYR","VEXPD-MYR",
 }
@@ -61,13 +61,13 @@ UPSELL_TIER3 = {
 
 # Product column values → service tier (when Upsell is blank)
 PROD_TIER1 = {"Renewal","MDC Annual","TS1Renewal","TS Pro-1","TS pro-1","Maxi Pro-1"}
-PROD_TIER2 = {"TS2Renewal","WS Renewal","IVE Renewal","Combo 2YR","Maxi Pro-2",
+PROD_TIER2 = {"TS2Renewal","WS Renewal","IVE Renewal","Combo 2YR",
               "TS Pro-2","Maximiser","MYR","myr","Combo 2YR",
               "VEXPS-12","VEXPS-MYR","VEXPG-12","VEXPG-MYR",
               "VEXPD-12","VEXPD-MYR","VEXPP-12","VEXPP-MYR"}
 PROD_TIER3 = {"TS3Renewal","SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal",
               "Pref SS Renewal","Pref LS Renewal","CL Renewal","IL Renewal",
-              "IM IL Renewal","Pref IL Renewal","Combo 3YR","TS Pro-3","Maxi Pro-3",
+              "IM IL Renewal","Pref IL Renewal","Combo 3YR","TS Pro-3","Maxi Pro-2","Maxi Pro-3",
               "Maximiser-3","Maxi pro-3",
               "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro"}
 
@@ -1845,11 +1845,22 @@ def enrich_receipt(df):
                     except: return ""
                 df[_wk] = df[date_col_fnt].apply(_make_wk)
 
-    # AMR: MYR Remarks column (non-blank = AMR/MYR row)
+    # AMR = "Yes" when Rnl Remarks ∈ {CMR, CMR+1, CMR+2, CMR+3}
+    # Fallback: MYR Remarks non-blank → AMR (original logic)
+    _cmr_amr_vals = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
+    _rnl_rem_amr  = find_col(df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks", "Rnl_Remarks"])
+    _myr_rem_amr  = find_col(df, ["MYR Remarks", "MYR_Remarks"])
     if "AMR" not in df.columns:
-        myr_col = find_col(df, ["MYR Remarks", "MYR_Remarks"])
-        if myr_col:
-            df["AMR"] = df[myr_col].fillna("").astype(str).str.strip().apply(
+        if _rnl_rem_amr:
+            _rnl_vals = df[_rnl_rem_amr].fillna("").astype(str).str.strip().str.upper()
+            _myr_yes  = pd.Series(False, index=df.index)
+            if _myr_rem_amr:
+                _myr_yes = df[_myr_rem_amr].fillna("").astype(str).str.strip().apply(
+                    lambda x: x not in ("", "nan"))
+            df["AMR"] = ((_rnl_vals.isin({v.upper() for v in _cmr_amr_vals})) | _myr_yes).map(
+                {True: "Yes", False: "No"})
+        elif _myr_rem_amr:
+            df["AMR"] = df[_myr_rem_amr].fillna("").astype(str).str.strip().apply(
                 lambda x: "Yes" if x not in ("", "nan") else "No")
         else:
             df["AMR"] = "No"
