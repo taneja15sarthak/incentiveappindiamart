@@ -801,6 +801,54 @@ def parse_slabs(cfg):
                 "l2_myr":    int(r.get("L2_MYR",     0)),
             }
 
+    # ── KCD WK-3 SS+ Spot (May 17-23) ────────────────────────
+    kcd_wk3_spot = {}
+    _wk3_df = cfg.get("KCD_WK3_Spot_May", pd.DataFrame())
+    for _, r in _wk3_df.iterrows():
+        key = str(r.get("Product_Key", "")).strip().upper()
+        if key:
+            kcd_wk3_spot[key] = {
+                "l1_annual": int(r.get("L1_Annual", 0)),
+                "l1_myr":    int(r.get("L1_MYR",    0)),
+                "l2_annual": int(r.get("L2_Annual",  0)),
+                "l2_myr":    int(r.get("L2_MYR",     0)),
+            }
+    # WK-3 eligibility thresholds
+    _wk3_cfg = cfg.get("KCD_WK3_Config_May", pd.DataFrame())
+    _wk3_params = {}
+    if len(_wk3_cfg) > 0 and "Parameter" in _wk3_cfg.columns:
+        _wk3_params = {str(r["Parameter"]): float(r["Value"]) for _, r in _wk3_cfg.iterrows()}
+    kcd_wk3_l1_min  = _wk3_params.get("L1_Min_Total_Prod",  2.0)
+    kcd_wk3_sam_min = _wk3_params.get("SAM_Min_Total_Prod", 1.5)
+    kcd_wk3_ss_min  = int(_wk3_params.get("Min_SS_Prod", 1))
+
+    # ── KCD WK-4 SS+ Spot (May 24-31) ────────────────────────
+    kcd_wk4_spot = {}
+    _wk4_df = cfg.get("KCD_WK4_Spot_May", pd.DataFrame())
+    for _, r in _wk4_df.iterrows():
+        key = str(r.get("Product_Key", "")).strip().upper()
+        if key:
+            kcd_wk4_spot[key] = {
+                "l1_annual": int(r.get("L1_Annual", 0)),
+                "l1_myr":    int(r.get("L1_MYR",    0)),
+                "l2_annual": int(r.get("L2_Annual",  0)),
+                "l2_myr":    int(r.get("L2_MYR",     0)),
+            }
+    # WK-4 eligibility thresholds
+    _wk4_cfg = cfg.get("KCD_WK4_Config_May", pd.DataFrame())
+    _wk4_params = {}
+    if len(_wk4_cfg) > 0 and "Parameter" in _wk4_cfg.columns:
+        _wk4_params = {str(r["Parameter"]): float(r["Value"]) for _, r in _wk4_cfg.iterrows()}
+    kcd_wk4_l1_min  = _wk4_params.get("L1_Min_Total_Prod",  3.0)
+    kcd_wk4_sam_min = _wk4_params.get("SAM_Min_Total_Prod", 2.5)
+    kcd_wk4_ss_min  = int(_wk4_params.get("Min_SS_Prod", 1))
+
+    # ── BM/RM PCDV Bullet Spot (May 17-31) ───────────────────
+    bm_rm_spot_rows = []
+    _bm_rm_df = cfg.get("BM_RM_Spot_May", pd.DataFrame())
+    if len(_bm_rm_df) > 0:
+        bm_rm_spot_rows = _bm_rm_df.to_dict("records")
+
     # ── SAM slab parsing helpers ─────────────────────────────
     def _sam_kcd_slabs(key_may, key_apr, key_mar):
         k = key_may if key_may in cfg else (key_apr if key_apr in cfg else key_mar)
@@ -880,6 +928,15 @@ def parse_slabs(cfg):
         "kcd_catalog_slabs":   kcd_catalog_slabs,
         # KCD Spot
         "kcd_wk1_spot":        kcd_wk1_spot,   # May WK-1 per-product spot
+        "kcd_wk3_spot":        kcd_wk3_spot,   # May WK-3 SS+ per-product spot (17-23 May)
+        "kcd_wk3_l1_min":      kcd_wk3_l1_min,
+        "kcd_wk3_sam_min":     kcd_wk3_sam_min,
+        "kcd_wk3_ss_min":      kcd_wk3_ss_min,
+        "kcd_wk4_spot":        kcd_wk4_spot,   # May WK-4 SS+ per-product spot (24-31 May)
+        "kcd_wk4_l1_min":      kcd_wk4_l1_min,
+        "kcd_wk4_sam_min":     kcd_wk4_sam_min,
+        "kcd_wk4_ss_min":      kcd_wk4_ss_min,
+        "bm_rm_spot_rows":     bm_rm_spot_rows,  # BM/RM PCDV bullet spot (17-31 May)
         # Config-detection flags (True when the config has April-specific tables)
         "has_apr_spot":        "CSD_Spot_Apr" in cfg,
         "has_may_spot":        "CSD_Spot_May" in cfg,
@@ -1147,10 +1204,17 @@ def build_may_slab_config():
         {"Parameter": "CMR_Min_Eligible_%",  "Value": 53},
     ])
 
-    # ── CSD FNT-1 spot (May 1-16) — L1 base 2000, RM base 3000; NO FNT-2 ───
+    # ── CSD FNT-1 (May 1-16) + FNT-2 (May 17-31) spot ──────────────────────
+    # FNT-1: L1 base ₹2000, RM base ₹3000
+    # FNT-2: same rates as FNT-1 (same structure, 17-31 May)
+    #   L1 Exec: ≥3 prod → ₹2000 + ₹750/txn after 3; 90+ vintage only
+    #   RM:      ≥2.5 prod → ₹3000 + ₹500/txn after 2.5
+    #   Multiplier: PCDV+CMR qualified → 100%; not qualified → 50%
     csd_spot_may = pd.DataFrame([
         {"Spot_Type": "L1_FNT1",  "Min_Prod": 3,   "Base_Reward": 2000, "Per_Txn": 750},
         {"Spot_Type": "RM_FNT1",  "Min_Prod": 2.5,  "Base_Reward": 3000, "Per_Txn": 500},
+        {"Spot_Type": "L1_FNT2",  "Min_Prod": 3,   "Base_Reward": 2000, "Per_Txn": 750},
+        {"Spot_Type": "RM_FNT2",  "Min_Prod": 2.5,  "Base_Reward": 3000, "Per_Txn": 500},
     ])
 
     # ── KCD L1 slabs — May'26 (all per-txn rates reduced by one tier) ────────
@@ -1245,6 +1309,54 @@ def build_may_slab_config():
         {"Team": "Catalog_140pct", "Incr_Threshold": 140,   "Incr_Rate_%": 1.40},
     ])
 
+    # ── KCD WK-3 SS+ Spot (17-23 May) ───────────────────────────────────────
+    # Eligibility: ≥2 total prod (any upsell/ren) in week AND ≥1 SS+ NR/Upsell/AMR
+    # SAM eligibility: ≥1.5 prod in week (rounds to 1 for int check in code)
+    # Multiplier: PCDV+CMR achieved → 100%, not achieved → 50%
+    # Products: IM Star/Pro, IM Leader/Pro, Pref Star/Pro, Pref Leader/Pro, Value+, IVE, PL+
+    kcd_wk3_spot = pd.DataFrame([
+        {"Product_Key": "IM_STAR_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "IM_LEADER_PRO",  "L1_Annual": 750,  "L1_MYR": 1500, "L2_Annual": 400, "L2_MYR": 750},
+        {"Product_Key": "PREF_SS_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "PREF_LS_PRO",    "L1_Annual": 1000, "L1_MYR": 2000, "L2_Annual": 500, "L2_MYR": 1000},
+        {"Product_Key": "VALUE_PLUS",     "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
+        {"Product_Key": "PL_PLUS",        "L1_Annual": 1500, "L1_MYR": 3000, "L2_Annual": 750, "L2_MYR": 1500},
+    ])
+    # WK-3 eligibility config
+    kcd_wk3_config = pd.DataFrame([
+        {"Parameter": "L1_Min_Total_Prod",  "Value": 2,   "Description": "Min total prod (any upsell/ren) in WK-3 for L1"},
+        {"Parameter": "SAM_Min_Total_Prod", "Value": 1.5, "Description": "Min total prod in WK-3 for SAM (L2)"},
+        {"Parameter": "Min_SS_Prod",        "Value": 1,   "Description": "Min SS+ NR Upsell/Ren/AMR count required"},
+    ])
+
+    # ── KCD WK-4 SS+ Spot (24-31 May) ───────────────────────────────────────
+    # Same products as WK-3; higher min prod gate (3 for L1, 2.5 for SAM)
+    kcd_wk4_spot = kcd_wk3_spot.copy()  # same per-product rates
+    kcd_wk4_config = pd.DataFrame([
+        {"Parameter": "L1_Min_Total_Prod",  "Value": 3,   "Description": "Min total prod (any upsell/ren) in WK-4 for L1"},
+        {"Parameter": "SAM_Min_Total_Prod", "Value": 2.5, "Description": "Min total prod in WK-4 for SAM (L2)"},
+        {"Parameter": "Min_SS_Prod",        "Value": 1,   "Description": "Min SS+ NR Upsell/Ren/AMR count required"},
+    ])
+
+    # ── BM/RM PCDV Bullet Spot (17-31 May) ──────────────────────────────────
+    # L3 = BM, L4 = RM; 50% payout if monthly base incentive not qualified
+    bm_rm_spot_may = pd.DataFrame([
+        # CSD BM (L3)
+        {"Vertical": "CSD", "Level": "L3", "Team": "All",            "PCDV_Thresh1": 1500, "Reward1": 5000,  "PCDV_Thresh2": 2000, "Reward2": 7000,  "Per_Unit_After": 1000, "Unit_PCDV": 300},
+        # CSD RM (L4)
+        {"Vertical": "CSD", "Level": "L4", "Team": "All",            "PCDV_Thresh1": 1500, "Reward1": 7000,  "PCDV_Thresh2": 2000, "Reward2": 9000,  "Per_Unit_After": 2000, "Unit_PCDV": 300},
+        # KCD BM Regular/ROI/HVRI (L3)
+        {"Vertical": "KCD", "Level": "L3", "Team": "Regular",        "PCDV_Thresh1": 7000, "Reward1": 7000,  "PCDV_Thresh2": 9000, "Reward2": 9000,  "Per_Unit_After": 1000, "Unit_PCDV": 1000},
+        # KCD RM Regular/ROI/HVRI (L4)
+        {"Vertical": "KCD", "Level": "L4", "Team": "Regular",        "PCDV_Thresh1": 7000, "Reward1": 9000,  "PCDV_Thresh2": 9000, "Reward2": 11000, "Per_Unit_After": 2000, "Unit_PCDV": 1000},
+        # KCD BM Listing/Catalog (L3)
+        {"Vertical": "KCD", "Level": "L3", "Team": "Listing/Catalog","PCDV_Thresh1": 7500, "Reward1": 7000,  "PCDV_Thresh2": 9500, "Reward2": 9000,  "Per_Unit_After": 1000, "Unit_PCDV": 1000},
+        # KCD RM Listing/Catalog (L4)
+        {"Vertical": "KCD", "Level": "L4", "Team": "Listing/Catalog","PCDV_Thresh1": 7500, "Reward1": 9000,  "PCDV_Thresh2": 9500, "Reward2": 11000, "Per_Unit_After": 2000, "Unit_PCDV": 1000},
+        # KCD BM Catalog only (L3, separate table from slide 5)
+        {"Vertical": "KCD", "Level": "L3", "Team": "Catalog_Only",   "PCDV_Thresh1": 4000, "Reward1": 7000,  "PCDV_Thresh2": 5000, "Reward2": 9000,  "Per_Unit_After": 1000, "Unit_PCDV": 1000},
+    ])
+
     return {
         "CSD_New_Slabs_May":      csd_new,
         "CSD_New_Params_May":     csd_new_params,
@@ -1268,6 +1380,11 @@ def build_may_slab_config():
         "KCD_SAM_Listing_May":    kcd_sam_listing_may,
         "KCD_SAM_Catalog_May":    kcd_sam_catalog_may,
         "KCD_WK1_Spot_May":       kcd_wk1_spot,
+        "KCD_WK3_Spot_May":       kcd_wk3_spot,
+        "KCD_WK3_Config_May":     kcd_wk3_config,
+        "KCD_WK4_Spot_May":       kcd_wk4_spot,
+        "KCD_WK4_Config_May":     kcd_wk4_config,
+        "BM_RM_Spot_May":         bm_rm_spot_may,
         "KCD_Incr_Rates_May":     kcd_incr_may,
         "Scheme_Params":          pd.DataFrame([
             # Copy all params from default — user edits values for May
@@ -4453,6 +4570,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # KCD WK-1 Power of Productivity Spot (01-09 May): per-product-type count
     # Only NR Upsell / Upsell on Renewal; must have ≥2 productivity in the week
     wk1_prod_counts = {k: 0 for k in WK1_PRODUCT_CATEGORIES}  # {category: count}
+    wk3_ss_count = 0   # SS+ NR Upsell/Ren/AMR count in WK-3 (days 17-23)
+    wk4_ss_count = 0   # SS+ NR Upsell/Ren/AMR count in WK-4 (days 24-31)
     if _unique_col_sp and len(rec) > 0:
         try:
             _uq_vals = rec[_unique_col_sp].fillna("").astype(str)
@@ -4460,8 +4579,17 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             if _date_col_sp:
                 _days_wk1 = pd.to_datetime(rec[_date_col_sp], errors='coerce').dt.day
                 _is_wk1   = _days_wk1 <= 9
+                _is_wk3   = (_days_wk1 >= 17) & (_days_wk1 <= 23)
+                _is_wk4   = _days_wk1 >= 24
             else:
                 _is_wk1 = pd.Series([True] * len(rec), index=rec.index)
+                _is_wk3 = pd.Series([False] * len(rec), index=rec.index)
+                _is_wk4 = pd.Series([False] * len(rec), index=rec.index)
+            # SS+ product flag (IM Star/Leader/Pref Star/Pref Leader products)
+            _ss_kw_spot = ["IM STAR", "IM LEADER", "PREF STAR", "PREF LEADER",
+                           "PREFERRED STAR", "PREFERRED LEADER", "VALUE+", "IVE", "PL+"]
+            _is_ss_prod = _uq_vals.str.upper().apply(
+                lambda v: any(k in v for k in _ss_kw_spot))
             # Check for NR Upsell / AMR (same gate as nr_upsell_count)
             _nr_mask = _uq_vals.str.upper().str.contains("UPSELL|AMR|NR", na=False)
             _wk1_rec = rec[_is_wk1 & _nr_mask]
@@ -4470,6 +4598,9 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
                     lambda v: any(kw.upper() in str(v).upper() for kw in keywords)
                 )
                 wk1_prod_counts[cat] = int(_cat_mask.sum())
+            # WK-3 and WK-4 SS+ count: SS+ product AND (NR Upsell/AMR) in that week
+            wk3_ss_count = int((_is_wk3 & _nr_mask & _is_ss_prod).sum())
+            wk4_ss_count = int((_is_wk4 & _nr_mask & _is_ss_prod).sum())
         except Exception:
             pass
 
@@ -4511,7 +4642,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
             wk1_prod_counts, excellent_txn_count,
-            computed_client_c, prod_score_receipt_int)
+            computed_client_c, prod_score_receipt_int,
+            wk3_ss_count, wk4_ss_count)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -4625,13 +4757,85 @@ def calc_bm_rm_aop(net_deal_val, aop_target, cmr_pct, ss_cmr_pct,
     return round(incentive, 0), notes
 
 
+def calc_bm_rm_pcdv_spot(pcdv, vertical, level, team, base_inc_qualified, S):
+    """
+    BM/RM PCDV Bullet Spot (17-31 May).
+    Reads thresholds from BM_RM_Spot_May config rows (passed via S["bm_rm_spot_rows"]).
+    50% payout if monthly base incentive not qualified.
+
+    Returns (spot_incentive, note_str)
+    """
+    rows = S.get("bm_rm_spot_rows", [])
+    if not rows or pcdv <= 0:
+        return 0, ""
+
+    v_up = str(vertical).upper()
+    l_up = str(level).upper()
+    t_up = str(team).upper()
+
+    # Determine team category for row matching
+    _is_catalog_only = "CATALOG" in t_up and "LISTING" not in t_up
+    _is_lst_cat = "LISTING" in t_up or "CATALOG" in t_up
+    _vert_key  = "CSD" if "CSD" in v_up else "KCD"
+    _level_key = "L3" if ("L3" in l_up or "BM" in l_up) else "L4"
+
+    # Find matching config row (most specific match first)
+    # Distinguish pure-Catalog (no listing clients) from mixed Listing/Catalog
+    _is_lst_cat_with_listing = _is_lst_cat and "LISTING" in t_up
+
+    # Two-pass match: most-specific (Catalog_Only) first, then general
+    cfg_row = None
+    # Pass 1: Catalog_Only (KCD BM only — separate rate table)
+    if _is_catalog_only and _vert_key == "KCD":
+        for r in rows:
+            if str(r.get("Vertical","")).upper() != _vert_key: continue
+            if str(r.get("Level","")).upper() != _level_key: continue
+            if str(r.get("Team","")).upper() == "CATALOG_ONLY":
+                cfg_row = r; break
+    # Pass 2: general match (Listing/Catalog, Regular/All)
+    if cfg_row is None:
+        for r in rows:
+            if str(r.get("Vertical","")).upper() != _vert_key: continue
+            if str(r.get("Level","")).upper() != _level_key: continue
+            _team_cfg = str(r.get("Team","")).upper()
+            if _team_cfg == "LISTING/CATALOG" and _is_lst_cat:
+                cfg_row = r; break
+            if _team_cfg in ("ALL", "REGULAR") and not _is_lst_cat:
+                cfg_row = r; break
+    if cfg_row is None:
+        return 0, ""
+
+    t1 = float(cfg_row.get("PCDV_Thresh1", 0))
+    r1 = float(cfg_row.get("Reward1", 0))
+    t2 = float(cfg_row.get("PCDV_Thresh2", 0))
+    r2 = float(cfg_row.get("Reward2", 0))
+    per_unit = float(cfg_row.get("Per_Unit_After", 0))
+    unit_sz  = float(cfg_row.get("Unit_PCDV", 300))
+
+    if pcdv < t1:
+        return 0, ""
+    elif pcdv < t2:
+        base_reward = r1
+    else:
+        extra = int((pcdv - t2) / unit_sz) * per_unit if unit_sz > 0 else 0
+        base_reward = r2 + extra
+
+    payout_mult = 1.0 if base_inc_qualified else 0.5
+    spot = round(base_reward * payout_mult, 0)
+    note = (f"{_vert_key} {'BM' if _level_key=='L3' else 'RM'} PCDV Bullet Spot | "
+            f"PCDV:{pcdv:.0f} | Base:₹{base_reward:.0f} | "
+            f"{'100%' if payout_mult==1.0 else '50%'} | Spot:₹{spot:.0f}")
+    return int(spot), note
+
+
 def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                rnl_prods, rnl_modes, rnl_count, sb, S, joining_date=None,
                svc_tiers=None, prod_score_receipt=None, mdc1_cmr_pct=None, cmr_plus1_pct=0.0,
                all_cmr_pct=None, all_cmr_sent=0,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
                vintage_bucket="", designation="", weekly_dv=None,
-               cmr_plus1_sent=0, wk1_prod_counts=None, excellent_txn_count=0):
+               cmr_plus1_sent=0, wk1_prod_counts=None, excellent_txn_count=0,
+               wk3_ss_count=0, wk4_ss_count=0):
     """
     Main routing -- all fixes applied:
     - SPS booster: auto 1.2× when vintage_bucket='SPS'; Pune TAT/60D override for others
@@ -4843,6 +5047,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _mcats_spot           = 0   # KCD only
     _im_star_pro_spot_kcd = 0   # KCD SAM only (28-30 Apr IM Star Pro+)
     _wk1_spot             = 0   # KCD WK-1 Power of Productivity (01-09 May)
+    _wk3_spot             = 0   # KCD WK-3 SS+ Spot (17-23 May)
+    _wk4_spot             = 0   # KCD WK-4 SS+ Spot (24-31 May)
     _excellent_spot       = 0   # Excellent Incentive Spot (04 May)
     kcd_base_only   = 0   # KCD: base incentive before incremental
     kcd_incremental = 0   # KCD: incremental DV amount
@@ -5022,8 +5228,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _is_90plus_csd = vintage not in ("0-30D", "31-90D")
                 _is_rm_desig   = (_desig_str == "L2")
                 # May spot: L1 Exec eligible only for 90+ vintage (per PPT)
-                # May spot: FNT2 (17-31 May) has NO spot, so pass fnt2_count=0
-                _fnt2_for_spot = 0 if S.get("has_may_spot") else fnt2_prod_count
+                # FNT-2 (17-31 May) is now active — pass actual fnt2_prod_count
+                _fnt2_for_spot = fnt2_prod_count
                 # L1 Exec: skip spot if May and 0-90D vintage (only 90+ eligible in May)
                 if not _is_rm_desig and S.get("has_may_spot") and not _is_90plus_csd:
                     spot_inc, _fnt1_spot, _fnt2_spot = 0, 0, 0
@@ -5272,6 +5478,51 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                         _wk1_spot += (_cat_ann * _ann_rate) + (_cat_myr * _myr_rate)
                 _wk1_spot = int(_wk1_spot * _wk1_base_mult)  # 50% if monthly base not achieved
 
+        # ── KCD WK-3 SS+ Power of Productivity Spot (17-23 May) ─────────────────
+        # Gate: ≥ L1_min total prod in WK-3 AND ≥ ss_min SS+ NR Upsell/Ren/AMR in WK-3
+        _wk3_spot = 0
+        _wk3_rates = S.get("kcd_wk3_spot", {})
+        if _wk3_rates:
+            _wk3_min  = S.get("kcd_wk3_sam_min", 1.5) if _is_sam else S.get("kcd_wk3_l1_min", 2.0)
+            _wk3_ss_req = S.get("kcd_wk3_ss_min", 1)
+            # Total WK-3 productive txns (WK-3 = days 17-23; tracked in weekly_prod_counts[3])
+            _wk3_total_prod = weekly_prod_counts.get(3, 0)
+            if _wk3_total_prod >= _wk3_min and wk3_ss_count >= _wk3_ss_req:
+                _wk3_base_mult = 0.5 if base_inc == 0 else 1.0
+                for cat, rate_info in _wk3_rates.items():
+                    # WK-3 counts SS+ NR Upsell/Ren/AMR per product category
+                    # Use wk3_ss_count as total (not split by cat — single total SS+ count)
+                    if wk3_ss_count > 0:
+                        if isinstance(rate_info, dict):
+                            _pref = "l2" if _is_sam else "l1"
+                            _rate = rate_info.get(f"{_pref}_annual", 0)
+                        else:
+                            _rate = int(rate_info) if not _is_sam else int(rate_info) // 2
+                        _wk3_spot += wk3_ss_count * _rate
+                        break  # single rate applied to total SS+ count
+                _wk3_spot = int(_wk3_spot * _wk3_base_mult)
+
+        # ── KCD WK-4 SS+ Power of Productivity Spot (24-31 May) ─────────────────
+        # Gate: ≥ L1_min total prod in WK-4 AND ≥ ss_min SS+ NR Upsell/Ren/AMR in WK-4
+        _wk4_spot = 0
+        _wk4_rates = S.get("kcd_wk4_spot", {})
+        if _wk4_rates:
+            _wk4_min  = S.get("kcd_wk4_sam_min", 2.5) if _is_sam else S.get("kcd_wk4_l1_min", 3.0)
+            _wk4_ss_req = S.get("kcd_wk4_ss_min", 1)
+            _wk4_total_prod = weekly_prod_counts.get(4, 0)
+            if _wk4_total_prod >= _wk4_min and wk4_ss_count >= _wk4_ss_req:
+                _wk4_base_mult = 0.5 if base_inc == 0 else 1.0
+                for cat, rate_info in _wk4_rates.items():
+                    if wk4_ss_count > 0:
+                        if isinstance(rate_info, dict):
+                            _pref = "l2" if _is_sam else "l1"
+                            _rate = rate_info.get(f"{_pref}_annual", 0)
+                        else:
+                            _rate = int(rate_info) if not _is_sam else int(rate_info) // 2
+                        _wk4_spot += wk4_ss_count * _rate
+                        break
+                _wk4_spot = int(_wk4_spot * _wk4_base_mult)
+
         # ── Excellent Incentive Spot (04 May only) ───────────────────────────────
         # Uses pre-computed per-employee count (passed via parameter to avoid full-df scan)
         _excellent_spot = 0
@@ -5442,7 +5693,7 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
 
     # Add IM Insta and MCATs to KCD spot total
     if "KCD" in vertical:
-        spot_inc = int(spot_inc) + _im_insta_spot + _mcats_spot + _im_star_pro_spot_kcd + _wk1_spot + _excellent_spot
+        spot_inc = int(spot_inc) + _im_insta_spot + _mcats_spot + _im_star_pro_spot_kcd + _wk1_spot + _wk3_spot + _wk4_spot + _excellent_spot
 
     # KCD breakdown -- extract per-txn rate from scheme notes
     _kcd_base   = int(kcd_base_only)   if "KCD" in vertical else 0
@@ -5580,6 +5831,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "FNT-2 Spot (₹)":     int(_fnt2_spot),
         "IM Star Pro+ Spot (₹)": int(_im_star_spot) if _im_star_spot > 0 else (int(_im_star_pro_spot_kcd) if _im_star_pro_spot_kcd > 0 else 0),
         "WK-1 Prod Spot (₹)":   int(_wk1_spot),
+        "WK-3 SS+ Spot (₹)":    int(_wk3_spot),
+        "WK-4 SS+ Spot (₹)":    int(_wk4_spot),
         "Excellent Spot (₹)":   int(_excellent_spot),
         "IM Insta Spot (₹)":   int(_im_insta_spot),
         "MCATs Spot (₹)":      int(_mcats_spot),
@@ -6298,7 +6551,9 @@ if calc_btn:
                   "kcd_slab2_target": emp_targets["slab2"],
                   "sel_month": sel_month if sel_month else ""}
 
-        _is_l2_tx = str(s.get("Designation","")).upper().strip() == "L2"
+        _is_l2_tx = (str(s.get("Designation","")).upper().strip() == "L2"
+                     or str(s.get("Designation","")).upper().strip() == "ILP"
+                     or "ILP" in str(s.get("Team","")).upper())
         (net_dv, txn_count, prods, rnl_prods, rnl_modes,
          rnl_count, total_ref, all_rnl_count,
          svc_tiers, insta_cnt_receipt, prod_score_receipt,
@@ -6309,7 +6564,8 @@ if calc_btn:
             fnt1_pcdv, fnt2_pcdv,
             weekly_prod_counts, im_star_pro_count,
             wk1_prod_counts, excellent_txn_count,
-            computed_client_c, prod_score_receipt_int) = \
+            computed_client_c, prod_score_receipt_int,
+            wk3_ss_count, wk4_ss_count) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
@@ -6360,7 +6616,9 @@ if calc_btn:
                              designation=s.get("Designation", ""),
                              weekly_dv=weekly_dv,
                              wk1_prod_counts=wk1_prod_counts,
-                             excellent_txn_count=excellent_txn_count)
+                             excellent_txn_count=excellent_txn_count,
+                             wk3_ss_count=wk3_ss_count,
+                             wk4_ss_count=wk4_ss_count)
         except Exception as _e:
             inc = {"CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
                 "CMR Slab1 Target": "", "CMR Slab2 Target": "",
@@ -7058,6 +7316,14 @@ if calc_btn:
                 inc, scheme_note = calc_bm_rm_aop(net_deal_val=net_dv_bm, aop_target=aop_target,
                     cmr_pct=cmr_pct_v, ss_cmr_pct=ss_cmr_v, vertical=v, level=level_filter, S=S)
 
+                # ── BM/RM PCDV Bullet Spot (17-31 May) ───────────────────────
+                _bm_spot_inc, _bm_spot_note = calc_bm_rm_pcdv_spot(
+                    pcdv=pcdv, vertical=v, level=level_filter,
+                    team=s.get("Team", ""),
+                    base_inc_qualified=(inc > 0),
+                    S=S)
+                total_inc = int(inc) + _bm_spot_inc
+
                 aop_pct = (net_dv_bm/aop_target*100) if aop_target>0 else 0
                 aop_mult_str = ("" if aop_pct<95 else "100%" if aop_pct<100 else "110%" if aop_pct<105 else "120%" if aop_pct<110 else "130%")
                 if "CSD" in v:
@@ -7080,15 +7346,17 @@ if calc_btn:
                     "AOP Multiplier": aop_mult_str,
                     "SS+ CMR%": round(ss_v,1), "SS+ Multiplier": ss_mult_str,
                     "CMR%": round(cmr_v,1), "CMR Multiplier": cmr_mult_str,
-                    "Incentive (₹)": int(inc), "Gross Incentive (₹)": int(inc),
-                    "Paid Incentive (₹)": 0, "Balance Incentive (₹)": int(inc),
+                    "Incentive (₹)": int(inc), "PCDV Spot (₹)": _bm_spot_inc,
+                    "Gross Incentive (₹)": total_inc,
+                    "Paid Incentive (₹)": 0, "Balance Incentive (₹)": total_inc,
                     "CMR Sent": rnl_sent, "CMR Received": rnl_recd,
                     "CMR (Ren%)": round(cmr_v/100,4),
                     "SS+ Sent": ss_sent, "SS+ Received": ss_recd,
                     "Renewals Sent (Non SS+)": mdc1_sent, "Renewals Received (Non SS+)": mdc1_recd,
                     "CMR+1 Sent": mdc1_sent, "CMR+1 Recd": mdc1_recd,
                     "CMR+1 Ren%": round(mdc1_pct/100,4) if mdc1_pct>0 else "",
-                    "Total Incentive (₹)": int(inc), "Scheme": scheme_note,
+                    "Total Incentive (₹)": total_inc,
+                    "Scheme": scheme_note + (" | " + _bm_spot_note if _bm_spot_inc > 0 else ""),
                     "L4 ID": s.get("L2 Name",""), "L4 Name": s.get("L2 Name",""),
                     "L5 ID": s.get("L3 Name",""), "L5 Name": s.get("L3 Name",""),
                 }
