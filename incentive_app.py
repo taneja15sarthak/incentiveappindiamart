@@ -1754,6 +1754,24 @@ def enrich_receipt(df):
     _PROD_T2_LC   = {x.casefold() for x in PROD_TIER2}
     _PROD_T3_LC   = {x.casefold() for x in PROD_TIER3}
 
+
+    # Service column tier helper — pipe-separated: "TS-3||Maxi-2" → Tier 3
+    _SVC_MAP = {
+        "mdc-annual":1,"mdc annual":1,"ts-1":1,"maxi-1":1,"maxi pro-1":1,
+        "mdc-myr":2,"myr":2,"ts-2":2,"maxi-a":2,"ve":2,"maxi pro-2":2,"maximiser":2,"combo 2yr":2,
+        "ts-3":3,"maxi-2":3,"maxi pro-3":3,"ss":3,"ls":3,"im star pro":3,
+        "pref ss":3,"pref ls":3,"combo 3yr":3,"maximiser-3":3,"maximiser-2":3,
+        "preferred star pro":3,"im leader pro":3,"preferred leader pro":3,
+    }
+    _svc_col_t = find_col(df, ["Service","SERVICE"])
+    def _svc_tier(row):
+        if not _svc_col_t or _svc_col_t not in row.index: return 0
+        _sv = _str(row[_svc_col_t])
+        if not _sv: return 0
+        _best = 0
+        for _p in _sv.replace("||","|").split("|"):
+            _best = max(_best, _SVC_MAP.get(_p.strip().casefold(), 0))
+        return _best
     def _tier(row):
         if row["Productivity"] != 1:
             prod = _str(row[prod_col]) if prod_col else ""
@@ -1771,16 +1789,19 @@ def enrich_receipt(df):
         _upsell_n = upsell.strip().casefold()
         _prod_n   = prod.strip().casefold()
         if upsell and not _upsell_is_flag:
-            if _upsell_n in _UPSELL_T1_LC:  return 1
-            if _upsell_n in _UPSELL_T2_LC:  return 2
-            if _upsell_n in _UPSELL_T3_LC:  return 3
-            if "myr" in _upsell_n:           return 2
-            return 3   # unknown upsell product name → T3
-        # Use product column for tier (covers pure renewals + boolean-flag upsell rows)
-        if _prod_n in _PROD_T1_LC: return 1
-        if _prod_n in _PROD_T2_LC: return 2
-        if _prod_n in _PROD_T3_LC: return 3
-        return 0
+            _ut = (1 if _upsell_n in _UPSELL_T1_LC else
+                   2 if _upsell_n in _UPSELL_T2_LC else
+                   3 if _upsell_n in _UPSELL_T3_LC else
+                   2 if "myr" in _upsell_n else 3)
+            # Check Service column — if it indicates a higher tier, use it
+            _st = _svc_tier(row)
+            return max(_ut, _st) if _st > 0 else _ut
+        # Use product column for tier
+        _pt = (1 if _prod_n in _PROD_T1_LC else
+               2 if _prod_n in _PROD_T2_LC else
+               3 if _prod_n in _PROD_T3_LC else 0)
+        _st = _svc_tier(row)
+        return max(_pt, _st) if _st > 0 else _pt
 
     df["Service_Tier"] = df.apply(_tier, axis=1)
 
@@ -6110,18 +6131,20 @@ if enrich_btn:
                     u = _se(row[upsell_col_e]) if upsell_col_e else ""
                     p = _se(row[prod_col_e]) if prod_col_e else ""
                     e = _se(row.get("Exp",""))
-                    if u in ("", "Yes", "No", "yes", "no"):
+                    _u_cf = u.strip().casefold()
+                    _p_cf = p.strip().casefold()
+                    if _u_cf in ("", "yes", "no", "1", "true"):
                         # Generic boolean flag — no tier info, use product
                         pass
-                    elif u == "Combo 1YR": return "MDC-Annual||TS-1"
-                    elif u in UPSELL_TIER1: return "MDC-Annual||TS-1"
-                    elif u in UPSELL_TIER2: return "MDC-MYR||TS-2||Maxi-A||VE"
-                    elif "MYR" in u.upper(): return "MDC-MYR||TS-2||Maxi-A||VE"
-                    elif u in UPSELL_TIER3: return "TS-3||Maxi-2"
-                    elif u != "": return "TS-3||Maxi-2"
-                    if p in PROD_TIER1: return "MDC-Annual||TS-1"
-                    if p in PROD_TIER2: return "MDC-MYR||TS-2||Maxi-A||VE"
-                    if p in PROD_TIER3: return "TS-3||Maxi-2"
+                    elif _u_cf == "combo 1yr": return "MDC-Annual||TS-1"
+                    elif _u_cf in _UPSELL_T1_LC: return "MDC-Annual||TS-1"
+                    elif _u_cf in _UPSELL_T2_LC: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    elif "myr" in _u_cf:          return "MDC-MYR||TS-2||Maxi-A||VE"
+                    elif _u_cf in _UPSELL_T3_LC: return "TS-3||Maxi-2"
+                    elif u != "":                  return "TS-3||Maxi-2"
+                    if _p_cf in _PROD_T1_LC: return "MDC-Annual||TS-1"
+                    if _p_cf in _PROD_T2_LC: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    if _p_cf in _PROD_T3_LC: return "TS-3||Maxi-2"
                     return ""
                 rec_enriched["Service"] = rec_enriched.apply(_svc, axis=1)
 
