@@ -48,28 +48,27 @@ PURE_RENEWAL_PRODUCTS = {
 }
 
 # Upsell column values → service tier
-UPSELL_TIER1 = {"Combo 1YR","TS Pro-1","TS pro-1"}
+UPSELL_TIER1 = {"Combo 1YR","TS Pro-1"}
 UPSELL_TIER2 = {
-    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2","TS pro-2",
+    "MYR","Combo 2YR","Maxi Pro-1","Maximiser","TS Pro-2",
     "VEXPS-MYR","VEXPG-12","VEXPS-12","VEXPS-6","VEXPD-6",
     "VEXPD-12","VEXPG-6","VEXPG-MYR","VEXPP-12","VEXPP-MYR","VEXPD-MYR",
 }
 UPSELL_TIER3 = {
-    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi Pro-2","Maxi pro-3","Maximiser-2",
+    "Combo 3YR","TS Pro-3","Maxi Pro-3","Maximiser-3","Maxi Pro-2","Maximiser-2",
     "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro",
 }
 
 # Product column values → service tier (when Upsell is blank)
-PROD_TIER1 = {"Renewal","MDC Annual","TS1Renewal","TS Pro-1","TS pro-1","Maxi Pro-1"}
+PROD_TIER1 = {"Renewal","MDC Annual","TS1Renewal","TS Pro-1","Maxi Pro-1"}
 PROD_TIER2 = {"TS2Renewal","WS Renewal","IVE Renewal","Combo 2YR",
-              "TS Pro-2","Maximiser","MYR","myr","Combo 2YR",
+              "TS Pro-2","Maximiser","MYR","Combo 2YR",
               "VEXPS-12","VEXPS-MYR","VEXPG-12","VEXPG-MYR",
               "VEXPD-12","VEXPD-MYR","VEXPP-12","VEXPP-MYR"}
 PROD_TIER3 = {"TS3Renewal","SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal",
               "Pref SS Renewal","Pref LS Renewal","CL Renewal","IL Renewal",
               "IM IL Renewal","Pref IL Renewal","Combo 3YR","TS Pro-3","Maxi Pro-2","Maxi Pro-3",
-              "Maximiser-3","Maxi pro-3",
-              "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro"}
+              "Maximiser-3",              "IM Star Pro","Preferred Star Pro","IM Leader Pro","Preferred Leader Pro"}
 
 TIER_REWARD = {1: 500, 2: 1000, 3: 1500}
 
@@ -1747,6 +1746,14 @@ def enrich_receipt(df):
         df["NR Upsell/AMR"] = df.apply(_nr_upsell_amr, axis=1)
 
     # Step 5: Service tier
+    # Case-normalised lookup sets (handles "TS pro-2" vs "TS Pro-2" etc.)
+    _UPSELL_T1_LC = {x.casefold() for x in UPSELL_TIER1}
+    _UPSELL_T2_LC = {x.casefold() for x in UPSELL_TIER2}
+    _UPSELL_T3_LC = {x.casefold() for x in UPSELL_TIER3}
+    _PROD_T1_LC   = {x.casefold() for x in PROD_TIER1}
+    _PROD_T2_LC   = {x.casefold() for x in PROD_TIER2}
+    _PROD_T3_LC   = {x.casefold() for x in PROD_TIER3}
+
     def _tier(row):
         if row["Productivity"] != 1:
             prod = _str(row[prod_col]) if prod_col else ""
@@ -1760,16 +1767,19 @@ def enrich_receipt(df):
         # If upsell col is a boolean flag ("Yes"/"No") from pre-enriched file,
         # it carries no tier info — fall through to product-based lookup.
         _upsell_is_flag = upsell.strip().lower() in ("yes", "no", "1", "true")
+        # Normalise case for lookup — handles "TS pro-2" vs "TS Pro-2" etc.
+        _upsell_n = upsell.strip().casefold()
+        _prod_n   = prod.strip().casefold()
         if upsell and not _upsell_is_flag:
-            if upsell in UPSELL_TIER1:  return 1
-            if upsell in UPSELL_TIER2:  return 2
-            if upsell in UPSELL_TIER3:  return 3
-            if "MYR" in upsell.upper(): return 2
+            if _upsell_n in _UPSELL_T1_LC:  return 1
+            if _upsell_n in _UPSELL_T2_LC:  return 2
+            if _upsell_n in _UPSELL_T3_LC:  return 3
+            if "myr" in _upsell_n:           return 2
             return 3   # unknown upsell product name → T3
         # Use product column for tier (covers pure renewals + boolean-flag upsell rows)
-        if prod in PROD_TIER1: return 1
-        if prod in PROD_TIER2: return 2
-        if prod in PROD_TIER3: return 3
+        if _prod_n in _PROD_T1_LC: return 1
+        if _prod_n in _PROD_T2_LC: return 2
+        if _prod_n in _PROD_T3_LC: return 3
         return 0
 
     df["Service_Tier"] = df.apply(_tier, axis=1)
