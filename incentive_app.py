@@ -90,6 +90,15 @@ WK1_PRODUCT_CATEGORIES = {
     "PL_PLUS":       ["PL+", "PL Plus", "Preferred Leader Plus"],
 }
 
+# WK-3/WK-4 product categories (consolidated groups with different keywords from WK-1)
+# IM Star + Pref Star merged; IM Leader + Pref Leader merged; Value+ + IVE merged
+WK34_PRODUCT_CATEGORIES = {
+    "IM_STAR_PREF_STAR":     ["IM Star", "Pref Star", "Preferred Star", "IM Star Pro", "Preferred Star Pro"],
+    "IM_LEADER_PREF_LEADER": ["IM Leader", "Pref Leader", "Preferred Leader", "IM Leader Pro", "Preferred Leader Pro"],
+    "VALUE_PLUS_IVE":        ["Value+", "Value Plus", "IVE", "IVE Renewal"],
+    "PL_PLUS":               ["PL+", "PL Plus", "Preferred Leader Plus"],
+}
+
 # IM Insta products (0.5 productivity)
 INSTA_PRODUCTS = {"IM InstaDiamond","IM InstaGold","IM InstaPlatinum",
                   "IM insta Diamond","IM Insta Renewal",
@@ -1310,17 +1319,14 @@ def build_may_slab_config():
     ])
 
     # ── KCD WK-3 SS+ Spot (17-23 May) ───────────────────────────────────────
-    # Eligibility: ≥2 total prod (any upsell/ren) in week AND ≥1 SS+ NR/Upsell/AMR
-    # SAM eligibility: ≥1.5 prod in week (rounds to 1 for int check in code)
-    # Multiplier: PCDV+CMR achieved → 100%, not achieved → 50%
-    # Products: IM Star/Pro, IM Leader/Pro, Pref Star/Pro, Pref Leader/Pro, Value+, IVE, PL+
+    # PPT: Products consolidated — IM Star+Pref Star together, IM Leader+Pref Leader together
+    # Rates higher than WK-1; IVE now included
+    # Eligibility: >=2 total prod AND >=1 SS+ NR/Upsell/AMR; SAM >=1.5 total prod
     kcd_wk3_spot = pd.DataFrame([
-        {"Product_Key": "IM_STAR_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
-        {"Product_Key": "IM_LEADER_PRO",  "L1_Annual": 750,  "L1_MYR": 1500, "L2_Annual": 400, "L2_MYR": 750},
-        {"Product_Key": "PREF_SS_PRO",    "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
-        {"Product_Key": "PREF_LS_PRO",    "L1_Annual": 1000, "L1_MYR": 2000, "L2_Annual": 500, "L2_MYR": 1000},
-        {"Product_Key": "VALUE_PLUS",     "L1_Annual": 500,  "L1_MYR": 1000, "L2_Annual": 250, "L2_MYR": 500},
-        {"Product_Key": "PL_PLUS",        "L1_Annual": 1500, "L1_MYR": 3000, "L2_Annual": 750, "L2_MYR": 1500},
+        {"Product_Key": "IM_STAR_PREF_STAR",     "L1_Annual": 1500, "L1_MYR": 2000, "L2_Annual": 750,  "L2_MYR": 1000},
+        {"Product_Key": "IM_LEADER_PREF_LEADER",  "L1_Annual": 2000, "L1_MYR": 2500, "L2_Annual": 1000, "L2_MYR": 1250},
+        {"Product_Key": "VALUE_PLUS_IVE",         "L1_Annual": 1000, "L1_MYR": 1500, "L2_Annual": 750,  "L2_MYR": 1000},
+        {"Product_Key": "PL_PLUS",                "L1_Annual": 3000, "L1_MYR": 5000, "L2_Annual": 1500, "L2_MYR": 2500},
     ])
     # WK-3 eligibility config
     kcd_wk3_config = pd.DataFrame([
@@ -1330,8 +1336,8 @@ def build_may_slab_config():
     ])
 
     # ── KCD WK-4 SS+ Spot (24-31 May) ───────────────────────────────────────
-    # Same products as WK-3; higher min prod gate (3 for L1, 2.5 for SAM)
-    kcd_wk4_spot = kcd_wk3_spot.copy()  # same per-product rates
+    # Same product groups and rates as WK-3; higher prod gate (3 L1 / 2.5 SAM)
+    kcd_wk4_spot = kcd_wk3_spot.copy()
     kcd_wk4_config = pd.DataFrame([
         {"Parameter": "L1_Min_Total_Prod",  "Value": 3,   "Description": "Min total prod (any upsell/ren) in WK-4 for L1"},
         {"Parameter": "SAM_Min_Total_Prod", "Value": 2.5, "Description": "Min total prod in WK-4 for SAM (L2)"},
@@ -1872,6 +1878,8 @@ def enrich_receipt(df):
     _PROD_T3_LC   = {x.casefold() for x in PROD_TIER3}
 
 
+    exp_col    = find_col(df, ["Exp", "EXP", "Expiry", "exp"])
+
     # Service column tier helper — pipe-separated: "TS-3||Maxi-2" → Tier 3
     _SVC_MAP = {
         "mdc-annual":1,"mdc annual":1,"ts-1":1,"maxi-1":1,"maxi pro-1":1,
@@ -1898,6 +1906,12 @@ def enrich_receipt(df):
 
         upsell = _str(row[upsell_col]) if upsell_col else ""
         prod   = _str(row[prod_col])   if prod_col   else ""
+        exp    = _str(row[exp_col])    if exp_col    else ""
+
+        # Special rule: Exp=MDC AND Unique=MYR → Tier 3
+        # (MDC product being upgraded to MYR — treated as high-tier upsell)
+        if "MDC" in exp.upper() and "MYR" in upsell.upper():
+            return 3
 
         # If upsell col is a boolean flag ("Yes"/"No") from pre-enriched file,
         # it carries no tier info — fall through to product-based lookup.
@@ -1993,27 +2007,21 @@ def enrich_receipt(df):
                     except: return ""
                 df[_wk] = df[date_col_fnt].apply(_make_wk)
 
-    # AMR = "Yes" when Rnl Remarks ∈ {CMR, CMR+1, CMR+2, CMR+3}
-    # Fallback: MYR Remarks non-blank → AMR (original logic)
+    # AMR = "Yes" ONLY when Rnl Remarks ∈ {CMR, CMR+1, CMR+2, CMR+3}
+    # No fallback to MYR Remarks — that caused false positives
     _cmr_amr_vals = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
     _rnl_rem_amr  = find_col(df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks", "Rnl_Remarks"])
-    _myr_rem_amr  = find_col(df, ["MYR Remarks", "MYR_Remarks"])
     if "AMR" not in df.columns:
         if _rnl_rem_amr:
             _rnl_vals = df[_rnl_rem_amr].fillna("").astype(str).str.strip().str.upper()
-            _myr_yes  = pd.Series(False, index=df.index)
-            if _myr_rem_amr:
-                _myr_yes = df[_myr_rem_amr].fillna("").astype(str).str.strip().apply(
-                    lambda x: x not in ("", "nan"))
-            df["AMR"] = ((_rnl_vals.isin({v.upper() for v in _cmr_amr_vals})) | _myr_yes).map(
+            df["AMR"] = _rnl_vals.isin({v.upper() for v in _cmr_amr_vals}).map(
                 {True: "Yes", False: "No"})
-        elif _myr_rem_amr:
-            df["AMR"] = df[_myr_rem_amr].fillna("").astype(str).str.strip().apply(
-                lambda x: "Yes" if x not in ("", "nan") else "No")
         else:
             df["AMR"] = "No"
 
-    # Pref SS+: Unique/Upsell col contains Star/Leader/Pref products
+    # Pref SS+: "Yes" if Unique/Upsell col contains SS+ product (Star/Leader/Pref variants)
+    # PURPOSE: KCD April Spot multiplier — counts SS+ upsell rows
+    #   Listing/Catalog spot: >=2 Pref SS+ -> 125%; <2 -> 50% of spot base
     if "Pref SS+" not in df.columns:
         upsell_c = find_col(df, ["Unique", "Upsell", "UNIQUE"])
         if upsell_c:
@@ -2023,17 +2031,20 @@ def enrich_receipt(df):
         else:
             df["Pref SS+"] = "No"
 
-    # Base to List Sale: Prod/Upsell contains Listing-style products
+    # Base to List Sale: "No" if Base Client Type = Leader or Star (premium clients)
+    # "Yes" for everything else (base/catalog clients being upgraded to listing products)
     if "Base to List Sale" not in df.columns:
-        prod_c2 = find_col(df, ["Prod", "Product"])
-        if prod_c2:
-            _btl_kw = {"MAXIMIS", "MAXI", "TS PRO", "TS1", "TS2", "TS3", "LISTING"}
-            df["Base to List Sale"] = df[prod_c2].fillna("").astype(str).str.upper().apply(
-                lambda x: "Yes" if any(k in x for k in _btl_kw) else "No")
+        _bct_col = find_col(df, ["Base Client Type", "Base_Client_Type", "BaseClientType", "CustType"])
+        if _bct_col:
+            _leader_star = {"LEADER", "STAR", "PREFERRED STAR", "PREFERRED LEADER",
+                            "PREF STAR", "PREF LEADER", "IM STAR", "IM LEADER"}
+            df["Base to List Sale"] = df[_bct_col].fillna("").astype(str).str.strip().str.upper().apply(
+                lambda x: "No" if x in _leader_star else "Yes")
         else:
             df["Base to List Sale"] = "No"
 
-    # IM Varient: Unique col contains IM Star/Leader/Pref Star
+    # IM Varient: "Yes" if Unique col contains IM Star/Leader or Preferred Star/Leader
+    # PURPOSE: KCD Regular/ROI April Spot multiplier — ROI/Regular spot: >=1 IM Variant -> 125%; 0 -> 50%
     if "IM Varient" not in df.columns:
         upsell_c2 = find_col(df, ["Unique", "Upsell", "UNIQUE"])
         if upsell_c2:
@@ -3885,19 +3896,21 @@ def calc_spot_march_kcd(weekly_dv, client_a, team, location, vintage):
 def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
                         is_rm=False, monthly_base_inc=0, team_size=1):
     """
-    CSD April spot: NR Upsell/AMR productivity based.
-    FNT-1 (Apr 1-16): ≥3 prods → ₹1500 + ₹750/txn above 3
-    FNT-2 (Apr 20-30): ≥3 prods → ₹2500 + ₹1000/txn above 3
-    Uses exact FNT counts when available (from FNT column in receipt).
+    CSD Productivity Spot — FNT-1 uses NR Upsell/AMR count; FNT-2 uses total productivity.
+    FNT-1 (1-16): ≥3 NR Upsell/AMR → ₹2000 base + ₹750/txn above 3  (L1 Exec)
+                  RM: ≥2.5 NR/AMR per team member → ₹3000 + ₹500/txn
+    FNT-2 (17-31): ≥3 total productive txns → ₹2000 base + ₹750/txn above 3  (L1 Exec)
+                   RM: ≥2.5 total productivity per team member → ₹3000 + ₹500/txn
+    Monthly base not achieved → 50% payout on both periods.
     Returns (total_spot, fnt1_spot, fnt2_spot).
     """
     _csd_spot_apr = S.get("csd_spot_apr", {})
     if is_rm:
-        fnt1_cfg = _csd_spot_apr.get("RM_FNT1", {"min_prod": 3, "base": 2000, "per_txn": 500, "min_val": 2.5})
-        fnt2_cfg = _csd_spot_apr.get("RM_FNT2", {"min_prod": 3, "base": 3500, "per_txn": 500, "min_val": 2.5})
+        fnt1_cfg = _csd_spot_apr.get("RM_FNT1", {"min_prod": 3, "base": 3000, "per_txn": 500, "min_val": 2.5})
+        fnt2_cfg = _csd_spot_apr.get("RM_FNT2", {"min_prod": 3, "base": 3000, "per_txn": 500, "min_val": 2.5})
     else:
-        fnt1_cfg = _csd_spot_apr.get("FNT1", {"min_prod": 3, "base": 1500, "per_txn": 750})
-        fnt2_cfg = _csd_spot_apr.get("FNT2", {"min_prod": 3, "base": 2500, "per_txn": 1000})
+        fnt1_cfg = _csd_spot_apr.get("FNT1", {"min_prod": 3, "base": 2000, "per_txn": 750})
+        fnt2_cfg = _csd_spot_apr.get("FNT2", {"min_prod": 3, "base": 2000, "per_txn": 750})
     fnt1_spot = 0
     fnt2_spot = 0
     # For RM: threshold is per-team-member (count / team_size >= 2.5)
@@ -3906,26 +3919,25 @@ def calc_spot_april_csd(nr_upsell_count, S, fnt1_count=0, fnt2_count=0,
     _fnt1_thresh = fnt1_cfg.get("min_val", 2.5) * _ts if is_rm else fnt1_cfg["min_prod"]
     _fnt2_thresh = fnt2_cfg.get("min_val", 2.5) * _ts if is_rm else fnt2_cfg["min_prod"]
     if fnt1_count >= _fnt1_thresh:
-        fnt1_spot = fnt1_cfg["base"] + int(fnt1_count - (_ts * fnt1_cfg.get("min_val", 2.5))) * fnt1_cfg["per_txn"]
+        # FNT-1 gate: Monthly Base Incentive is MANDATORY (hard block if not achieved)
+        if monthly_base_inc > 0:
+            _excess1  = fnt1_count - (_ts * fnt1_cfg.get("min_val", 2.5)) if is_rm else (fnt1_count - fnt1_cfg["min_prod"])
+            fnt1_spot = fnt1_cfg["base"] + int(_excess1) * fnt1_cfg["per_txn"]
+        # else: fnt1_spot stays 0 — mandatory gate blocks entirely
     if fnt2_count >= _fnt2_thresh:
         _fnt2_excess = int(fnt2_count - (_ts * fnt2_cfg.get("min_val", 2.5))) if is_rm else (fnt2_count - fnt2_cfg["min_prod"])
         _fnt2_raw = fnt2_cfg["base"] + _fnt2_excess * fnt2_cfg["per_txn"]
-        # FNT-2 Monthly Base Incentive Multiplier: qualified (base>0)=100%, not=50%
+        # FNT-2: 100% if PCDV+CMR achieved, 50% if not achieved
         _fnt2_mult = 1.0 if monthly_base_inc > 0 else 0.5
         fnt2_spot = int(_fnt2_raw * _fnt2_mult)
     spot = fnt1_spot + fnt2_spot
     # Fallback: ONLY when no FNT-period data exists at all (both counts zero/not supplied)
-    # If we have actual FNT split counts, don't use the total count fallback
     _has_fnt_data = (fnt1_count > 0 or fnt2_count > 0)
     if spot == 0 and not _has_fnt_data and nr_upsell_count >= fnt2_cfg["min_prod"]:
-        spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
-        fnt2_spot = spot  # attribute to FNT-2 as fallback
-
-    # CSD Productivity Spot gate: Monthly Base Incentive is MANDATORY (PPT)
-    # If base incentive = 0, spot = 0 (hard block, not 50%)
-    if spot > 0 and monthly_base_inc == 0:
-        return 0, 0, 0
-    return spot, fnt1_spot, fnt2_spot
+        if monthly_base_inc > 0:  # mandatory gate applies to fallback too
+            spot = fnt2_cfg["base"] + (nr_upsell_count - fnt2_cfg["min_prod"]) * fnt2_cfg["per_txn"]
+            fnt2_spot = spot
+    return fnt1_spot + fnt2_spot, fnt1_spot, fnt2_spot
 
 
 def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
@@ -4260,12 +4272,14 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
     # Detect employee ID column once (flexible — works with enriched receipt too)
     _eid_col  = find_col(receipt_df, ["Sales Exec ID","EMP ID","Emp ID","L1 ID","Employee ID"])
 
-    # For CSD L2 Rel Mgr: use HOD-3 / L2-ID column to get ALL team receipts
+    # For L2 (SAM, ILP, Rel Mgr): aggregate team receipts via manager ID columns
     if is_l2:
-        _mgr_col = find_col(receipt_df, ["Old Sales HOD-3 ID", "Manager Id"])
+        _mgr_col = find_col(receipt_df, [
+            "Old Sales HOD-3 ID", "Manager Id", "L2 ID", "L2ID",
+            "Old Sales HOD-2 ID", "HOD-3 ID", "HOD3 ID",
+        ])
         if _mgr_col:
             _mask = receipt_df[_mgr_col].astype(str).str.split(".").str[0].str.strip() == eid_str
-            rec = receipt_df[_mask]
             rec = receipt_df[_mask]
         elif _eid_col:
             rec = receipt_df[receipt_df[_eid_col].astype(str).str.split(".").str[0].str.strip() == eid_str]
@@ -4473,11 +4487,16 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
 
         # Use pre-computed NR Upsell/AMR column from enriched receipt if available
         _nr_amr_col = find_col(receipt_df, ["NR Upsell/AMR"])
+        _date_c2    = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
         if _nr_amr_col and _nr_amr_col in rec.columns:
             _prod2     = rec["Productivity"].fillna(0).astype(float) > 0
             _is_nr_amr = rec[_nr_amr_col].astype(str).str.strip().str.upper() == "YES"
-            _spot_q2   = _prod2 & _is_nr_amr
-            _date_c2   = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
+            # Also exclude CMR+3 rows per FAQ Q6 — check Rnl Remarks if available
+            _rnl_col_spot = find_col(receipt_df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks"])
+            if _rnl_col_spot and _rnl_col_spot in rec.columns:
+                _is_cmr3 = rec[_rnl_col_spot].astype(str).str.strip().str.upper() == "CMR+3"
+                _is_nr_amr = _is_nr_amr & ~_is_cmr3
+            _spot_fnt1 = _prod2 & _is_nr_amr   # FNT-1: NR Upsell/AMR rows (no CMR+3)
             _dates_q2  = pd.to_datetime(rec[_date_c2], errors="coerce") if _date_c2 else pd.Series(dtype="datetime64[ns]")
             # Use session_state period_dates if available
             _pd2 = {}
@@ -4490,9 +4509,11 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
                     s, e = _pd2[pname]
                     return dates_series.dt.date.between(s, e)
                 return dates_series.dt.day.between(def_range[0], def_range[1])
-            fnt1_prod_count = int((_spot_q2 & _in_period(_dates_q2, "FNT-1", (1,  16))).sum())
-            fnt2_prod_count = int((_spot_q2 & _in_period(_dates_q2, "FNT-2", (17, 31))).sum())
-            nr_upsell_count = int(_spot_q2.sum())
+            # FNT-1 (1-16): count NR Upsell/AMR rows
+            fnt1_prod_count = int((_spot_fnt1 & _in_period(_dates_q2, "FNT-1", (1, 16))).sum())
+            # FNT-2 (17-31): count ALL productive rows (not just NR Upsell/AMR)
+            fnt2_prod_count = int((_prod2 & _in_period(_dates_q2, "FNT-2", (17, 31))).sum())
+            nr_upsell_count = int(_spot_fnt1.sum())  # total NR Upsell/AMR count
 
         # FNT-based spot counts (April)
         fnt_col = find_col(receipt_df, ["FNT", "Fortnight"])
@@ -4506,21 +4527,22 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             fnt2_prod_count = int((_prod & _amr & (_fnt == "FNT-2")).sum())
         # Always derive FNT from Rem+Rnl Remarks (sir's exact spot logic)
         # NR = Rem="Upsell-NR"; AMR = Rem="Renewal" AND Rnl Remarks in CMR set
-        _rem_col  = find_col(receipt_df, ["Rem", "REM"])
-        _rnl_col  = find_col(receipt_df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks"])
-        _date_col2 = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
         if _rem_col and _date_col2:
-            _AMR_VALS = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
+            # FAQ Q6: CMR+3 renewals are NOT counted for FNT-1 spot
+            _AMR_VALS = {"CMR", "CMR+1", "CMR+2"}   # CMR+3 excluded per FAQ Q6
             _is_nr  = rec[_rem_col].astype(str).str.strip() == "Upsell-NR"
             if _rnl_col:
                 _is_amr = ((rec[_rem_col].astype(str).str.strip() == "Renewal") &
                            (rec[_rnl_col].astype(str).str.strip().isin(_AMR_VALS)))
             else:
                 _is_amr = pd.Series(False, index=rec.index)
-            _spot_qual = _is_nr | _is_amr
+            _spot_qual = _is_nr | _is_amr   # NR Upsell/AMR mask
             _dates2    = pd.to_datetime(rec[_date_col2], errors='coerce')
+            _prod_mask = rec["Productivity"].fillna(0).astype(float) > 0 if "Productivity" in rec.columns else pd.Series(True, index=rec.index)
+            # FNT-1 (1-16): NR Upsell/AMR count only (CMR+3 excluded)
             fnt1_prod_count = int((_spot_qual & (_dates2.dt.day <= 16)).sum())
-            fnt2_prod_count = int((_spot_qual & (_dates2.dt.day >= 17)).sum())
+            # FNT-2 (17-31): all productive rows (any productivity, not just NR/AMR)
+            fnt2_prod_count = int((_prod_mask & (_dates2.dt.day >= 17)).sum())
             nr_upsell_count = int(_spot_qual.sum())
         elif upsell_col_name:
             _date_col = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
@@ -4569,9 +4591,11 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
 
     # KCD WK-1 Power of Productivity Spot (01-09 May): per-product-type count
     # Only NR Upsell / Upsell on Renewal; must have ≥2 productivity in the week
-    wk1_prod_counts = {k: 0 for k in WK1_PRODUCT_CATEGORIES}  # {category: count}
-    wk3_ss_count = 0   # SS+ NR Upsell/Ren/AMR count in WK-3 (days 17-23)
-    wk4_ss_count = 0   # SS+ NR Upsell/Ren/AMR count in WK-4 (days 24-31)
+    wk1_prod_counts = {k: 0 for k in WK1_PRODUCT_CATEGORIES}   # {category: count}
+    wk3_ss_by_cat   = {k: 0 for k in WK34_PRODUCT_CATEGORIES}  # WK-3 SS+ per category
+    wk4_ss_by_cat   = {k: 0 for k in WK34_PRODUCT_CATEGORIES}  # WK-4 SS+ per category
+    wk3_ss_count = 0   # total SS+ NR/AMR in WK-3 (days 17-23)
+    wk4_ss_count = 0   # total SS+ NR/AMR in WK-4 (days 24-31)
     if _unique_col_sp and len(rec) > 0:
         try:
             _uq_vals = rec[_unique_col_sp].fillna("").astype(str)
@@ -4592,13 +4616,21 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
                 lambda v: any(k in v for k in _ss_kw_spot))
             # Check for NR Upsell / AMR (same gate as nr_upsell_count)
             _nr_mask = _uq_vals.str.upper().str.contains("UPSELL|AMR|NR", na=False)
+            # WK-1 per-category counts
             _wk1_rec = rec[_is_wk1 & _nr_mask]
             for cat, keywords in WK1_PRODUCT_CATEGORIES.items():
                 _cat_mask = _wk1_rec[_unique_col_sp].apply(
                     lambda v: any(kw.upper() in str(v).upper() for kw in keywords)
                 )
                 wk1_prod_counts[cat] = int(_cat_mask.sum())
-            # WK-3 and WK-4 SS+ count: SS+ product AND (NR Upsell/AMR) in that week
+            # WK-3/WK-4 per-category SS+ counts (uses WK34_PRODUCT_CATEGORIES)
+            _wk3_ss_rec = rec[_is_wk3 & _nr_mask & _is_ss_prod]
+            _wk4_ss_rec = rec[_is_wk4 & _nr_mask & _is_ss_prod]
+            for cat, keywords in WK34_PRODUCT_CATEGORIES.items():
+                def _match(v):
+                    return any(kw.upper() in str(v).upper() for kw in keywords)
+                wk3_ss_by_cat[cat] = int(_wk3_ss_rec[_unique_col_sp].apply(_match).sum())
+                wk4_ss_by_cat[cat] = int(_wk4_ss_rec[_unique_col_sp].apply(_match).sum())
             wk3_ss_count = int((_is_wk3 & _nr_mask & _is_ss_prod).sum())
             wk4_ss_count = int((_is_wk4 & _nr_mask & _is_ss_prod).sum())
         except Exception:
@@ -4643,7 +4675,8 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             weekly_prod_counts, im_star_pro_count,
             wk1_prod_counts, excellent_txn_count,
             computed_client_c, prod_score_receipt_int,
-            wk3_ss_count, wk4_ss_count)
+            wk3_ss_count, wk4_ss_count,
+            wk3_ss_by_cat, wk4_ss_by_cat)
 
 
 def resolve_emp_name(emp_id, cfg_row, emp_cmr, emp_row):
@@ -4835,7 +4868,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                nr_upsell_count=0, net_deal_val=0, collection_target=0,
                vintage_bucket="", designation="", weekly_dv=None,
                cmr_plus1_sent=0, wk1_prod_counts=None, excellent_txn_count=0,
-               wk3_ss_count=0, wk4_ss_count=0):
+               wk3_ss_count=0, wk4_ss_count=0,
+               wk3_ss_by_cat=None, wk4_ss_by_cat=None):
     """
     Main routing -- all fixes applied:
     - SPS booster: auto 1.2× when vintage_bucket='SPS'; Pune TAT/60D override for others
@@ -5479,48 +5513,47 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _wk1_spot = int(_wk1_spot * _wk1_base_mult)  # 50% if monthly base not achieved
 
         # ── KCD WK-3 SS+ Power of Productivity Spot (17-23 May) ─────────────────
-        # Gate: ≥ L1_min total prod in WK-3 AND ≥ ss_min SS+ NR Upsell/Ren/AMR in WK-3
         _wk3_spot = 0
         _wk3_rates = S.get("kcd_wk3_spot", {})
         if _wk3_rates:
-            _wk3_min  = S.get("kcd_wk3_sam_min", 1.5) if _is_sam else S.get("kcd_wk3_l1_min", 2.0)
+            _wk3_min    = S.get("kcd_wk3_sam_min", 1.5) if _is_sam else S.get("kcd_wk3_l1_min", 2.0)
             _wk3_ss_req = S.get("kcd_wk3_ss_min", 1)
-            # Total WK-3 productive txns (WK-3 = days 17-23; tracked in weekly_prod_counts[3])
             _wk3_total_prod = weekly_prod_counts.get(3, 0)
             if _wk3_total_prod >= _wk3_min and wk3_ss_count >= _wk3_ss_req:
                 _wk3_base_mult = 0.5 if base_inc == 0 else 1.0
-                for cat, rate_info in _wk3_rates.items():
-                    # WK-3 counts SS+ NR Upsell/Ren/AMR per product category
-                    # Use wk3_ss_count as total (not split by cat — single total SS+ count)
-                    if wk3_ss_count > 0:
-                        if isinstance(rate_info, dict):
-                            _pref = "l2" if _is_sam else "l1"
-                            _rate = rate_info.get(f"{_pref}_annual", 0)
-                        else:
-                            _rate = int(rate_info) if not _is_sam else int(rate_info) // 2
-                        _wk3_spot += wk3_ss_count * _rate
-                        break  # single rate applied to total SS+ count
+                _pref = "l2" if _is_sam else "l1"
+                _cats = wk3_ss_by_cat or {}
+                for cat_key, rate_info in _wk3_rates.items():
+                    _cat_cnt = _cats.get(cat_key, 0)
+                    if _cat_cnt > 0 and isinstance(rate_info, dict):
+                        _ann_rate = rate_info.get(f"{_pref}_annual", 0)
+                        _myr_rate = rate_info.get(f"{_pref}_myr", 0)
+                        _wk3_spot += _cat_cnt * _ann_rate  # Annual/AMR rate per qualifying txn
+                if _wk3_spot == 0 and wk3_ss_count > 0:
+                    # Fallback: use first category rate for total count
+                    _first = next(iter(_wk3_rates.values()), {})
+                    _wk3_spot = wk3_ss_count * (_first.get(f"{_pref}_annual", 0) if isinstance(_first, dict) else int(_first))
                 _wk3_spot = int(_wk3_spot * _wk3_base_mult)
 
         # ── KCD WK-4 SS+ Power of Productivity Spot (24-31 May) ─────────────────
-        # Gate: ≥ L1_min total prod in WK-4 AND ≥ ss_min SS+ NR Upsell/Ren/AMR in WK-4
         _wk4_spot = 0
         _wk4_rates = S.get("kcd_wk4_spot", {})
         if _wk4_rates:
-            _wk4_min  = S.get("kcd_wk4_sam_min", 2.5) if _is_sam else S.get("kcd_wk4_l1_min", 3.0)
+            _wk4_min    = S.get("kcd_wk4_sam_min", 2.5) if _is_sam else S.get("kcd_wk4_l1_min", 3.0)
             _wk4_ss_req = S.get("kcd_wk4_ss_min", 1)
             _wk4_total_prod = weekly_prod_counts.get(4, 0)
             if _wk4_total_prod >= _wk4_min and wk4_ss_count >= _wk4_ss_req:
                 _wk4_base_mult = 0.5 if base_inc == 0 else 1.0
-                for cat, rate_info in _wk4_rates.items():
-                    if wk4_ss_count > 0:
-                        if isinstance(rate_info, dict):
-                            _pref = "l2" if _is_sam else "l1"
-                            _rate = rate_info.get(f"{_pref}_annual", 0)
-                        else:
-                            _rate = int(rate_info) if not _is_sam else int(rate_info) // 2
-                        _wk4_spot += wk4_ss_count * _rate
-                        break
+                _pref4 = "l2" if _is_sam else "l1"
+                _cats4 = wk4_ss_by_cat or {}
+                for cat_key, rate_info in _wk4_rates.items():
+                    _cat_cnt4 = _cats4.get(cat_key, 0)
+                    if _cat_cnt4 > 0 and isinstance(rate_info, dict):
+                        _ann_rate4 = rate_info.get(f"{_pref4}_annual", 0)
+                        _wk4_spot += _cat_cnt4 * _ann_rate4
+                if _wk4_spot == 0 and wk4_ss_count > 0:
+                    _first4 = next(iter(_wk4_rates.values()), {})
+                    _wk4_spot = wk4_ss_count * (_first4.get(f"{_pref4}_annual", 0) if isinstance(_first4, dict) else int(_first4))
                 _wk4_spot = int(_wk4_spot * _wk4_base_mult)
 
         # ── Excellent Incentive Spot (04 May only) ───────────────────────────────
@@ -6393,6 +6426,9 @@ if enrich_btn:
                     e = _se(row.get("Exp",""))
                     _u_cf = u.strip().casefold()
                     _p_cf = p.strip().casefold()
+                    # Special rule: Exp=MDC AND Unique=MYR → Tier 3
+                    if "mdc" in e.upper() and "myr" in _u_cf:
+                        return "TS-3||Maxi-2"
                     if _u_cf in ("", "yes", "no", "1", "true"):
                         # Generic boolean flag — no tier info, use product
                         pass
@@ -6414,7 +6450,8 @@ if enrich_btn:
                     def _he(v):
                         s=struct_map.get(str(v).split('.')[0].strip(),{})
                         return {k: s.get(k,"") for k in
-                                ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name"]}
+                                ["L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name",
+                                 "L5 ID","L5 Name","L6 ID","L6 Name"]}
                     _hdf_e = rec_enriched[_p_c_e].apply(lambda v: pd.Series(_he(v)))
                     for _hc_e in _hdf_e.columns:
                         if _hc_e not in rec_enriched.columns:
@@ -6565,7 +6602,8 @@ if calc_btn:
             weekly_prod_counts, im_star_pro_count,
             wk1_prod_counts, excellent_txn_count,
             computed_client_c, prod_score_receipt_int,
-            wk3_ss_count, wk4_ss_count) = \
+            wk3_ss_count, wk4_ss_count,
+            wk3_ss_by_cat, wk4_ss_by_cat) = \
             get_transactions(receipt_df, refund_df, renewal_df, emp_id,
                              client_a=float(s.get("Client Count", 0) or 0),
                              is_l2=_is_l2_tx,
@@ -6618,7 +6656,9 @@ if calc_btn:
                              wk1_prod_counts=wk1_prod_counts,
                              excellent_txn_count=excellent_txn_count,
                              wk3_ss_count=wk3_ss_count,
-                             wk4_ss_count=wk4_ss_count)
+                             wk4_ss_count=wk4_ss_count,
+                             wk3_ss_by_cat=wk3_ss_by_cat,
+                             wk4_ss_by_cat=wk4_ss_by_cat)
         except Exception as _e:
             inc = {"CMR% (auto)": 0, "SS+ CMR% (auto)": 0,
                 "CMR Slab1 Target": "", "CMR Slab2 Target": "",
@@ -7639,18 +7679,14 @@ if calc_btn:
             if not _prod_pre2:
                 rec_exp["Productivity"] = rec_exp["Total Sale"]
 
-            # AMR: "Yes" if Remarks (AL col) is a renewal-type category
-            # In sir's file: AL col values = "MDC","MDC-TS","WS","CMR+3","OTHERS","RETENTION" etc.
-            # AMR-eligible = MDC, WS, MYR (renewal) products; NOT "OTHERS","RETENTION"
-            if _rem_c:
-                _amr_excl = {"OTHERS","RETENTION","CMR+3","UPSELL","WINBACK",""}
-                rec_exp["AMR"] = rec_exp[_rem_c].apply(
-                    lambda v: "No" if str(v).strip().upper() in _amr_excl else "Yes")
-            elif _prod_col:
-                # Fallback: derive from product name
-                _amr_prods = {"MDC","MDC-TS","WS","IVE","MYR"}
-                rec_exp["AMR"] = rec_exp[_prod_col].apply(
-                    lambda v: "Yes" if any(k in str(v).upper() for k in _amr_prods) else "No")
+            # AMR: "Yes" ONLY when Rnl Remarks ∈ {CMR, CMR+1, CMR+2, CMR+3}
+            _rnl_rem_exp = find_col(rec_exp, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks", "Rnl_Remarks"])
+            if _rnl_rem_exp:
+                _cmr_vals_exp = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
+                rec_exp["AMR"] = rec_exp[_rnl_rem_exp].fillna("").astype(str).str.strip().str.upper().apply(
+                    lambda v: "Yes" if v in _cmr_vals_exp else "No")
+            else:
+                rec_exp["AMR"] = "No"
 
             # NR Upsell/AMR: CSD employee AND (AMR=Yes OR product=Upsell-NR)
             if "AMR" in rec_exp.columns:
@@ -7671,11 +7707,12 @@ if calc_btn:
                               "5L+"  if _sf(v)>=500000  else
                               "2L+"  if _sf(v)>=200000  else "")
 
-            # Base to List Sale: "No" if base client type is Leader/Star (premium)
+            # Base to List Sale: "No" if Base Client Type = Leader or Star; "Yes" for everything else
             if _base_ct:
+                _ldr_str_exp = {"LEADER","STAR","PREFERRED STAR","PREFERRED LEADER",
+                                "PREF STAR","PREF LEADER","IM STAR","IM LEADER"}
                 rec_exp["Base to List Sale"] = rec_exp[_base_ct].apply(
-                    lambda v: "No" if str(v).strip().upper() in
-                              ("LEADER","STAR","PREFERRED STAR","PREFERRED LEADER") else "Yes")
+                    lambda v: "No" if str(v).strip().upper() in _ldr_str_exp else "Yes")
 
             # Collection: "Yes" if not paid via NACH/ECS auto-debit
             if _mode_c:
