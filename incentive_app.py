@@ -7588,21 +7588,25 @@ if calc_btn:
                     rec_exp["Productivity"] = rec_exp["Total Sale"]  # fallback
 
             # ── AMR (sir col BR) ────────────────────────────────────────────────
-            # Sir: =IF(OR(AH3="Others",AH3="Retention",AH3="CMR+3"),"No","Yes")
-            _amr_excl = {"OTHERS","RETENTION","CMR+3"}
+            # Whitelist: only CMR, CMR+1, CMR+2, CMR+3 from Rnl Remarks get "Yes"
+            _amr_incl = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
             if _cmr_rem:
-                rec_exp["AMR"] = rec_exp[_cmr_rem].apply(
-                    lambda v: "No" if str(v).strip().upper() in _amr_excl else "Yes")
+                rec_exp["AMR"] = rec_exp[_cmr_rem].fillna("").astype(str).str.strip().str.upper().apply(
+                    lambda v: "Yes" if v in _amr_incl else "No")
 
             # ── NR Upsell/AMR (sir col BR) ──────────────────────────────────────
-            # Sir: =IF($AB3="CSD",IF(OR($BR3="Yes",$AL3="Upsell-NR"),"Yes","No"),"No")
-            if "AMR" in rec_exp.columns and _vert_c:
-                _al_c = _mode_al
-                rec_exp["NR Upsell/AMR"] = rec_exp.apply(
-                    lambda r: "Yes" if (str(r.get(_vert_c,"")).upper()=="CSD" and
-                              (r.get("AMR","No")=="Yes" or
-                               str(r.get(_al_c,"")).strip().upper()=="UPSELL-NR"))
-                              else "No", axis=1)
+            # NR Upsell/AMR = Upsell-NR OR AMR with Rnl Remarks ∈ {CMR,CMR+1,CMR+2} (CMR+3 excluded)
+            _rnl_col_nr = find_col(rec_exp, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks"])
+            _NR_AMR_VALS_EXP = {"CMR", "CMR+1", "CMR+2"}   # CMR+3 excluded per FAQ Q6
+            if _vert_c:
+                def _nr_amr_row(r):
+                    if str(r.get(_vert_c,"")).upper() != "CSD": return "No"
+                    rem  = str(r.get(_rem_c,"") if _rem_c else "").strip().upper()
+                    rnl  = str(r.get(_rnl_col_nr,"") if _rnl_col_nr else "").strip().upper()
+                    if rem == "UPSELL-NR": return "Yes"
+                    if rem == "RENEWAL" and rnl in _NR_AMR_VALS_EXP: return "Yes"
+                    return "No"
+                rec_exp["NR Upsell/AMR"] = rec_exp.apply(_nr_amr_row, axis=1)
 
             # ── SAM ILP Slab (sir col BM) ───────────────────────────────────────
             # Sir: =IF(AK3>=1000000,"10L+",IF(AK3>=500000,"5L+",IF(AK3>=200000,"2L+",0)))
@@ -7672,13 +7676,16 @@ if calc_btn:
             else:
                 rec_exp["AMR"] = "No"
 
-            # NR Upsell/AMR: CSD employee AND (AMR=Yes OR product=Upsell-NR)
+            # NR Upsell/AMR: CSD AND (Upsell-NR OR Rnl Remarks ∈ {CMR,CMR+1,CMR+2}) — CMR+3 excluded
+            _rnl_col_nr2 = find_col(rec_exp, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks"])
+            _NR_AMR_VALS2 = {"CMR", "CMR+1", "CMR+2"}
             if "AMR" in rec_exp.columns:
                 rec_exp["NR Upsell/AMR"] = rec_exp.apply(
                     lambda r: "Yes" if (
                         ("CSD" in str(r.get(_vert_c,"") if _vert_c else "").upper()) and
-                        (r.get("AMR","No")=="Yes" or
-                         "UPSELL" in str(r.get(_rem_c,"") if _rem_c else "").upper())
+                        (str(r.get(_rem_c,"") if _rem_c else "").strip().upper() == "UPSELL-NR" or
+                         (str(r.get(_rem_c,"") if _rem_c else "").strip().upper() == "RENEWAL" and
+                          str(r.get(_rnl_col_nr2,"") if _rnl_col_nr2 else "").strip().upper() in _NR_AMR_VALS2))
                     ) else "No", axis=1)
 
             # SAM ILP Slab from WT AMT
