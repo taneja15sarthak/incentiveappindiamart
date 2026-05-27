@@ -1899,6 +1899,9 @@ def enrich_receipt(df):
         elif tier_val == 2: return "MDC-MYR||TS-2||Maxi-A||VE"
         elif tier_val == 3: return "TS-3||Maxi-2"
         return ""
+
+    def _svc_tier(row):
+        """Read tier from existing Service/Tagged Services Name column if present."""
         if not _svc_col_t or _svc_col_t not in row.index: return 0
         _sv = _str(row[_svc_col_t])
         if not _sv: return 0
