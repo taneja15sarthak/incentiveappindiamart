@@ -4511,8 +4511,11 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
             nr_upsell_count = int(_spot_fnt1.sum())  # total NR Upsell/AMR count
 
         # FNT-based spot counts (April)
-        fnt_col = find_col(receipt_df, ["FNT", "Fortnight"])
-        amr_col = find_col(receipt_df, ["AMR"])
+        fnt_col    = find_col(receipt_df, ["FNT", "Fortnight"])
+        amr_col    = find_col(receipt_df, ["AMR"])
+        _rem_col   = find_col(receipt_df, ["Rem", "REM"])
+        _rnl_col   = find_col(receipt_df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks"])
+        _date_col2 = find_col(receipt_df, ["Entry Date", "Receipt Date", "Date"])
         prod_col = "Productivity"
         if fnt_col and amr_col:
             _prod = rec[prod_col].fillna(0).astype(float) > 0
