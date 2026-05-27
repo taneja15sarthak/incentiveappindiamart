@@ -6421,11 +6421,11 @@ if enrich_btn:
                     e = _se(row.get("Exp",""))
                     _u_cf = u.strip().casefold()
                     _p_cf = p.strip().casefold()
-                    # Special rule: Exp=MDC AND Unique=MYR → Tier 3
-                    if "mdc" in e.upper() and "myr" in _u_cf:
+                    # Special rule: Exp=MDC AND Unique=MYR → Tier 3 (highest priority)
+                    if "mdc" in e.casefold() and "myr" in _u_cf:
                         return "TS-3||Maxi-2"
                     if _u_cf in ("", "yes", "no", "1", "true"):
-                        # Generic boolean flag — no tier info, use product
+                        # Generic boolean flag — no tier info, fall through to product or Service_Tier
                         pass
                     elif _u_cf == "combo 1yr": return "MDC-Annual||TS-1"
                     elif _u_cf in _U1: return "MDC-Annual||TS-1"
@@ -6436,8 +6436,23 @@ if enrich_btn:
                     if _p_cf in _P1: return "MDC-Annual||TS-1"
                     if _p_cf in _P2: return "MDC-MYR||TS-2||Maxi-A||VE"
                     if _p_cf in _P3: return "TS-3||Maxi-2"
+                    # Final fallback: use Service_Tier already computed by enrich_receipt
+                    _st_val = row.get("Service_Tier", 0)
+                    try: _st_val = float(_st_val)
+                    except: _st_val = 0
+                    if _st_val == 3: return "TS-3||Maxi-2"
+                    if _st_val == 2: return "MDC-MYR||TS-2||Maxi-A||VE"
+                    if _st_val == 1: return "MDC-Annual||TS-1"
                     return ""
-                rec_enriched["Service"] = rec_enriched.apply(_svc, axis=1)
+                # Service column: derived directly from Service_Tier (already set by enrich_receipt)
+                # Service_Tier is the single source of truth — no separate _svc logic needed
+                _tier_to_svc_label = {1: "MDC-Annual||TS-1", 2: "MDC-MYR||TS-2||Maxi-A||VE", 3: "TS-3||Maxi-2"}
+                if "Service_Tier" in rec_enriched.columns:
+                    rec_enriched["Service"] = rec_enriched["Service_Tier"].apply(
+                        lambda t: _tier_to_svc_label.get(int(float(t)), "") if pd.notna(t) and str(t) not in ("","nan") else ""
+                    )
+                else:
+                    rec_enriched["Service"] = rec_enriched.apply(_svc, axis=1)
 
                 # L2-L6 hierarchy
                 _p_c_e = find_col(rec_enriched, ["Sales Exec ID","EMP ID","L1 ID"])
