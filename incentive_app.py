@@ -1888,8 +1888,17 @@ def enrich_receipt(df):
         "pref ss":3,"pref ls":3,"combo 3yr":3,"maximiser-3":3,"maximiser-2":3,
         "preferred star pro":3,"im leader pro":3,"preferred leader pro":3,
     }
-    _svc_col_t = find_col(df, ["Service","SERVICE"])
-    def _svc_tier(row):
+    # Service: label string matching sir's "Tagged Services Name" column output
+    # Looks for existing "Service" OR "Tagged Services Name" column; if absent, computes from _tier
+    # Also recomputes for the special Exp=MDC + Unique=MYR → TS-3||Maxi-2 rule
+    _svc_col_t = find_col(df, ["Service", "SERVICE", "Tagged Services Name", "TaggedServicesName"])
+
+    def _tier_to_service(tier_val):
+        """Convert numeric tier to label string."""
+        if tier_val == 1:   return "MDC-Annual||TS-1"
+        elif tier_val == 2: return "MDC-MYR||TS-2||Maxi-A||VE"
+        elif tier_val == 3: return "TS-3||Maxi-2"
+        return ""
         if not _svc_col_t or _svc_col_t not in row.index: return 0
         _sv = _str(row[_svc_col_t])
         if not _sv: return 0
@@ -1935,6 +1944,10 @@ def enrich_receipt(df):
         return max(_pt, _st) if _st > 0 else _pt
 
     df["Service_Tier"] = df.apply(_tier, axis=1)
+
+    # Derive/overwrite "Service" label from Service_Tier
+    # Always recompute so Exp=MDC+Unique=MYR rows get "TS-3||Maxi-2" correctly
+    df["Service"] = df["Service_Tier"].apply(_tier_to_service)
 
     # ── April-specific enrichment columns ─────────────────────────────────
         # FNT / WK: derive from Entry Date using configurable date ranges
@@ -2019,40 +2032,19 @@ def enrich_receipt(df):
         else:
             df["AMR"] = "No"
 
-    # Pref SS+: "Yes" if Unique/Upsell col contains SS+ product (Star/Leader/Pref variants)
-    # PURPOSE: KCD April Spot multiplier — counts SS+ upsell rows
-    #   Listing/Catalog spot: >=2 Pref SS+ -> 125%; <2 -> 50% of spot base
-    if "Pref SS+" not in df.columns:
-        upsell_c = find_col(df, ["Unique", "Upsell", "UNIQUE"])
-        if upsell_c:
-            _ss_kw = {"STAR", "LEADER", "PREF"}
-            df["Pref SS+"] = df[upsell_c].fillna("").astype(str).str.upper().apply(
-                lambda x: "Yes" if any(k in x for k in _ss_kw) else "No")
-        else:
-            df["Pref SS+"] = "No"
+    # Pref SS+ and IM Varient columns removed — only needed for April spot scheme,
+    # not used in May. They are still computed in get_transactions directly from receipt.
 
-    # Base to List Sale: "No" if Base Client Type = Leader or Star (premium clients)
-    # "Yes" for everything else (base/catalog clients being upgraded to listing products)
+    # Base to List Sale: "No" if Base Client Type = Leader, Star, or blank; "Yes" otherwise
     if "Base to List Sale" not in df.columns:
         _bct_col = find_col(df, ["Base Client Type", "Base_Client_Type", "BaseClientType", "CustType"])
         if _bct_col:
             _leader_star = {"LEADER", "STAR", "PREFERRED STAR", "PREFERRED LEADER",
                             "PREF STAR", "PREF LEADER", "IM STAR", "IM LEADER"}
             df["Base to List Sale"] = df[_bct_col].fillna("").astype(str).str.strip().str.upper().apply(
-                lambda x: "No" if x in _leader_star else "Yes")
+                lambda x: "No" if (x == "" or x in _leader_star) else "Yes")
         else:
             df["Base to List Sale"] = "No"
-
-    # IM Varient: "Yes" if Unique col contains IM Star/Leader or Preferred Star/Leader
-    # PURPOSE: KCD Regular/ROI April Spot multiplier — ROI/Regular spot: >=1 IM Variant -> 125%; 0 -> 50%
-    if "IM Varient" not in df.columns:
-        upsell_c2 = find_col(df, ["Unique", "Upsell", "UNIQUE"])
-        if upsell_c2:
-            _im_kw = {"IM STAR", "IM LEADER", "PREF STAR", "PREF LEADER", "PREFERRED STAR", "PREFERRED LEADER"}
-            df["IM Varient"] = df[upsell_c2].fillna("").astype(str).str.upper().apply(
-                lambda x: "Yes" if any(k in x for k in _im_kw) else "No")
-        else:
-            df["IM Varient"] = "No"
 
     # Deal Val (WOT): alias for Deal Val (WT) when WOT not present
     if "Deal Val (WOT)" not in df.columns:
@@ -6250,7 +6242,7 @@ if _is_pre_enriched:
     # Still run enrich to fill Service_Tier if missing, but do NOT overwrite existing columns
     _svc_col_existing = find_col(receipt_df, ["Service_Tier","Service","SERVICE_TIER"])
     # Cols written by enrich_receipt that we want to preserve from the uploaded enriched file
-    _enrich_written = ["Productivity","Service_Tier","Service","Base to List Sale","AMR","IM Varient","Pref SS+","FNT","Deal Val (WOT)","Upsell","Pure Renewal","all Upsell","NR Upsell/AMR","WK-1","WK-2","WK-3","WK-4","_has_upsell_on_receipt","_is_pure_renewal","_is_upsell"]
+    _enrich_written = ["Productivity","Service_Tier","Base to List Sale","AMR","FNT","Deal Val (WOT)","Upsell","Pure Renewal","all Upsell","NR Upsell/AMR","WK-1","WK-2","WK-3","WK-4","_has_upsell_on_receipt","_is_pure_renewal","_is_upsell"]
     _saved_cols = {c: receipt_df[c].copy() for c in _enrich_written if c in receipt_df.columns}
     if _svc_col_existing is None and "Service_Tier" not in _saved_cols:
         _enriched_temp = enrich_receipt(receipt_df)
@@ -7707,12 +7699,12 @@ if calc_btn:
                               "5L+"  if _sf(v)>=500000  else
                               "2L+"  if _sf(v)>=200000  else "")
 
-            # Base to List Sale: "No" if Base Client Type = Leader or Star; "Yes" for everything else
+            # Base to List Sale: "No" if Base Client Type = Leader, Star, or blank; "Yes" otherwise
             if _base_ct:
                 _ldr_str_exp = {"LEADER","STAR","PREFERRED STAR","PREFERRED LEADER",
                                 "PREF STAR","PREF LEADER","IM STAR","IM LEADER"}
                 rec_exp["Base to List Sale"] = rec_exp[_base_ct].apply(
-                    lambda v: "No" if str(v).strip().upper() in _ldr_str_exp else "Yes")
+                    lambda v: "No" if (str(v).strip() == "" or str(v).strip().upper() in _ldr_str_exp or str(v).strip().lower() == "nan") else "Yes")
 
             # Collection: "Yes" if not paid via NACH/ECS auto-debit
             if _mode_c:
