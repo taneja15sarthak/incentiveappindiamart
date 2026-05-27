@@ -669,21 +669,32 @@ def parse_slabs(cfg):
     if "CSD_Spot_May" in cfg:
         for _, r in cfg["CSD_Spot_May"].iterrows():
             spot_type = str(r.get("Spot_Type", "")).strip().upper()
-            if "L1" in spot_type:
+            if spot_type == "L1_FNT1" or ("L1" in spot_type and "FNT2" not in spot_type):
                 csd_spot_apr_rows["FNT1"] = {
                     "min_prod": int(r.get("Min_Prod", 3)),
                     "base":     int(r.get("Base_Reward", 2000)),
                     "per_txn":  int(r.get("Per_Txn", 750)),
                 }
-            elif "RM" in spot_type:
+            elif spot_type == "L1_FNT2":
+                csd_spot_apr_rows["FNT2"] = {
+                    "min_prod": int(r.get("Min_Prod", 3)),
+                    "base":     int(r.get("Base_Reward", 2000)),
+                    "per_txn":  int(r.get("Per_Txn", 750)),
+                }
+            elif spot_type == "RM_FNT1" or ("RM" in spot_type and "FNT2" not in spot_type):
                 csd_spot_apr_rows["RM_FNT1"] = {
                     "min_prod": float(r.get("Min_Prod", 2.5)),
                     "min_val":  float(r.get("Min_Prod", 2.5)),
                     "base":     int(r.get("Base_Reward", 3000)),
                     "per_txn":  int(r.get("Per_Txn", 500)),
                 }
-        # No FNT-2 in May — explicitly zero it out
-        csd_spot_apr_rows["FNT2"] = {"min_prod": 999, "base": 0, "per_txn": 0}
+            elif spot_type == "RM_FNT2":
+                csd_spot_apr_rows["RM_FNT2"] = {
+                    "min_prod": float(r.get("Min_Prod", 2.5)),
+                    "min_val":  float(r.get("Min_Prod", 2.5)),
+                    "base":     int(r.get("Base_Reward", 3000)),
+                    "per_txn":  int(r.get("Per_Txn", 500)),
+                }
     # Defaults if not in config
     if "FNT1" not in csd_spot_apr_rows:
         csd_spot_apr_rows["FNT1"] = {"min_prod": 3, "base": 2000, "per_txn": 750}
@@ -692,7 +703,7 @@ def parse_slabs(cfg):
     if "RM_FNT1" not in csd_spot_apr_rows:
         csd_spot_apr_rows["RM_FNT1"] = {"min_prod": 2.5, "min_val": 2.5, "base": 3000, "per_txn": 500}
     if "RM_FNT2" not in csd_spot_apr_rows:
-        csd_spot_apr_rows["RM_FNT2"] = {"min_prod": 2.5, "min_val": 2.5, "base": 0, "per_txn": 0}
+        csd_spot_apr_rows["RM_FNT2"] = {"min_prod": 2.5, "min_val": 2.5, "base": 3000, "per_txn": 500}
 
     # ── KCD Spot April (FNT rates per team/vintage key from config) ──
     kcd_spot_apr_rows = {}   # keyed by "ROI_0_90", "ROI_90p", "CAT_0_90", etc.
@@ -1857,7 +1868,8 @@ def enrich_receipt(df):
     if "NR Upsell/AMR" not in df.columns:
         _rem_col2 = find_col(df, ["Rem", "Remarks", "REM", "REMARKS"])
         _rnl_rem2 = find_col(df, ["Rnl Remarks", "RnlRemarks", "Renewal Remarks", "Rnl_Remarks"])
-        _cmr_vals = {"CMR", "CMR+1", "CMR+2", "CMR+3"}
+        # CMR+3 excluded per FAQ Q6 ("No" for CMR+3 renewals)
+        _cmr_vals = {"CMR", "CMR+1", "CMR+2"}
         def _nr_upsell_amr(row):
             rem_val = str(row[_rem_col2]).strip().upper() if _rem_col2 else ""
             rnl_val = str(row[_rnl_rem2]).strip().upper() if _rnl_rem2 else ""
@@ -3248,7 +3260,9 @@ def calc_csd_sps(pcdv, prod_score, txn_count, cmr_slab, vintage,
     # Use next-month MDC-1 for the multiplier (scheme: "MDC 1- CMR+1% Multiplier")
     # mdc1_cmr_plus1=None means sent=0 → 100% (no MDC-1 clients due next month = no penalty)
     # mdc1_cmr = CURRENT month's MDC-1 CMR% (display only, not used for multiplier)
-    _mdc1_for_mult = mdc1_cmr_plus1 if mdc1_cmr_plus1 is not None else 100.0
+    # mdc1_cmr_plus1=None means no clients due next month → neutral multiplier (1.0)
+    # Use 35.0 (exactly on mid-band boundary) so mdc1_mult = 1.0 when no data
+    _mdc1_for_mult = mdc1_cmr_plus1 if mdc1_cmr_plus1 is not None else 35.0
     slabs = S.get("csd_sps_270p", []) if vintage == "270D+" else S.get("csd_sps_91_270", [])
     # cmr_slab=0 means employee is below Slab1 CMR target → no per-txn incentive
     if cmr_slab == 0:
@@ -4634,13 +4648,18 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
         except Exception:
             pass
 
-    # KCD WK-1 per-product type counts (already computed above)
-    # Excellent Incentive Spot count: transactions on day 4 of month
+    # Excellent Incentive Spot: productive transactions on day 4 of month only
     excellent_txn_count = 0
     if _date_col_sp and len(rec) > 0:
         try:
             _exc_days = pd.to_datetime(rec[_date_col_sp], errors='coerce').dt.day
-            excellent_txn_count = int((_exc_days == 4).sum())
+            _exc_mask = (_exc_days == 4)
+            # Only productive rows on day 4
+            if "Productivity" in rec.columns:
+                _exc_prod = rec["Productivity"].fillna(0).astype(float) > 0
+                excellent_txn_count = int((_exc_mask & _exc_prod).sum())
+            else:
+                excellent_txn_count = int(_exc_mask.sum())
         except Exception:
             pass
 
@@ -5196,8 +5215,9 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 _cap_31 = S.get("new_joiner_cap", 20000)
                 if base_inc + pop_inc > _cap_31:
                     notes += f" | COMBINED_CAP:{_cap_31}"
-            # RM Spot applies regardless of vintage (scheme slide 3: "Applicable: RM" — no vintage restriction)
-            if _is_rel_mgr_31 and S.get("has_apr_spot") or S.get("has_may_spot"):
+            # Spot: RM only (no vintage restriction per PPT slide 3)
+            # L1 Exec 31-90D: NOT eligible per both FNT-1 and FNT-2 PPTs ("90+ Vintage only")
+            if _is_rel_mgr_31 and (S.get("has_apr_spot") or S.get("has_may_spot")):
                 spot_inc, _fnt1_spot, _fnt2_spot = calc_spot_april_csd(
                     nr_upsell_count, S,
                     fnt1_count=fnt1_prod_count, fnt2_count=fnt2_prod_count,
@@ -5281,6 +5301,20 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                 spot_inc = calc_spot_march_csd(_wdv, spot_client, vintage)
             else:
                 spot_inc = 0
+
+        # ── CSD Excellent Incentive Spot (4th May only) ──────────────────────
+        # Applicable: L1 (90+ vintage) 750/txn all txns; L2 Rel Mgr 400/txn from 2nd txn
+        _exc_day_csd = int(S.get("Excellent_Spot_Day", 4))
+        _exc_l1_csd  = int(S.get("Excellent_Spot_L1_Rate", 750))
+        _exc_l2_csd  = int(S.get("Excellent_Spot_L2_Rate", 400))
+        if _exc_day_csd > 0 and excellent_txn_count > 0 and "CSD" in vertical:
+            _is_csd_rm_exc = str(designation).upper().strip() == "L2"
+            if _is_csd_rm_exc:
+                if excellent_txn_count >= 2:
+                    _excellent_spot = (excellent_txn_count - 1) * _exc_l2_csd
+            elif vintage not in ("0-30D", "31-90D"):  # 90+ only
+                _excellent_spot = excellent_txn_count * _exc_l1_csd
+            spot_inc = int(spot_inc) + _excellent_spot
 
     # ── KCD ──────────────────────────────────────────────────
     elif "KCD" in vertical:
@@ -5486,73 +5520,10 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         # ── IM Star Pro+ New Sale Spot (28-30 Apr): SAM only ₹1000/sale ─────────
         _im_star_pro_spot_kcd = int(im_star_pro_count * S.get("im_star_rate", 1000)) if _is_sam else 0
 
-        # ── KCD WK-1 Power of Productivity Spot (01-09 May) ─────────────────────
+        # ── KCD WK-1/WK-3/WK-4 SS+ Spots — zeroed out, will be added manually ──
         _wk1_spot = 0
-        _wk1_rates = S.get("kcd_wk1_spot", {})
-        _wk1_counts = wk1_prod_counts or {}
-        if _wk1_rates and _wk1_counts:
-            _wk1_base_mult = 0.5 if base_inc == 0 else 1.0  # 50% if base not achieved (PPT)
-            _wk1_total_prods = sum(_wk1_counts.values())
-            if _wk1_total_prods >= 2:  # min 2 prods in WK-1 period
-                for cat, rate_info in _wk1_rates.items():
-                    _cat_count = _wk1_counts.get(cat, 0)
-                    _cat_myr   = _wk1_counts.get(cat + "_MYR", 0)  # MYR sub-count if tracked
-                    _cat_ann   = _cat_count - _cat_myr  # annual count
-                    if _cat_count > 0:
-                        if isinstance(rate_info, dict):
-                            _pref = "l2" if _is_sam else "l1"
-                            _ann_rate = rate_info.get(f"{_pref}_annual", 0)
-                            _myr_rate = rate_info.get(f"{_pref}_myr",    0)
-                        else:
-                            _ann_rate = int(rate_info) if not _is_sam else int(rate_info) // 2
-                            _myr_rate = _ann_rate * 2  # MYR = 2× annual (per PPT pattern)
-                        # If MYR tracking not available, use annual rate for all
-                        _wk1_spot += (_cat_ann * _ann_rate) + (_cat_myr * _myr_rate)
-                _wk1_spot = int(_wk1_spot * _wk1_base_mult)  # 50% if monthly base not achieved
-
-        # ── KCD WK-3 SS+ Power of Productivity Spot (17-23 May) ─────────────────
         _wk3_spot = 0
-        _wk3_rates = S.get("kcd_wk3_spot", {})
-        if _wk3_rates:
-            _wk3_min    = S.get("kcd_wk3_sam_min", 1.5) if _is_sam else S.get("kcd_wk3_l1_min", 2.0)
-            _wk3_ss_req = S.get("kcd_wk3_ss_min", 1)
-            _wk3_total_prod = weekly_prod_counts.get(3, 0)
-            if _wk3_total_prod >= _wk3_min and wk3_ss_count >= _wk3_ss_req:
-                _wk3_base_mult = 0.5 if base_inc == 0 else 1.0
-                _pref = "l2" if _is_sam else "l1"
-                _cats = wk3_ss_by_cat or {}
-                for cat_key, rate_info in _wk3_rates.items():
-                    _cat_cnt = _cats.get(cat_key, 0)
-                    if _cat_cnt > 0 and isinstance(rate_info, dict):
-                        _ann_rate = rate_info.get(f"{_pref}_annual", 0)
-                        _myr_rate = rate_info.get(f"{_pref}_myr", 0)
-                        _wk3_spot += _cat_cnt * _ann_rate  # Annual/AMR rate per qualifying txn
-                if _wk3_spot == 0 and wk3_ss_count > 0:
-                    # Fallback: use first category rate for total count
-                    _first = next(iter(_wk3_rates.values()), {})
-                    _wk3_spot = wk3_ss_count * (_first.get(f"{_pref}_annual", 0) if isinstance(_first, dict) else int(_first))
-                _wk3_spot = int(_wk3_spot * _wk3_base_mult)
-
-        # ── KCD WK-4 SS+ Power of Productivity Spot (24-31 May) ─────────────────
         _wk4_spot = 0
-        _wk4_rates = S.get("kcd_wk4_spot", {})
-        if _wk4_rates:
-            _wk4_min    = S.get("kcd_wk4_sam_min", 2.5) if _is_sam else S.get("kcd_wk4_l1_min", 3.0)
-            _wk4_ss_req = S.get("kcd_wk4_ss_min", 1)
-            _wk4_total_prod = weekly_prod_counts.get(4, 0)
-            if _wk4_total_prod >= _wk4_min and wk4_ss_count >= _wk4_ss_req:
-                _wk4_base_mult = 0.5 if base_inc == 0 else 1.0
-                _pref4 = "l2" if _is_sam else "l1"
-                _cats4 = wk4_ss_by_cat or {}
-                for cat_key, rate_info in _wk4_rates.items():
-                    _cat_cnt4 = _cats4.get(cat_key, 0)
-                    if _cat_cnt4 > 0 and isinstance(rate_info, dict):
-                        _ann_rate4 = rate_info.get(f"{_pref4}_annual", 0)
-                        _wk4_spot += _cat_cnt4 * _ann_rate4
-                if _wk4_spot == 0 and wk4_ss_count > 0:
-                    _first4 = next(iter(_wk4_rates.values()), {})
-                    _wk4_spot = wk4_ss_count * (_first4.get(f"{_pref4}_annual", 0) if isinstance(_first4, dict) else int(_first4))
-                _wk4_spot = int(_wk4_spot * _wk4_base_mult)
 
         # ── Excellent Incentive Spot (04 May only) ───────────────────────────────
         # Uses pre-computed per-employee count (passed via parameter to avoid full-df scan)
