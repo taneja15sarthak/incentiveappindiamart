@@ -2894,7 +2894,26 @@ def load_sam_ilp_targets(uploaded_file):
                 st.warning(f"SAM-ILP xlsb read error: {e}")
                 return {}
         else:
-            df = _read_file(uploaded_file)
+            # Auto-detect header row: scan first 10 rows for "Employee ID"
+            try:
+                import io as _io2
+                _raw_bytes = uploaded_file.read()
+                _raw = pd.read_excel(_io2.BytesIO(_raw_bytes), sheet_name=0, header=None)
+                _hdr_row = 0
+                for _ri, _row in _raw.iterrows():
+                    if any("employee id" in str(v).strip().lower() for v in _row.values if v is not None and str(v) != "nan"):
+                        _hdr_row = _ri
+                        break
+                if _hdr_row > 0:
+                    df = pd.read_excel(_io2.BytesIO(_raw_bytes), header=_hdr_row)
+                else:
+                    df = pd.read_excel(_io2.BytesIO(_raw_bytes), header=0)
+                df.columns = [str(c).strip() for c in df.columns]
+                df = df.dropna(how="all")
+            except Exception:
+                try: uploaded_file.seek(0)
+                except: pass
+                df = _read_file(uploaded_file)
 
         if df is None or len(df) == 0:
             return {}
