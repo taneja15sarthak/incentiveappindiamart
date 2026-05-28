@@ -4283,17 +4283,29 @@ def get_transactions(receipt_df, refund_df, renewal_df, emp_id, client_a=0,
 
     # For L2 (SAM, ILP, Rel Mgr): aggregate team receipts via manager ID columns
     if is_l2:
-        _mgr_col = find_col(receipt_df, [
-            "Old Sales HOD-3 ID", "Manager Id", "L2 ID", "L2ID",
+        # Priority order: "L2 ID" (written by enrich_receipt hierarchy) → HOD columns
+        _mgr_candidates = [
+            "L2 ID", "L2ID",
+            "Old Sales HOD-3 ID", "Manager Id",
             "Old Sales HOD-2 ID", "HOD-3 ID", "HOD3 ID",
-        ])
+        ]
+        _mgr_col = find_col(receipt_df, _mgr_candidates)
         if _mgr_col:
             _mask = receipt_df[_mgr_col].astype(str).str.split(".").str[0].str.strip() == eid_str
-            rec = receipt_df[_mask]
+            rec   = receipt_df[_mask]
+            # If L2 ID col found but returns 0 rows, fall back to next available col
+            if len(rec) == 0:
+                for _alt in _mgr_candidates[1:]:
+                    _alt_c = find_col(receipt_df, [_alt])
+                    if _alt_c and _alt_c != _mgr_col:
+                        _alt_mask = receipt_df[_alt_c].astype(str).str.split(".").str[0].str.strip() == eid_str
+                        if _alt_mask.sum() > 0:
+                            rec = receipt_df[_alt_mask]
+                            break
         elif _eid_col:
             rec = receipt_df[receipt_df[_eid_col].astype(str).str.split(".").str[0].str.strip() == eid_str]
         else:
-            rec = receipt_df.iloc[0:0]  # empty
+            rec = receipt_df.iloc[0:0]
     else:
         if _eid_col:
             rec = receipt_df[receipt_df[_eid_col].astype(str).str.split(".").str[0].str.strip() == eid_str]
@@ -7081,7 +7093,7 @@ if calc_btn:
             # Spot bifurcation
             "FNT-1 Prod Count","FNT-1 Spot (\u20b9)",
             "FNT-2 Prod Count","FNT-2 Spot (\u20b9)",
-            "IM Star Pro+ Spot (\u20b9)","Spot Incentive (\u20b9)",
+            "IM Star Pro+ Spot (\u20b9)","Excellent Spot (\u20b9)","Spot Incentive (\u20b9)",
             "Total Incentive (\u20b9)","Scheme",
         ] if c in res.columns]
         if not csd_res.empty:
@@ -7110,7 +7122,7 @@ if calc_btn:
                 # Spot bifurcation (matches sir's FNT-1 / FNT-2 / 28-30 sections)
                 "FNT-1 Prod Count","FNT-1 Spot (₹)",
                 "FNT-2 Prod Count","FNT-2 Spot (₹)",
-                "IM Star Pro+ Spot (₹)",
+                "IM Star Pro+ Spot (₹)","Excellent Spot (₹)",
                 "Spot Incentive (₹)","Total Incentive (₹)","Scheme",
             ] if c in res.columns]
             if not csd_l2.empty:
