@@ -2650,25 +2650,23 @@ def load_structure_dump(uploaded_file):
     # L2 employees' own rows have Client-A=0; we must build it from L1 subordinates.
     l2_id_col = find_col(df, ["L2 ID", "L2ID", "Manager ID", "ManagerID"])
     if l2_id_col:
-        # Include ALL designation rows (not just L1) so that RM's own clients are counted
-        # Sir's FSF: SUMIFS(Client-C, L2_ID=RM_ID) — no designation filter!
         all_rows = df.copy() if desig_col else pd.DataFrame()
-        # BUT for L1 count and team size, we need only L1 rows
         l1_rows = df[df[desig_col].astype(str).str.upper().str.strip() == "L1"].copy() if desig_col else pd.DataFrame()
         if len(all_rows) > 0:
-            for col in [client_a, client_c, "Base", "Listing"]:
+            # Numeric-ify all client count columns we want to sum
+            _agg_candidates = [client_a, client_c, list_c_col, cat_c_col, "Base", "Listing"]
+            for col in _agg_candidates:
                 if col and col in all_rows.columns:
                     all_rows[col] = pd.to_numeric(all_rows[col], errors='coerce').fillna(0)
             all_rows["_l2_id"] = all_rows[l2_id_col].astype(str).str.split('.').str[0].str.strip()
 
-            # Build aggregation per L2 ID and vertical (ALL rows for Client-A/C sums)
             vert_col_name = find_col(df, ["IIL Vertical Name", "Vertical", "vertical"])
             if vert_col_name:
                 all_rows["_vert"] = all_rows[vert_col_name].astype(str).str.upper().str.strip()
             else:
                 all_rows["_vert"] = ""
 
-            # L1 count aggregation (separate, uses only L1 rows)
+            # L1 count aggregation
             if len(l1_rows) > 0:
                 l1_rows["_l2_id"] = l1_rows[l2_id_col].astype(str).str.split('.').str[0].str.strip()
                 l1_rows["_vert"]  = all_rows.loc[l1_rows.index, "_vert"] if "_vert" in all_rows.columns else ""
@@ -2678,7 +2676,8 @@ def load_structure_dump(uploaded_file):
             else:
                 l1_cnt_agg = pd.DataFrame(columns=["_l2_id","_vert","_l1_count"])
 
-            _sum_cols = {c: 'sum' for c in ([client_a, client_c] + (["Base","Listing"] if "Base" in all_rows.columns else []))
+            # Sum: Client-A, Client-C, Listing Clients, Catalog Clients (and legacy "Listing"/"Base")
+            _sum_cols = {c: 'sum' for c in [client_a, client_c, list_c_col, cat_c_col, "Base", "Listing"]
                          if c and c in all_rows.columns}
             _cnt_col = "_l1_count"
             l2_agg = all_rows.groupby(["_l2_id", "_vert"]).agg(_sum_cols).reset_index()
@@ -2686,13 +2685,12 @@ def load_structure_dump(uploaded_file):
             l2_agg = l2_agg.merge(l1_cnt_agg, on=["_l2_id","_vert"], how="left")
             l2_agg["_l1_count"] = l2_agg["_l1_count"].fillna(0).astype(int)
 
-            # Patch L2 employees in result dict
+            # Patch L2/ILP employees in result dict
             for eid, emp_data in result.items():
                 desig_v = str(emp_data.get("Designation", "")).upper().strip()
                 if desig_v not in ("L2", "ILP"):
                     continue
                 vert_v = str(emp_data.get("Vertical", "")).upper().strip()
-                # Find matching row in aggregation
                 mask = (l2_agg["_l2_id"] == eid)
                 if vert_v:
                     vert_mask = l2_agg["_vert"].str.contains(vert_v[:3], na=False)
@@ -2700,25 +2698,40 @@ def load_structure_dump(uploaded_file):
                         mask = mask & vert_mask
                 matched = l2_agg[mask]
                 if len(matched) == 0:
-                    # Try without vert filter (fallback)
                     matched = l2_agg[l2_agg["_l2_id"] == eid]
                 if len(matched) == 0:
                     continue
                 row_agg = matched.iloc[0]
+
+                # Client-A and Client-C
                 if client_a and client_a in row_agg.index:
                     result[eid]["Client Count"] = float(row_agg[client_a])
                     result[eid]["Client-A"]     = float(row_agg[client_a])
                 if client_c and client_c in row_agg.index:
                     result[eid]["Client-C"] = float(row_agg[client_c])
-                if "Listing" in row_agg.index:
-                    result[eid]["Listing Clients"] = float(row_agg.get("Listing", 0))
-                if "Base" in row_agg.index:
-                    result[eid]["Base Clients"] = float(row_agg.get("Base", 0))
-                # L1 count — try merged column first, fallback to direct count
+
+                # Listing Clients — use actual column name first, fall back to "Listing"
+                _lc_agg = 0.0
+                if list_c_col and list_c_col in row_agg.index:
+                    _lc_agg = float(row_agg[list_c_col])
+                elif "Listing" in row_agg.index:
+                    _lc_agg = float(row_agg.get("Listing", 0))
+                if _lc_agg > 0:
+                    result[eid]["Listing Clients"] = _lc_agg
+
+                # Catalog Clients — use actual column name first, fall back to "Base"
+                _cc_agg = 0.0
+                if cat_c_col and cat_c_col in row_agg.index:
+                    _cc_agg = float(row_agg[cat_c_col])
+                elif "Base" in row_agg.index:
+                    _cc_agg = float(row_agg.get("Base", 0))
+                if _cc_agg > 0:
+                    result[eid]["Catalog Clients"] = _cc_agg
+
+                # L1 count
                 if _cnt_col in row_agg.index and row_agg[_cnt_col] > 0:
                     l1_cnt = int(row_agg[_cnt_col])
                 else:
-                    # Direct count from l1_cnt_agg
                     _direct = l1_cnt_agg[l1_cnt_agg["_l2_id"] == eid]
                     l1_cnt = int(_direct["_l1_count"].sum()) if len(_direct) > 0 else 0
                 eff_team = (4 if (result[eid].get("Client Count", 0) > 375 and l1_cnt < 4)
@@ -7349,19 +7362,11 @@ if calc_btn:
                 cmr_v = cmr_pct_v*100 if cmr_pct_v<=1 else cmr_pct_v
                 ss_v  = ss_cmr_v*100  if ss_cmr_v<=1  else ss_cmr_v
 
-                inc, scheme_note = calc_bm_rm_aop(net_deal_val=net_dv_bm, aop_target=aop_target,
-                    cmr_pct=cmr_pct_v, ss_cmr_pct=ss_cmr_v, vertical=v, level=level_filter, S=S)
-
-                # ── BM/RM PCDV Bullet Spot (17-31 May) ───────────────────────
-                _bm_spot_inc, _bm_spot_note = calc_bm_rm_pcdv_spot(
-                    pcdv=pcdv, vertical=v, level=level_filter,
-                    team=s.get("Team", ""),
-                    base_inc_qualified=(inc > 0),
-                    S=S)
-                total_inc = int(inc) + _bm_spot_inc
-
-                aop_pct = (net_dv_bm/aop_target*100) if aop_target>0 else 0
-                aop_mult_str = ("" if aop_pct<95 else "100%" if aop_pct<100 else "110%" if aop_pct<105 else "120%" if aop_pct<110 else "130%")
+                # Incentive calculation skipped — sir will calculate BM/RM incentive manually
+                inc = 0; scheme_note = ""; _bm_spot_inc = 0; _bm_spot_note = ""; total_inc = 0
+                aop_pct = (net_dv_bm / aop_target * 100) if aop_target > 0 else 0
+                aop_mult_str = ("" if aop_pct < 95 else "100%" if aop_pct < 100 else
+                                "110%" if aop_pct < 105 else "120%" if aop_pct < 110 else "130%")
                 if "CSD" in v:
                     cmr_mult_str = ("0%" if cmr_v<53 else "50%" if cmr_v<60 else "100%" if cmr_v<65 else "120%")
                 else:
@@ -7382,17 +7387,17 @@ if calc_btn:
                     "AOP Multiplier": aop_mult_str,
                     "SS+ CMR%": round(ss_v,1), "SS+ Multiplier": ss_mult_str,
                     "CMR%": round(cmr_v,1), "CMR Multiplier": cmr_mult_str,
-                    "Incentive (₹)": int(inc), "PCDV Spot (₹)": _bm_spot_inc,
-                    "Gross Incentive (₹)": total_inc,
-                    "Paid Incentive (₹)": 0, "Balance Incentive (₹)": total_inc,
+                    # Incentive columns left blank — sir will calculate manually
+                    "Incentive (₹)": "", "PCDV Spot (₹)": "",
+                    "Gross Incentive (₹)": "", "Paid Incentive (₹)": "", "Balance Incentive (₹)": "",
+                    "Total Incentive (₹)": "",
                     "CMR Sent": rnl_sent, "CMR Received": rnl_recd,
                     "CMR (Ren%)": round(cmr_v/100,4),
                     "SS+ Sent": ss_sent, "SS+ Received": ss_recd,
                     "Renewals Sent (Non SS+)": mdc1_sent, "Renewals Received (Non SS+)": mdc1_recd,
                     "CMR+1 Sent": mdc1_sent, "CMR+1 Recd": mdc1_recd,
                     "CMR+1 Ren%": round(mdc1_pct/100,4) if mdc1_pct>0 else "",
-                    "Total Incentive (₹)": total_inc,
-                    "Scheme": scheme_note + (" | " + _bm_spot_note if _bm_spot_inc > 0 else ""),
+                    "Scheme": "",
                     "L4 ID": s.get("L2 Name",""), "L4 Name": s.get("L2 Name",""),
                     "L5 ID": s.get("L3 Name",""), "L5 Name": s.get("L3 Name",""),
                 }
