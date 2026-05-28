@@ -970,9 +970,11 @@ def parse_slabs(cfg):
         "kcd_sam_catalog":     sam_catalog_slabs,
         "kcd_sam_incr":        _sam_incr,
         "kcd_sam_ilp_rates":   [(int(r.get("Target_Achievement_%", 0)),
-                                  float(r.get("Incentive_Rate_%", 0))/100
-                                  if float(r.get("Incentive_Rate_%", 0)) > 1
-                                  else float(r.get("Incentive_Rate_%", 0)))
+                                  # Values >1 are % like 65/75/80 → divide by 100
+                                  # Values 0.1-1 are also % stored as 0.65/0.75/0.80 → divide by 100
+                                  # Only values <0.1 are already in decimal (e.g. 0.0065)
+                                  # Normalize: >1 → /100 twice; 0.1-1 → /100 once; <0.1 → as-is
+                                  (lambda v: v/10000 if v > 1 else (v/100 if v > 0.1 else v))(float(r.get("Incentive_Rate_%", 0))))
                                  for r in cfg.get("KCD_SAM_ILP", pd.DataFrame()).to_dict("records")]
                                 or [(120, 0.008), (100, 0.0075), (95, 0.0065)],
         # ── All scheme params — derived from Scheme_Params sheet ───────────────
@@ -7377,6 +7379,28 @@ if calc_btn:
                     _er=int(pd.to_numeric(subs["KCD SS+ Recd"],errors="coerce").fillna(0).sum()) if "KCD SS+ Recd" in subs.columns else 0
                     ss_cmr_v=round(_er/_es*100,1) if _es>0 else 0
                     ss_sent=_es; ss_recd=_er
+
+                # Aggregate CMR+1 and Non SS+ (MDC1) from subordinates
+                # These are not in the renewal file for L3/L4 employees directly
+                if not subs.empty:
+                    def _agg_col(col):
+                        if col in subs.columns:
+                            return int(pd.to_numeric(subs[col], errors="coerce").fillna(0).sum())
+                        return 0
+                    _mdc1s = _agg_col("CMR+1 Sent") or _agg_col("MDC1 Sent")
+                    _mdc1r = _agg_col("CMR+1 Recd") or _agg_col("MDC1 Recd")
+                    if _mdc1s > 0:
+                        mdc1_sent = _mdc1s
+                        mdc1_recd = _mdc1r
+                        mdc1_pct  = round(_mdc1r / _mdc1s * 100, 1)
+                    # Non SS+ = overall CMR (total renewals, not just SS+)
+                    # Use rnl_sent/rnl_recd already aggregated above
+                    # If still 0, try MDC1 directly from mdc1_cmr_map for L3/L4
+                    if mdc1_sent == 0:
+                        _m1d = mdc1_cmr_map.get(eid, {})
+                        mdc1_sent = int(_m1d.get("mdc1_sent", 0))
+                        mdc1_recd = int(_m1d.get("mdc1_recd", 0))
+                        mdc1_pct  = float(_m1d.get("mdc1_cmr_pct", 0))
 
                 cmr_v = cmr_pct_v*100 if cmr_pct_v<=1 else cmr_pct_v
                 ss_v  = ss_cmr_v*100  if ss_cmr_v<=1  else ss_cmr_v
