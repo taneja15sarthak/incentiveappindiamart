@@ -276,6 +276,7 @@ def enrich_receipt_data(rec_df, structure_result=None):
     upsell_col_e = find_col(df, ["Upsell", "UPSELL", "Unique", "UNIQUE"])
     rcpt_id_e    = find_col(df, ["Receipts ID", "Receipt ID", "ReceiptID"])
     prod_c       = find_col(df, ["Prod", "Product", "Tagged Services Name"])
+    prod         = df[prod_c].astype(str).str.strip() if prod_c else pd.Series("", index=df.index)
 
     def _str_e(val):
         return str(val).strip() if val is not None and str(val).strip() != "nan" else ""
@@ -358,7 +359,7 @@ def enrich_receipt_data(rec_df, structure_result=None):
     df["Final Status"] = "Tagged"
 
     # ── IM Star/Leader ────────────────────────────────────────────────────────
-    prod    = df[prod_c].astype(str).str.strip() if prod_c else pd.Series("", index=df.index)
+    # prod and prod_c already defined above in productivity block
     # Insta flag already applied above in Prod.1 logic (0.5 weight)
     df["IM Star/Leader"] = prod.apply(
         lambda p: "Yes" if any(k in p for k in _IM_STAR_LEADER_PRODS) else "No")
