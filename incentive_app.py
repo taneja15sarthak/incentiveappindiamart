@@ -292,7 +292,9 @@ def enrich_receipt_data(rec_df, structure_result=None):
         "Renewal","TS1Renewal","TS2Renewal","TS3Renewal","WS Renewal","IVE Renewal",
         "SS Renewal","IM SS Renewal","LS Renewal","IM LS Renewal","Pref SS Renewal",
         "Pref LS Renewal","FPL Renewal","IM IL Renewal","CL Renewal","IL Renewal",
-        "Pref IL Renewal"
+        "Pref IL Renewal",
+        # Advance renewal variants
+        "Adv Renewal","Advance Renewal","Adv-Renewal","ADV Renewal",
     }
     if prod_c:
         df["_is_pure_renewal"] = df[prod_c].apply(
@@ -333,7 +335,7 @@ def enrich_receipt_data(rec_df, structure_result=None):
     _insta_mask = prod.apply(lambda p: any(k.upper() in p.upper() for k in ["INSTA", "Lead Manager Pro"]))
     productivity = productivity.where(~(_insta_mask & (productivity > 0)), 0.5)
 
-    df["Prod.1"] = productivity
+    df["Productivity"] = productivity
 
     # ── CMR-C+1-C+2 ──────────────────────────────────────────────────────────
     df["CMR-C+1-C+2"] = "Others"
@@ -431,7 +433,7 @@ def enrich_receipt_data(rec_df, structure_result=None):
     df["Big Ticket-Slab"] = df["Big Ticket-Slab"].astype(str).replace({"0":"0","nan":"0"})
     df["KCD-New Sale"]    = df["KCD-New Sale"].astype(str)
     df["Total Sale"]      = pd.to_numeric(df["Total Sale"], errors="coerce").fillna(0).astype(int)
-    df["Prod.1"]          = pd.to_numeric(df["Prod.1"],    errors="coerce").fillna(0).astype(float)
+    df["Productivity"]          = pd.to_numeric(df["Productivity"],    errors="coerce").fillna(0).astype(float)
 
     # ── Hierarchy from structure ──────────────────────────────────────────────
     ec = find_col(df, ["Sales Exec ID","EMP ID"])
@@ -1063,7 +1065,7 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
 
     # Productivity-weighted deal value: Prod.1=1.0 regular, 0.5 Insta, 0 excluded
     # Use Prod.1 column if present (from enriched receipt), else fallback to raw DV
-    _prod1_c = find_col(r, ["Prod.1","Productivity","Prod_1"]) if len(r)>0 else None
+    _prod1_c = find_col(r, ["Productivity","Prod.1","Prod_1"]) if len(r)>0 else None
     if dvc and len(r)>0:
         _dv_arr  = pd.to_numeric(r[dvc], errors="coerce").fillna(0)
         if _prod1_c:
@@ -1108,7 +1110,7 @@ def get_emp_data(rec, ref, eid_str, desig="L1", emp_name="", client_a=1, is_l2=F
                 dates=nums.apply(lambda x:base+pd.Timedelta(days=int(x)) if pd.notna(x) and x>0 else pd.NaT)
             # Spot counts: productive rows only (Prod.1>0) AND new sales (Upsell-NR/Ren)
             _rem_c = find_col(r, ["Rem","Rnl Remarks","Deal Remarks","Remarks"])
-            _prod1_spot = find_col(r, ["Prod.1","Productivity","Prod_1"])
+            _prod1_spot = find_col(r, ["Productivity","Prod.1","Prod_1"])
             if _rem_c:
                 _new_sale_mask = r[_rem_c].astype(str).str.strip().isin({"Upsell-NR","Upsell-Ren"})
             else:
