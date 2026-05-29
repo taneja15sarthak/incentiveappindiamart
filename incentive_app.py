@@ -4099,46 +4099,61 @@ def calc_spot_april_kcd(monthly_pcdv, client_a, team, location, vintage, S,
 
 def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct=0, cmr_sent=0, cmr_recd=0,
                      ss_cmr_pct=0, big_ticket_count=0,
-                     emp_rate_95=None, S=None):
+                     emp_rate_95=None, S=None, ilp_client=0):
     """
-    KCD SAM-ILP incentive -- exact FSF ' KCD-SAM ILP' formula.
+    KCD SAM-ILP incentive — matches sir's KCD-SAM ILP sheet exactly.
 
-    FSF column chain:
-      AG = eligible  = (DV_in_Lac >= Target) i.e. net_dv >= dv_target
-      AT = base      = IF(eligible, IF(achv>=120%, DV*r120, IF(>=100%, DV*r100,
-                                       IF(>=95%, DV*r95, 0))), 0)
-      AV = CMR_mult  = complex count-based logic (see below)
-      AW = AT * AV
-      AX = IF(big_ticket>=4, AW*1.2, AW)
-      AY = IF(SS_CMR%>=75%, AX, AX*0.5)
+    Routing:
+      ILP Client < 10  → Variant B: r95=0.65%, r100=0.75%, r120=0.80%
+      ILP Client >= 10 → Variant L: r95=0.60%, r100=0.65%, r120=0.75%
 
-    Rates are per-employee (from upload file column Rate_%):
-      Variant A: r95=0.60%, r100=0.65%, r120=0.75%
-      Variant B: r95=0.65%, r100=0.75%, r120=0.80%  (default)
+    Column chain (sir's sheet):
+      DV in Lac        = net_dv / 100000
+      Target Achvd %   = DV_in_Lac / Target (Target also in Lacs)
+      Eligible         = DV >= Target (100% achievement required)
+      Incentive Amt    = net_dv × rate (based on 95/100/120% slab)
+      Renewal Multiplier (Table 1):
+        sent=0          → 100%
+        sent=1, rcvd=1  → 100%
+        sent=2, rcvd>=1 → 120%
+        sent=3, rcvd>=2 → 100% (ref table 2 = same)
+        sent>=4:        → CMR% 72-79.9% → 75%; 80%+ → 100%; <72% → 0%
+      Big Ticket: >=4 deals of 10L+ → 120%
+      SS+ CMR%: >=75% → 100%, <75% → 50%
+      Final = Incentive_Amt × Renewal_Mult × Big_Ticket_Mult × SS_Mult
     """
     if S is None:
         S = {}
     if not dv_target or dv_target <= 0:
         return 0, "KCD SAM-ILP -- no DV target set"
 
-    achv_pct = net_dv / dv_target * 100
+    # Convert to Lacs for display/calc
+    dv_lac  = net_dv / 100000
+    tgt_lac = dv_target / 100000
+    achv_pct = (dv_lac / tgt_lac * 100) if tgt_lac > 0 else 0
 
-    # AG: must reach 100% to be eligible
+    # Eligibility: must reach 100%
     eligible = (net_dv >= dv_target)
 
-    # Per-employee rates (from upload file, or config default)
+    # Routing by ILP Client count
+    _ilp_c = int(ilp_client or 0)
+    if _ilp_c < 10:
+        # Variant B (standard): r95=0.65%, r100=0.75%, r120=0.80%
+        r95, r100, r120 = 0.0065, 0.0075, 0.0080
+        slab_label = 0.0065
+    else:
+        # Variant L (large): r95=0.60%, r100=0.65%, r120=0.75%
+        r95, r100, r120 = 0.0060, 0.0065, 0.0075
+        slab_label = 0.0060
+
+    # Override with per-employee rate if provided
     if emp_rate_95 and float(emp_rate_95 or 0) > 0:
         r95  = float(emp_rate_95)
         r100 = r95 + 0.0005
         r120 = r95 + 0.0015
-    else:
-        ilp_rates = S.get("kcd_sam_ilp_rates", [(120, 0.0080), (100, 0.0075), (95, 0.0065)])
-        r_map = {t: r for t, r in ilp_rates}
-        r95  = r_map.get(95,  0.0065)
-        r100 = r_map.get(100, 0.0075)
-        r120 = r_map.get(120, 0.0080)
+        slab_label = r95
 
-    # AT: base incentive
+    # Incentive Amt (AT)
     if eligible:
         if   achv_pct >= 120: at = net_dv * r120
         elif achv_pct >= 100: at = net_dv * r100
@@ -4148,35 +4163,39 @@ def calc_kcd_sam_ilp(net_dv, dv_target, cmr_pct=0, cmr_sent=0, cmr_recd=0,
         at = 0
 
     if at == 0:
-        return 0, f"KCD SAM-ILP -- achv {achv_pct:.1f}% (eligible:{eligible})"
+        return 0, (f"KCD SAM-ILP | DV:{dv_lac:.2f}L | Tgt:{tgt_lac:.2f}L | "
+                   f"Achv:{achv_pct:.1f}% | Slab:{slab_label} | Not eligible")
 
-    # AV: CMR multiplier -- exact FSF AV formula
+    # Renewal Multiplier (Table 1 + Table 2 from PPT)
     _sent = int(cmr_sent or 0)
     _recd = int(cmr_recd or 0)
     _cpct = float(cmr_pct) * 100 if float(cmr_pct or 0) <= 1 else float(cmr_pct or 0)
-    if   (_sent == 3 and _recd >= 2): av = 1.00
-    elif (_sent == 2 and _recd >= 1): av = 1.00
-    elif (_sent == 1 and _recd == 1): av = 1.00
-    elif (_sent == 0 and _recd == 0): av = 1.00  # no clients to renew -> still eligible
-    elif _cpct >= 80:                 av = 1.00
-    elif _cpct >= 72:                 av = 0.75
-    else:                             av = 0.00
+
+    if   _sent == 0:                av = 1.00
+    elif _sent == 1 and _recd >= 1: av = 1.00
+    elif _sent == 2 and _recd >= 1: av = 1.20
+    elif _sent == 3 and _recd >= 2: av = 1.00
+    elif _sent >= 4:
+        if   _cpct >= 80: av = 1.00
+        elif _cpct >= 72: av = 0.75
+        else:             av = 0.00
+    else:
+        av = 0.00
 
     aw = round(at * av, 0)
 
-    # AX: Big Ticket (>=4 deals of 10L+)
+    # Big Ticket (>=4 deals of 10L+) → 120%
     ax = round(aw * 1.2 if int(big_ticket_count or 0) >= 4 else aw, 0)
 
-    # AY: SS+ CMR multiplier
+    # SS+ CMR%: >=75% → 100%, <75% → 50%
     _ss = float(ss_cmr_pct) * 100 if float(ss_cmr_pct or 0) <= 1 else float(ss_cmr_pct or 0)
     ay = round(ax if _ss >= 75 else ax * 0.5, 0)
 
-    notes = (f"KCD SAM-ILP | Achv:{achv_pct:.1f}% | "
-             f"r95:{r95*100:.2f}%/r100:{r100*100:.2f}%/r120:{r120*100:.2f}% | "
-             f"CMR_mult:{av:.0%}(sent={_sent},recd={_recd}) | "
+    notes = (f"KCD SAM-ILP | DV:{dv_lac:.2f}L | Tgt:{tgt_lac:.2f}L | "
+             f"Achv:{achv_pct:.1f}% | Slab:{slab_label} | "
+             f"CMR:{av:.0%}(sent={_sent},recd={_recd},{_cpct:.0f}%) | "
              f"BT:{int(big_ticket_count or 0)} | SS+:{_ss:.0f}%")
     return int(ay), notes
-
 
 def calc_mcats_renewal(im_star_amr_count, S, is_l2=False):
     """KCD 'More MCATs on Renewals' spot. Rates and min count from Scheme_Params."""
@@ -5147,6 +5166,11 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
     _wk3_spot             = 0   # KCD WK-3 SS+ Spot (17-23 May)
     _wk4_spot             = 0   # KCD WK-4 SS+ Spot (24-31 May)
     _excellent_spot       = 0   # Excellent Incentive Spot (04 May)
+    # ILP-specific output vars (populated only when _is_ilp=True)
+    _ilp_tgt_out    = ""   # Target in Lacs
+    _ilp_slab_out   = ""   # Incentive as per Slab (0.006 or 0.0065)
+    _ilp_achv_out   = ""   # Target Achvd %
+    _ilp_dv_out     = ""   # DV in Lac
     kcd_base_only   = 0   # KCD: base incentive before incremental
     kcd_incremental = 0   # KCD: incremental DV amount
     notes = cmr_note = ""
@@ -5446,6 +5470,8 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     listing_c  = float(_ilp_rec.get("listing",  listing_c)  or listing_c)
                     _ilp_ca    = float(_ilp_rec.get("client_a", 0) or 0)
                     if _ilp_ca > 0: client_cnt = _ilp_ca  # override with ILP file's Client-A
+                _ilp_ilp_client = int(_ilp_rec.get("ilp_client", 0) if isinstance(_ilp_rec, dict) else 0)
+                _ilp_slab_lbl   = 0.0065 if _ilp_ilp_client < 10 else 0.006
                 base_inc, notes = calc_kcd_sam_ilp(
                     kcd_net_dv, _ilp_tgt,
                     cmr_pct=cmr_pct,
@@ -5453,7 +5479,14 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
                     cmr_recd=cmr_data.get("renewal_received", 0),
                     ss_cmr_pct=ss_cmr_pct,
                     big_ticket_count=_bt_count,
-                    emp_rate_95=_ilp_rate, S=S)
+                    emp_rate_95=_ilp_rate, S=S,
+                    ilp_client=_ilp_ilp_client)
+                _ilp_achv_pct  = round(kcd_net_dv / _ilp_tgt * 100, 1) if _ilp_tgt > 0 else 0
+                # Populate ILP output vars for result dict
+                _ilp_tgt_out   = round(_ilp_tgt / 100000, 2) if _ilp_tgt > 0 else ""
+                _ilp_dv_out    = round(kcd_net_dv / 100000, 2)
+                _ilp_slab_out  = _ilp_slab_lbl
+                _ilp_achv_out  = _ilp_achv_pct
                 kcd_base_only   = base_inc
                 kcd_incremental = 0
                 spot_inc, _fnt1_spot, _fnt2_spot = _kcd_spot(monthly_base_inc=base_inc)
@@ -5824,7 +5857,13 @@ def route_calc(emp_row, cfg_row, cmr_data, net_dv, txn_count, prods,
         "KCD CMR Ren%":      round(cmr_pct, 1) if "KCD" in vertical else "",
         "KCD SS+ Sent":      cmr_data.get("ss_sent", 0) if "KCD" in vertical else "",
         "KCD SS+ Recd":      cmr_data.get("ss_received", 0) if "KCD" in vertical else "",
-        "KCD SS+ CMR%":      round(ss_cmr_pct, 1) if "KCD" in vertical else "",  # after SS+ Recd (issue 11)
+        "KCD SS+ CMR%":      round(ss_cmr_pct, 1) if "KCD" in vertical else "",
+        # ILP-specific columns (match sir's KCD-SAM ILP sheet)
+        "ILP Target (Lac)":        _ilp_tgt_out,
+        "DV in Lac":               _ilp_dv_out,
+        "Incentive as per Slab":   _ilp_slab_out,
+        "Target Achvd %":          _ilp_achv_out,
+        "10L+ Deals":              (int(btl_count) if "KCD" in vertical else ""),  # after SS+ Recd (issue 11)
         "KCD SS+Ren Mult":   _kcd_ss_mult if "KCD" in vertical else "",
         "KCD SS+ Penalty Applied": "Yes (50%)" if (_kcd_ss_mult == 0.5) else ("No" if "KCD" in vertical else ""),
         "KCD Incentive Multiplier": int(_kcd_per_txn)  if "KCD" in vertical else "",
@@ -7229,16 +7268,28 @@ if calc_btn:
                 if not kcd_sam_regular.empty:
                     write_sheet(kcd_sam_regular[sam_cols], "KCD-SAM", header_fmt=org)
 
-        # ── KCD-SAM ILP sheet (always created; empty rows if no ILP target uploaded) ─
+        # ── KCD-SAM ILP sheet — columns match sir's ' KCD-SAM ILP' sheet ──────────
         ilp_cols = [c for c in [
-            "Employee ID","Employee Name","Location","Team","Designation","Vintage","Scheme Type",
-            "Client-A (aggregated)","Client-C (aggregated)","Joining Date",
+            # Identity
+            "Employee ID","Employee Name","Designation",
+            "L2 ID","L2 Name","L3 ID","L3 Name","L4 ID","L4 Name","L5 ID","L5 Name","L6 ID","L6 Name",
+            "Client-A (aggregated)","Client-C (aggregated)",
+            "Joining Date","Vintage","Team",
+            # Deal value (in Lacs)
+            "ILP Target (Lac)","DV in Lac","Incentive as per Slab","Target Achvd %",
+            # Raw deal data
             "Collection (₹)","Refund (₹)","Net Collection (₹)",
-            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)","PCDV",
-            "KCD Collection Target (₹)","KCD PCDV Target","KCD PCDV%",
+            "Deal Value (₹)","Deal Loss (₹)","Net Deal Value (₹)",
+            # CMR (sir: Sent, Recd, Ren%)
             "KCD CMR Sent","KCD CMR Recd","KCD CMR Ren%",
+            # SS+ (sir: Sent.1, Recd.1, Ren%.1)
             "KCD SS+ Sent","KCD SS+ Recd","KCD SS+ CMR%",
-            "Base Incentive (₹)","Spot Incentive (₹)","Total Incentive (₹)","Scheme",
+            # Incentive columns
+            "Base Incentive (₹)",
+            "10L+ Deals",
+            "Spot Incentive (₹)","Total Incentive (₹)",
+            "Paid Incentive (₹)","Balance Incentive (₹)",
+            "Scheme",
         ] if c in res.columns]
         # Pull SAM-ILP rows from res OR build from struct_map (so sheet exists even with 0 txns)
         ilp_res = pd.DataFrame()
