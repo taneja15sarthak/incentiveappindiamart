@@ -273,14 +273,9 @@ def enrich_receipt_data(rec_df, structure_result=None):
     df["Total Sale"] = (rem.isin(["Upsell-NR","Upsell-Ren"])).astype(int)
 
     # ── Productivity (Prod.1) — exact same logic as FSF incentive app ───────────
-    # Productivity = 1 if:
-    #   - Upsell/Unique col is not blank (upsell deal)
-    #   - OR Product is pure renewal AND no real upsell exists on same receipt ID
-    # Retention rows (Rnl Remarks = "Retention") are NOT productive.
-    # Insta products = 0.5 productivity.
-
     upsell_col_e = find_col(df, ["Upsell", "UPSELL", "Unique", "UNIQUE"])
     rcpt_id_e    = find_col(df, ["Receipts ID", "Receipt ID", "ReceiptID"])
+    prod_c       = find_col(df, ["Prod", "Product", "Tagged Services Name"])
 
     def _str_e(val):
         return str(val).strip() if val is not None and str(val).strip() != "nan" else ""
@@ -363,7 +358,6 @@ def enrich_receipt_data(rec_df, structure_result=None):
     df["Final Status"] = "Tagged"
 
     # ── IM Star/Leader ────────────────────────────────────────────────────────
-    prod_c  = find_col(df, ["Prod","Product","Tagged Services Name"])
     prod    = df[prod_c].astype(str).str.strip() if prod_c else pd.Series("", index=df.index)
     # Insta flag already applied above in Prod.1 logic (0.5 weight)
     df["IM Star/Leader"] = prod.apply(
