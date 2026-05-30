@@ -378,8 +378,9 @@ def enrich_receipt_data(rec_df, structure_result=None):
     # LEADER → Leader   |  ExportTS, TSCATALOG → IVE/MDC-TS  |  TSCATALOG → MDC-TS
     cust_c = find_col(df, ["CustType","Cust Type","CUST TYPE"])
     if cust_c:
-        cust = df[cust_c].astype(str).str.strip().str.upper()
+        cust = df[cust_c].fillna("").astype(str).str.strip().str.upper()
         def _mdc_cat(ct):
+            ct = str(ct)  # guard against Arrow scalar or unexpected type
             if "LEADER" in ct:                           return "Leader"
             if ct in {"EXPORTTS","EXPORT TS"}:           return "IVE"
             if ct == "TSCATALOG":                        return "MDC-TS"
