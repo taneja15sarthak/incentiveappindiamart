@@ -34,52 +34,68 @@ SS_PLUS_KW = {"IM STAR","IM LEADER","CITY STAR","CITY LEADER","PREFERRED STAR",
 # SLAB CONFIG (defaults + loader)
 # ──────────────────────────────────────────────────────────
 def build_ta_slab_config():
+    # CSD Exec: flat ₹6000 when PCDV >= vintage threshold; no 3-tier
     csd_milestones = pd.DataFrame([
-        {"Min_Ach_Pct":140,"Grid":8000},
-        {"Min_Ach_Pct":120,"Grid":6000},
-        {"Min_Ach_Pct":100,"Grid":4000},
+        {"Min_Ach_Pct":100,"Grid":6000},
     ])
     csd_targets = pd.DataFrame([
-        {"Vintage":"0-90","Target_PCDV":1300},
-        
+        {"Vintage":"0-90",  "Target_PCDV":1500},
         {"Vintage":"90-270","Target_PCDV":1800},
-        {"Vintage":"270+","Target_PCDV":2000},
+        {"Vintage":"270+",  "Target_PCDV":2200},  # scheme: 2200
     ])
     csd_cmr_mult = pd.DataFrame([
-        {"Min_CMR_Ach_Pct":120,"Multiplier":1.2},
-        {"Min_CMR_Ach_Pct":100,"Multiplier":1.0},
-        {"Min_CMR_Ach_Pct":0,"Multiplier":0.0},
+        {"Min_CMR_Ach_Pct":110,"Multiplier":1.2},  # CMR >= target+10% → 120%
+        {"Min_CMR_Ach_Pct":100,"Multiplier":1.0},  # CMR >= target → 100%
+        {"Min_CMR_Ach_Pct":0,  "Multiplier":0.0},  # CMR < target → 0%
     ])
     csd_params = pd.DataFrame([
-        {"Parameter":"Incr_Rate_Pct","Value":3.0},
+        {"Parameter":"Incr_Per_200_PCDV","Value":1000},  # +₹1000 per 200 PCDV above target
         {"Parameter":"CMR_Target_Pct","Value":40.0},
     ])
-    csd_spot_2_6  = pd.DataFrame([{"Txn":3,"Inc":2250},{"Txn":2,"Inc":1500},{"Txn":1,"Inc":500}])
-    csd_spot_7_12 = pd.DataFrame([{"Txn":3,"Inc":2250},{"Txn":2,"Inc":1500},{"Txn":1,"Inc":500}])
+    # CSD Exec spot (1-12 May): 2nd txn=₹500, 3rd onwards=₹750 each
+    # Cumulative: 1txn→0, 2txn→500, 3txn→1250, 4txn→2000, 5txn→2750, 6txn→3500...
+    csd_spot_2_6  = pd.DataFrame([
+        {"Txn":t, "Inc": (0 if t < 2 else 500 + (t-2)*750)}
+        for t in range(10, 0, -1)
+    ])
+    csd_spot_7_12 = csd_spot_2_6.copy()  # same rates 7-12 May
+    # CSD Exec spot 20-30 May — no PDF provided, keep existing structure
     csd_spot_20_30= pd.DataFrame([{"Txn":6,"Inc":4250},{"Txn":5,"Inc":3500},{"Txn":4,"Inc":1375},{"Txn":3,"Inc":1000}])
 
-    kcd_milestones= csd_milestones.copy()
+    kcd_milestones= pd.DataFrame([{"Min_Ach_Pct":130,"Grid_Pct":1.6},{"Min_Ach_Pct":115,"Grid_Pct":1.3},{"Min_Ach_Pct":100,"Grid_Pct":1.0}])
     kcd_targets = pd.DataFrame([
-        {"Vintage":"0-270","Group":"KCD","Target_PCDV":7100},   # Confirmed from sir
-        {"Vintage":"270-2Yr","Group":"KCD","Target_PCDV":8100},
-        {"Vintage":"2Yr+","Group":"KCD","Target_PCDV":9100},
-        {"Vintage":"0-270","Group":"KCD-25cr","Target_PCDV":6480},
+        {"Vintage":"0-270",  "Group":"KCD",     "Target_PCDV":7100},
+        {"Vintage":"270-2Yr","Group":"KCD",     "Target_PCDV":8100},
+        {"Vintage":"2Yr+",   "Group":"KCD",     "Target_PCDV":9100},
+        {"Vintage":"0-270",  "Group":"KCD-25cr","Target_PCDV":8100},   # 25Cr+ scheme
         {"Vintage":"270-2Yr","Group":"KCD-25cr","Target_PCDV":9100},
-        {"Vintage":"2Yr+","Group":"KCD-25cr","Target_PCDV":10000},
+        {"Vintage":"2Yr+",   "Group":"KCD-25cr","Target_PCDV":10000},
     ])
+    # KCD Exec 1-12 May: PCDV≥2100→₹1500; +₹500 per 500 PCDV above 2100
+    # Cumulative slabs (cover up to PCDV 10000 in steps of 500)
     kcd_spot_1_12 = pd.DataFrame([
-        {"PCDV":9000,"Inc":8000},{"PCDV":7000,"Inc":5500},
-        {"PCDV":6000,"Inc":4500},{"PCDV":5500,"Inc":4000},{"PCDV":4500,"Inc":3000},
+        {"PCDV": 2100 + i*500, "Inc": 1500 + i*500}
+        for i in range(16, -1, -1)  # 2100 to 9600 descending
     ])
-    kcd_spot_20_30= kcd_spot_1_12.copy()
+    kcd_spot_20_30= kcd_spot_1_12.copy()   # no PDF for 20-30, keep same
+    # KCD 25Cr+ Exec 1-12 May: PCDV≥2300→₹1500; +₹500 per 500 PCDV above 2300
     kcd_25cr_1_12 = pd.DataFrame([
-        {"PCDV":12000,"Inc":10000},{"PCDV":10000,"Inc":8000},
-        {"PCDV":8000,"Inc":6000},{"PCDV":6000,"Inc":4000},
+        {"PCDV": 2300 + i*500, "Inc": 1500 + i*500}
+        for i in range(16, -1, -1)
     ])
     kcd_25cr_20_30= kcd_25cr_1_12.copy()
-    kcd_rm_1_12   = kcd_spot_1_12.copy()
-    kcd_rm_20_30  = kcd_spot_20_30.copy()
-    kcd_ss_mult   = pd.DataFrame([{"Min_SS_CMR_Pct":50,"Multiplier":1.25},{"Min_SS_CMR_Pct":0,"Multiplier":0.5}])
+    # KCD RM 1-12 May: PCDV≥2000→₹2500; +₹1500 per 500 PCDV above 2000
+    kcd_rm_1_12 = pd.DataFrame([
+        {"PCDV": 2000 + i*500, "Inc": 2500 + i*1500}
+        for i in range(16, -1, -1)
+    ])
+    # KCD 25Cr+ RM 1-12 May: PCDV≥2100→₹2500; +₹1500 per 500 PCDV above 2100
+    kcd_25cr_rm_1_12 = pd.DataFrame([
+        {"PCDV": 2100 + i*500, "Inc": 2500 + i*1500}
+        for i in range(16, -1, -1)
+    ])
+    kcd_rm_20_30  = kcd_rm_1_12.copy()
+    kcd_ss_mult   = pd.DataFrame([{"Min_SS_CMR_Pct":65,"Multiplier":1.0},{"Min_SS_CMR_Pct":0,"Multiplier":0.5}])
     kcd_params    = pd.DataFrame([{"Parameter":"Min_SS_Sent","Value":3}])
 
     nursery_params= pd.DataFrame([
@@ -96,14 +112,49 @@ def build_ta_slab_config():
         {"Sent":2,"Min_Recd":1,"Mult":1.0},{"Sent":1,"Min_Recd":0,"Mult":1.0},
         {"Sent":0,"Min_Recd":0,"Mult":0.0},
     ])
-    bm_csd = pd.DataFrame([{"Min_Ach_Pct":100,"Inc":20000},{"Min_Ach_Pct":95,"Inc":15000},{"Min_Ach_Pct":85,"Inc":10000}])
-    bm_kcd = pd.DataFrame([{"Min_Ach_Pct":100,"Inc":20000},{"Min_Ach_Pct":90,"Inc":15000},{"Min_Ach_Pct":80,"Inc":10000}])
-    ch_csd = pd.DataFrame([{"Min_Ach_Pct":100,"Inc":25000},{"Min_Ach_Pct":90,"Inc":20000}])
-    ch_kcd = pd.DataFrame([{"Min_Ach_Pct":100,"Inc":25000},{"Min_Ach_Pct":90,"Inc":20000}])
-    bt_bm_csd = pd.DataFrame([{"Deal_Size":"3L+","Min_Lakh":300,"Per_Deal":15000},{"Deal_Size":"2L+","Min_Lakh":200,"Per_Deal":10000},{"Deal_Size":"1L+","Min_Lakh":100,"Per_Deal":5000}])
-    bt_ch_csd = pd.DataFrame([{"Deal_Size":"3L+","Min_Lakh":300,"Per_Deal":25000},{"Deal_Size":"2L+","Min_Lakh":200,"Per_Deal":15000},{"Deal_Size":"1L+","Min_Lakh":100,"Per_Deal":7500}])
-    bt_bm_kcd = pd.DataFrame([{"Deal_Size":"10L+","Min_Lakh":1000,"Per_Deal":30000},{"Deal_Size":"8L+","Min_Lakh":800,"Per_Deal":20000},{"Deal_Size":"5L+","Min_Lakh":500,"Per_Deal":10000},{"Deal_Size":"3L+","Min_Lakh":300,"Per_Deal":5000}])
-    bt_ch_kcd = pd.DataFrame([{"Deal_Size":"10L+","Min_Lakh":1000,"Per_Deal":50000},{"Deal_Size":"8L+","Min_Lakh":800,"Per_Deal":30000},{"Deal_Size":"5L+","Min_Lakh":500,"Per_Deal":15000},{"Deal_Size":"3L+","Min_Lakh":300,"Per_Deal":7500}])
+
+    # BM/CH milestone slabs — from PDF (with post-110% incremental handled in _bm_milestone)
+    # CSD BM: 95%→15K, 100%→25K, 110%→40K; post 110%: +5K per 5%
+    bm_csd = pd.DataFrame([
+        {"Min_Ach_Pct":110,"Inc":40000,"Post_Inc_Per_5":5000},
+        {"Min_Ach_Pct":100,"Inc":25000,"Post_Inc_Per_5":0},
+        {"Min_Ach_Pct":95, "Inc":15000,"Post_Inc_Per_5":0},
+    ])
+    # KCD BM (25Cr+): 95%→20K, 100%→30K, 110%→40K; post 110%: +5K per 5%
+    bm_kcd = pd.DataFrame([
+        {"Min_Ach_Pct":110,"Inc":40000,"Post_Inc_Per_5":5000},
+        {"Min_Ach_Pct":100,"Inc":30000,"Post_Inc_Per_5":0},
+        {"Min_Ach_Pct":95, "Inc":20000,"Post_Inc_Per_5":0},
+    ])
+    # CSD CH: 95%→25K, 100%→35K, 110%→50K; post 110%: +10K per 5%
+    ch_csd = pd.DataFrame([
+        {"Min_Ach_Pct":110,"Inc":50000,"Post_Inc_Per_5":10000},
+        {"Min_Ach_Pct":100,"Inc":35000,"Post_Inc_Per_5":0},
+        {"Min_Ach_Pct":95, "Inc":25000,"Post_Inc_Per_5":0},
+    ])
+    # KCD CH: 95%→30K, 100%→40K, 110%→60K; post 110%: +10K per 5%
+    ch_kcd = pd.DataFrame([
+        {"Min_Ach_Pct":110,"Inc":60000,"Post_Inc_Per_5":10000},
+        {"Min_Ach_Pct":100,"Inc":40000,"Post_Inc_Per_5":0},
+        {"Min_Ach_Pct":95, "Inc":30000,"Post_Inc_Per_5":0},
+    ])
+
+    # Big Ticket Bonanza — from PDF
+    # CSD BM: 1L+→₹2100, 2L+→₹3100, 3L+→₹5100; min 5 transactions (BM), 10 deals (CH)
+    bt_bm_csd = pd.DataFrame([
+        {"Deal_Size":"3L+","Min_Lakh":3,"Per_Deal":5100},
+        {"Deal_Size":"2L+","Min_Lakh":2,"Per_Deal":3100},
+        {"Deal_Size":"1L+","Min_Lakh":1,"Per_Deal":2100},
+    ])
+    bt_ch_csd = bt_bm_csd.copy()  # same rates, different min deals (10 for CH)
+    # KCD BM/CH: 3L+→₹2100, 5L+→₹3100, 8L+→₹5100, 10L+→₹11100
+    bt_bm_kcd = pd.DataFrame([
+        {"Deal_Size":"10L+","Min_Lakh":10,"Per_Deal":11100},
+        {"Deal_Size":"8L+", "Min_Lakh":8, "Per_Deal":5100},
+        {"Deal_Size":"5L+", "Min_Lakh":5, "Per_Deal":3100},
+        {"Deal_Size":"3L+", "Min_Lakh":3, "Per_Deal":2100},
+    ])
+    bt_ch_kcd = bt_bm_kcd.copy()  # same rates for CH
     bm_csd_target = pd.DataFrame([{"Parameter":"Collection_Target","Value":0}])
 
     return {
@@ -114,6 +165,7 @@ def build_ta_slab_config():
         "KCD_Spot_1_12":kcd_spot_1_12, "KCD_Spot_20_30":kcd_spot_20_30,
         "KCD_25Cr_Spot_1_12":kcd_25cr_1_12, "KCD_25Cr_Spot_20_30":kcd_25cr_20_30,
         "KCD_RM_Spot_1_12":kcd_rm_1_12, "KCD_RM_Spot_20_30":kcd_rm_20_30,
+        "KCD_25Cr_RM_Spot_1_12":kcd_25cr_rm_1_12,
         "KCD_SS_Mult":kcd_ss_mult, "KCD_Params":kcd_params,
         "Nursery_Params":nursery_params, "Nursery_CMR_Grid":nursery_grid,
         "Nursery_CMR_Table":nursery_table,
@@ -168,6 +220,7 @@ def parse_slabs(cfg):
         "kcd_25cr_20_30":sorted(rows("KCD_25Cr_Spot_20_30"),key=lambda r:-r.get("PCDV",0)),
         "kcd_rm_1_12":   sorted(rows("KCD_RM_Spot_1_12"), key=lambda r:-r.get("PCDV",0)),
         "kcd_rm_20_30":  sorted(rows("KCD_RM_Spot_20_30"),key=lambda r:-r.get("PCDV",0)),
+        "kcd_25cr_rm_1_12": sorted(rows("KCD_25Cr_RM_Spot_1_12"),key=lambda r:-r.get("PCDV",0)),
         "kcd_ss_mult":   sorted(rows("KCD_SS_Mult"),key=lambda r:-r.get("Min_SS_CMR_Pct",0)),
         "kcd_min_ss_sent":int(param("KCD_Params","Min_SS_Sent",3)),
         "nursery_inc_per_txn":int(param("Nursery_Params","Inc_Per_Txn",1000)),
@@ -1262,8 +1315,17 @@ def _nursery_mult(sent, recd, cmr_pct, sent_max, cmr_grid, cmr_table,
     return 1.0 if cmr_pct >= cmr_thresh else 0.0
 
 def _bm_milestone(ach_pct, slabs):
+    """BM/CH milestone: stepped slab + post-110% incremental.
+    Slab rows must have Min_Ach_Pct, Inc, and optionally Post_Inc_Per_5."""
     for r in slabs:
-        if ach_pct >= r.get("Min_Ach_Pct",0): return r.get("Inc",0)
+        if ach_pct >= r.get("Min_Ach_Pct", 0):
+            base = r.get("Inc", 0)
+            post_step = r.get("Post_Inc_Per_5", 0)
+            if post_step > 0:
+                # Additional per full 5% above the slab threshold
+                extra_5pct = int((ach_pct - r["Min_Ach_Pct"]) / 5)
+                base += extra_5pct * post_step
+            return base
     return 0
 
 def _big_ticket(deal_sizes_lakh, slabs):
@@ -1348,17 +1410,24 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
     # ── TELE ANNUAL CSD ────────────────────────────────────
     if vert == "CSD":
         if desig == "L1":
-            tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1300,"90-270":1800,"270+":2000}.get(vint, 1800)
+            tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1500,"90-270":1800,"270+":2200}.get(vint, 1800)
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
-            incr = round(max(0,pcdv_total-tgt_pcdv)*client_a*S["csd_incr_rate"]/1000)*1000 if grid>0 else 0
+            # +₹1000 per 200 PCDV exceeding threshold (scheme: "additional ₹1,000 per 200 PCDV exceeding target")
+            incr = (int(max(0, pcdv_total - tgt_pcdv) / 200) * 1000) if grid > 0 else 0
             base_incentive = grid + incr
             cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"])
             mult_val = _cmr_mult(cmr_pct, cmr_tgt, S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
-            # Spot (Exec-CSD)
-            sp2_6   = _txn_spot(spot_txn.get("2_6",0),  S["csd_spot_2_6"])
-            sp7_12  = _txn_spot(spot_txn.get("7_12",0), S["csd_spot_7_12"])
-            _sp20_base = _txn_spot(spot_txn.get("20_30",0), S["csd_spot_20_30"])
+            # Spot (Exec-CSD): 2nd txn=₹500, 3rd onwards=₹750 each
+            # Eligibility: base incentive achieved (min CMR or PCDV target)
+            _base_ach = (grid > 0)
+            sp2_6   = _txn_spot(spot_txn.get("2_6",0),  S["csd_spot_2_6"])  if _base_ach else 0
+            # 4th May (May month): ₹750/txn ALL txns; April 7-12: stepped slabs
+            if CALC_DATE.month == 5:
+                sp7_12 = spot_txn.get("7_12", 0) * 750 if _base_ach else 0
+            else:
+                sp7_12 = _txn_spot(spot_txn.get("7_12",0), S["csd_spot_7_12"]) if _base_ach else 0
+            _sp20_base = _txn_spot(spot_txn.get("20_30",0), S["csd_spot_20_30"]) if _base_ach else 0
             # Spot 20-30: SS+ receipts in that period × 2x bonus
             _ss_20_30 = data.get("ss_spot20_30", 0)
             sp20_30 = _sp20_base * (2 if _ss_20_30 > 0 else 1)
@@ -1374,22 +1443,28 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         elif desig == "L2":
             # Rel'n Mgr CSD: team aggregate / HC
-            tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1300,"90-270":1800,"270+":2000}.get(vint, 1800)
+            tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1500,"90-270":1800,"270+":2200}.get(vint, 1800)
             grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
-            incr = round(max(0,pcdv_total-tgt_pcdv)*client_a*S["csd_incr_rate"]/1000)*1000 if grid>0 else 0
+            incr = (int(max(0, pcdv_total - tgt_pcdv) / 200) * 1000) if grid > 0 else 0
             base_incentive = grid + incr
             mult_val = _cmr_mult(cmr_pct, emp.get("CMR_Target_Pct", S["csd_cmr_tgt"]), S["csd_cmr_mult"])
             gross_inc = round(base_incentive * mult_val, 0)
-            # RM Spot: based on Productvity (= team txns / HC), not raw txn count
-            sp2_6_prod  = spot_txn.get("2_6",0)  / max(hc,1)
-            sp7_12_prod = spot_txn.get("7_12",0) / max(hc,1)
-            sp20_30_prod= spot_txn.get("20_30",0)/ max(hc,1)
-            # RM spot slab: threshold on Productvity
-            # 2-6: prod>=1.0 → 1000, else 0
-            # 7-12: prod>=1.5 → 1500, else 0
-            # 20-30: prod>=3.0 → 1850, prod>=2.5 → 1550, else 0
-            sp2_6   = 1000 if sp2_6_prod >= 1.0 else 0
-            sp7_12  = 1500 if sp7_12_prod >= 1.5 else 0
+            # RM Spot (1-12 May): 2nd Prod=₹250/txn, 2.5th Prod. Onwards=₹350/txn
+            # Eligibility: achievement of base incentive (min CMR or PCDV target)
+            _base_achieved = (grid > 0)
+            def _rm_spot(txn_count):
+                """₹0 for 1st prod, ₹250 for 2nd prod, ₹350 from 3rd prod onwards."""
+                if not _base_achieved or txn_count < 2: return 0
+                return 250 + max(0, txn_count - 2) * 350
+            sp2_6   = _rm_spot(spot_txn.get("2_6",0))
+            # 4th May RM: ₹400/txn from 2nd txn; April 7-12: stepped slabs
+            if CALC_DATE.month == 5:
+                _4th = spot_txn.get("7_12", 0)
+                sp7_12 = max(0, _4th - 1) * 400 if (_base_achieved and _4th >= 2) else 0
+            else:
+                sp7_12 = _rm_spot(spot_txn.get("7_12",0))
+            # 20-30 period — no PDF, keep existing productivity-per-HC structure
+            sp20_30_prod = spot_txn.get("20_30", 0) / max(hc, 1)
             sp20_30 = (1850 if sp20_30_prod >= 3.0 else
                        1550 if sp20_30_prod >= 2.5 else 0)
             total = int(gross_inc) + sp2_6 + sp7_12 + sp20_30
@@ -1437,30 +1512,47 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
     elif vert == "KCD":
         spot1_slabs = S["kcd_25cr_1_12"]  if is_25cr else S["kcd_spot_1_12"]
         spot2_slabs = S["kcd_25cr_20_30"] if is_25cr else S["kcd_spot_20_30"]
-        rm1_slabs   = S["kcd_rm_1_12"]
+        rm1_slabs   = S.get("kcd_25cr_rm_1_12", S["kcd_rm_1_12"]) if is_25cr else S["kcd_rm_1_12"]
         rm2_slabs   = S["kcd_rm_20_30"]
-        # SS+ Multiplier for KCD: CMR+1 Ren% (Ren%.1) >= 2/3 → 1.0, else 0.5
-        # (Confirmed from all 24 RM-KCD employees matching 100%)
-        _cmr1_pct = cmr_prev.get("pct", 0) / 100
-        ss_m = 1.0 if _cmr1_pct >= (2/3) else 0.5
+        # SS+ Multiplier for KCD: SS+ CMR% >= 65% → 100%, < 65% → 50%
+        _ss_pct = data.get("ss_cmr_pct", 0) * 100 if data.get("ss_cmr_pct", 0) <= 1 else data.get("ss_cmr_pct", 0)
+        ss_m = 1.0 if _ss_pct >= 65 else 0.5
 
         if desig == "L1":
             tgt_pcdv = S.get("kcd_target_map",{}).get(
                 (str(emp.get("Group","KCD") or "KCD").strip(),vint)) or \
-               {"KCD":{"0-270":7100,"270-2Yr":8100,"2Yr+":9100},"KCD-25cr":{"0-270":6480,"270-2Yr":9100,"2Yr+":10000}}.get(
+               {"KCD":{"0-270":7100,"270-2Yr":8100,"2Yr+":9100},"KCD-25cr":{"0-270":8100,"270-2Yr":9100,"2Yr+":10000}}.get(
                 str(emp.get("Group","KCD") or "KCD").strip(),{}).get(vint,1800)
-            grid   = _milestone(pcdv_total, tgt_pcdv, S["kcd_milestones"])
-            incr   = round(max(0,pcdv_total-tgt_pcdv)*client_a*S.get("csd_incr_rate",0.03)/1000)*1000 if grid>0 else 0
-            gross_inc = round((grid+incr)*ss_m,0)
+            # KCD milestone: DV% rate (1%/1.3%/1.6%) × DV, not flat Grid
+            # kcd_milestones rows have Min_Ach_Pct and Grid_Pct (rate %)
+            dv_total = data.get("dv_total", 0)
+            if tgt_pcdv > 0 and pcdv_total >= tgt_pcdv:
+                ach_pct_kcd = pcdv_total / tgt_pcdv * 100
+                kcd_rate_pct = 0
+                for ms in S["kcd_milestones"]:
+                    if ach_pct_kcd >= ms.get("Min_Ach_Pct", 0):
+                        kcd_rate_pct = ms.get("Grid_Pct", ms.get("Grid", 0))
+                        break
+                # Grid_Pct stored as 1.0/1.3/1.6 (multiply by DV/100)
+                grid = round(dv_total * kcd_rate_pct / 100, 0) if kcd_rate_pct <= 10 else round(dv_total * kcd_rate_pct, 0)
+            else:
+                grid = 0
+            incr = 0  # KCD exec has no incremental — DV% covers it
+            gross_inc = round(grid * ss_m, 0)
 
             sp1_inc = _pcdv_spot(pcdv_1_12,  spot1_slabs)
             sp2_inc = _pcdv_spot(pcdv_20_30, spot2_slabs)
-            sp1_gross = round(sp1_inc * ss_m + im_count*1000,0)   # spot 1-12
-            sp2_gross = round(sp2_inc * ss_m + im_pro_count*1000,0) # spot 20-30 (+28-30 IM star pro)
+            # IM SS/LS eligibility: ≥1 new sale in month → 150%, <1 → 50%
+            _ss_elig_mult = 1.5 if im_count >= 1 else 0.5
+            sp1_gross = round(sp1_inc * _ss_elig_mult * ss_m + im_count*1000, 0)   # spot 1-12
+            sp2_gross = round(sp2_inc * ss_m + im_pro_count*1000, 0)  # spot 20-30
+            # 4th May KCD/25Cr+ Exec: ₹750/txn every txn
+            if CALC_DATE.month == 5:
+                sp1_gross += spot_txn.get("7_12", 0) * 750
             total = int(gross_inc) + int(sp1_gross) + int(sp2_gross)
             out.update({
                 "scheme":f"TA KCD Exec {vint}","target_pcdv":tgt_pcdv,
-                "incentive_grid":grid,"incr_amt":int(incr),
+                "incentive_grid":round(grid,0),"incr_amt":int(incr),
                 "base_inc":int(grid+incr),"ss_mult":ss_m,"gross_inc":int(gross_inc),
                 "spot1_inc":sp1_inc,"spot1_gross":int(sp1_gross),
                 "spot2_inc":sp2_inc,"spot2_gross":int(sp2_gross),
