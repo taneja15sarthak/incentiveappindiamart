@@ -2486,37 +2486,44 @@ if "enr_file" in dir() and enr_file:
     except Exception as _enr_e:
         st.warning(f"Could not read enriched file: {_enr_e}")
 
-# Mode 1: enrich raw receipt → output sheet
+# Mode 1: enrich raw receipt — only when user clicks the button
 if not _use_enriched:
-    with st.spinner("Enriching receipt/refund/renewal data…"):
-        rec_enriched = enrich_receipt_data(rec_raw_full, struct_map)   # enrich all rows (incl. Pending/Bounced)
-        ref_enriched = enrich_refund_data(ref_raw, struct_map)
-        rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
+    st.subheader("📥 Step 1 — Generate Enriched Files")
+    st.markdown("Click the button to enrich the receipt/refund/renewal data with hierarchy, Day/Week/FNT labels and product flags. Then download, review, correct if needed, and re-upload in Step 2.")
+    _do_enrich = st.button("⚙️ Generate Enriched Receipt", type="primary", key="btn_enrich")
 
-    # ── Prominent download section ─────────────────────────────────────────
-    st.subheader("📥 Step 1 Complete — Download Enriched Files")
-    st.markdown("Enriched with hierarchy (L2-L6), Day/Week/FNT labels, product flags. **Review, correct any values, then re-upload in Step 2.**")
+    if _do_enrich:
+        with st.spinner("Enriching receipt/refund/renewal data…"):
+            rec_enriched = enrich_receipt_data(rec_raw_full, struct_map)
+            ref_enriched = enrich_refund_data(ref_raw, struct_map)
+            rnl_enriched = enrich_renewal_data(rnl_raw, struct_map)
 
-    @st.cache_data(show_spinner=False)
-    def _build_enr_excel(_rec, _ref, _rnl):
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-            _rec.to_excel(w, sheet_name="Receipt Data", index=False)
-            _ref.to_excel(w, sheet_name="Refund",       index=False)
-            _rnl.to_excel(w, sheet_name="Renewal",      index=False)
-        return buf.getvalue()
+        st.success(f"✅ Enrichment complete — {len(rec_enriched)} receipt rows enriched.")
 
-    _enr_bytes = _build_enr_excel(rec_enriched, ref_enriched, rnl_enriched)
-    st.download_button(
-        label="⬇️ Download Enriched Receipt / Refund / Renewal",
-        data=_enr_bytes,
-        file_name="Enriched_Data.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        width='stretch',
-    )
-    st.info("After downloading and correcting, re-upload the file in the sidebar → "
-            "**📥 Enriched Receipt (Step 2)**, then click ▶ Calculate.")
+        @st.cache_data(show_spinner=False)
+        def _build_enr_excel(_rec, _ref, _rnl):
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+                _rec.to_excel(w, sheet_name="Receipt Data", index=False)
+                _ref.to_excel(w, sheet_name="Refund",       index=False)
+                _rnl.to_excel(w, sheet_name="Renewal",      index=False)
+            return buf.getvalue()
+
+        _enr_bytes = _build_enr_excel(rec_enriched, ref_enriched, rnl_enriched)
+        st.download_button(
+            label="⬇️ Download Enriched Receipt / Refund / Renewal",
+            data=_enr_bytes,
+            file_name="Enriched_Data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            width='stretch',
+        )
+        st.info("After downloading and correcting, re-upload the file in the sidebar → "
+                "**📥 Enriched Receipt (Step 2)**, then proceed to calculate.")
+        st.stop()  # Don't run incentive calc after enrichment — user needs to re-upload first
+    else:
+        # Button not clicked yet — show instructions and wait
+        st.stop()
 else:
     rec_enriched = rec_raw
     ref_enriched = enrich_refund_data(ref_raw, struct_map)
