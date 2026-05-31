@@ -205,7 +205,7 @@ def parse_slabs(cfg):
         "csd_milestones":sorted(rows("CSD_Milestones"),key=lambda r:-r.get("Min_Ach_Pct",0)),
         "csd_targets":   {r["Vintage"]:float(r["Target_PCDV"]) for r in rows("CSD_Targets")},
         "csd_cmr_mult":  sorted(rows("CSD_CMR_Mult"),key=lambda r:-r.get("Min_CMR_Ach_Pct",0)),
-        "csd_incr_rate": param("CSD_Params","Incr_Rate_Pct",3.0)/100,
+        "csd_incr_per_200": param("CSD_Params","Incr_Per_200_PCDV",1000),
         "csd_cmr_tgt":   param("CSD_Params","CMR_Target_Pct",40.0),
         "csd_spot_2_6":  sorted(rows("CSD_Spot_2_6"),  key=lambda r:-r.get("Txn",0)),
         "csd_spot_7_12": sorted(rows("CSD_Spot_7_12"), key=lambda r:-r.get("Txn",0)),
@@ -1526,7 +1526,7 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
                 str(emp.get("Group","KCD") or "KCD").strip(),{}).get(vint,1800)
             # KCD milestone: DV% rate (1%/1.3%/1.6%) × DV, not flat Grid
             # kcd_milestones rows have Min_Ach_Pct and Grid_Pct (rate %)
-            dv_total = data.get("dv_total", 0)
+            dv_total = data.get("dv_total", data.get("deal_val", 0))
             if tgt_pcdv > 0 and pcdv_total >= tgt_pcdv:
                 ach_pct_kcd = pcdv_total / tgt_pcdv * 100
                 kcd_rate_pct = 0
