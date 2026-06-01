@@ -201,6 +201,12 @@ def parse_slabs(cfg):
         r = df[df.iloc[:,0].astype(str)==p]
         return float(r.iloc[0,1]) if len(r)>0 else d
 
+    # Always use hardcoded KCD milestones (not overridable from uploaded config)
+    # Prevents old Grid=4000/6000/8000 flat values from being used as DV% rate
+    _kcd_ms_forced = [{"Min_Ach_Pct":130,"Grid_Pct":1.6},
+                      {"Min_Ach_Pct":115,"Grid_Pct":1.3},
+                      {"Min_Ach_Pct":100,"Grid_Pct":1.0}]
+
     return {
         "csd_milestones":sorted(rows("CSD_Milestones"),key=lambda r:-r.get("Min_Ach_Pct",0)),
         "csd_targets":   {r["Vintage"]:float(r["Target_PCDV"]) for r in rows("CSD_Targets")},
@@ -210,7 +216,7 @@ def parse_slabs(cfg):
         "csd_spot_2_6":  sorted(rows("CSD_Spot_2_6"),  key=lambda r:-r.get("Txn",0)),
         "csd_spot_7_12": sorted(rows("CSD_Spot_7_12"), key=lambda r:-r.get("Txn",0)),
         "csd_spot_20_30":sorted(rows("CSD_Spot_20_30"),key=lambda r:-r.get("Txn",0)),
-        "kcd_milestones":sorted(rows("KCD_Milestones"),key=lambda r:-r.get("Min_Ach_Pct",0)),
+        "kcd_milestones": _kcd_ms_forced,
         "kcd_target_map": {(r.get("Group","KCD"),r["Vintage"]):({"KCD":{"0-270":7100,"270-2Yr":8100,"2Yr+":9100},
                         "KCD-25cr":{"0-270":6480,"270-2Yr":9100,"2Yr+":10000}}.get(
                         r.get("Group","KCD"),{}).get(r["Vintage"], float(r["Target_PCDV"]))) for r in rows("KCD_Targets")},
@@ -1441,48 +1447,63 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
                 "total_inc":total, "paid_inc":0, "bal_inc":total,
             })
 
-        elif desig == "L2":
-            # Rel'n Mgr CSD: team aggregate / HC
+        elif desig == "L2":  # Reln Mgr-CSD
             tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1500,"90-270":1800,"270+":2200}.get(vint, 1800)
-            grid = _milestone(pcdv_total, tgt_pcdv, S["csd_milestones"])
-            incr = (int(max(0, pcdv_total - tgt_pcdv) / 200) * 1000) if grid > 0 else 0
-            base_incentive = grid + incr
-            mult_val = _cmr_mult(cmr_pct, emp.get("CMR_Target_Pct", S["csd_cmr_tgt"]), S["csd_cmr_mult"])
-            gross_inc = round(base_incentive * mult_val, 0)
-            # RM Spot (1-12 May): 2nd Prod=₹250/txn, 2.5th Prod. Onwards=₹350/txn
-            # Eligibility: achievement of base incentive (min CMR or PCDV target)
-            _base_achieved = (grid > 0)
-            def _rm_spot(txn_count):
-                """₹0 for 1st prod, ₹250 for 2nd prod, ₹350 from 3rd prod onwards."""
-                if not _base_achieved or txn_count < 2: return 0
-                return 250 + max(0, txn_count - 2) * 350
-            sp2_6   = _rm_spot(spot_txn.get("2_6",0))
-            # 4th May RM: ₹400/txn from 2nd txn; April 7-12: stepped slabs
-            if CALC_DATE.month == 5:
-                _4th = spot_txn.get("7_12", 0)
-                sp7_12 = max(0, _4th - 1) * 400 if (_base_achieved and _4th >= 2) else 0
+            # RM-CSD scheme: 3×3 PCDV × CMR matrix (PDF: 1800/2000/2200 × Target/+2.5%/+5%)
+            # pcdv bucket determines base payout tier
+            if   pcdv_total >= 2200: pcdv_bucket = 2200
+            elif pcdv_total >= 2000: pcdv_bucket = 2000
+            elif pcdv_total >= 1800: pcdv_bucket = 1800
+            else:                    pcdv_bucket = 0
+
+            if pcdv_bucket > 0:
+                # CMR% achievement vs individual target
+                cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"])
+                if cmr_tgt > 0:
+                    cmr_ach_pct = cmr_pct / cmr_tgt * 100
+                else:
+                    cmr_ach_pct = 100.0 if cmr_pct > 0 else 0.0
+                # Matrix lookup: (pcdv_bucket, cmr_tier) → payout
+                _rm_matrix = {
+                    1800: {0: 7000, 2.5: 8500, 5.0: 10000},
+                    2000: {0: 8000, 2.5:10000, 5.0: 11500},
+                    2200: {0: 9000, 2.5:11500, 5.0: 16000},
+                }
+                cmr_tier = 5.0 if cmr_ach_pct >= 105 else (2.5 if cmr_ach_pct >= 102.5 else (0 if cmr_ach_pct >= 100 else -1))
+                if cmr_tier < 0:
+                    grid = 0  # CMR below target → no incentive
+                else:
+                    grid = _rm_matrix[pcdv_bucket][cmr_tier]
+                # Incremental: +₹1500 per 200 PCDV above 2200
+                incr = (int(max(0, pcdv_total - 2200) / 200) * 1500) if grid > 0 and pcdv_total > 2200 else 0
             else:
-                sp7_12 = _rm_spot(spot_txn.get("7_12",0))
-            # 20-30 period — no PDF, keep existing productivity-per-HC structure
-            sp20_30_prod = spot_txn.get("20_30", 0) / max(hc, 1)
-            sp20_30 = (1850 if sp20_30_prod >= 3.0 else
-                       1550 if sp20_30_prod >= 2.5 else 0)
+                grid = 0; incr = 0; cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"]); cmr_ach_pct = 0
+            base_incentive = grid + incr
+            gross_inc = base_incentive  # no separate multiplier — CMR already in matrix
+            # Spot: RM uses same spot periods as Exec
+            _base_ach = (grid > 0)
+            sp2_6   = _txn_spot(spot_txn.get("2_6",0),  S["csd_spot_2_6"])  if _base_ach else 0
+            if CALC_DATE.month == 5:
+                sp7_12 = spot_txn.get("7_12", 0) * 400 if _base_ach else 0  # RM: 400/txn from 2nd
+            else:
+                sp7_12 = _txn_spot(spot_txn.get("7_12",0), S["csd_spot_7_12"]) if _base_ach else 0
+            sp20_30 = _txn_spot(spot_txn.get("20_30",0), S["csd_spot_20_30"]) if _base_ach else 0
             total = int(gross_inc) + sp2_6 + sp7_12 + sp20_30
             out.update({
                 "scheme":f"TA CSD RM {vint}", "target_pcdv":tgt_pcdv,
                 "incr_amt":int(incr),"incentive_grid":grid,
-                "base_inc":int(base_incentive),"cmr_mult":mult_val,
+                "base_inc":int(base_incentive),"cmr_mult":1.0,
                 "gross_inc":int(gross_inc),
                 "sp2_6_prod":round(spot_txn.get("2_6",0),2),
                 "sp7_12_prod":round(spot_txn.get("7_12",0),2),
-                "sp20_30_prod":round(sp20_30_prod,2),
+                "sp20_30_prod":0,
                 "sp2_6_gross":sp2_6,"sp7_12_gross":sp7_12,"sp20_30_gross":sp20_30,
                 "total_inc":total,"paid_inc":0,"bal_inc":total,
             })
 
         elif desig == "L3":  # BM-CSD
             _gc=data.get("gross",0); _rv=data.get("refund",0); _nr=_gc-_rv
-            # BM-CSD stores in Crores (matching sir's file)
+            # CSD targets are in Crores → convert collection to Crores for ach%
             _net_cr=round(_nr/1e7,6); _coll_cr=round(_gc/1e7,6); _ref_cr=round(_rv/1e7,6)
             coll_target=emp.get("Coll_Target",0)  # in Crores from target file
             ach_pct=(_net_cr/coll_target*100) if coll_target>0 else 0
@@ -1498,12 +1519,14 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         else:  # L4+ CH-CSD
             net_coll = data.get("net_coll",0)
-            coll_target = emp.get("Coll_Target",0)
-            ach_pct = (net_coll/coll_target*100) if coll_target>0 else 0
+            # CSD targets in Crores
+            net_coll_cr = round(net_coll/1e7, 6)
+            coll_target = emp.get("Coll_Target",0)  # in Crores
+            ach_pct = (net_coll_cr/coll_target*100) if coll_target>0 else 0
             incentive = _bm_milestone(ach_pct, S["ch_csd"])
             total = int(incentive)
             out.update({
-                "scheme":"CH CSD","net_coll":net_coll,
+                "scheme":"CH CSD","net_coll":net_coll,"net_coll_cr":net_coll_cr,
                 "coll_target":coll_target,"ach_pct":round(ach_pct,2),
                 "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
                 "sp2_6_gross":0,"sp7_12_gross":0,"sp20_30_gross":0,
@@ -1591,12 +1614,14 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         elif desig == "L3":  # BM-KCD
             _gc=data.get("gross",0); _rv=data.get("refund",0); _nr=_gc-_rv
-            coll_target=emp.get("Coll_Target",0)  # KCD target in Rs
-            ach_pct=(_nr/coll_target*100) if coll_target>0 else 0
+            # KCD targets are in Lakhs → convert collection to Lakhs for ach%
+            _nr_lacs = round(_nr / 1e5, 4)
+            coll_target=emp.get("Coll_Target",0)  # in Lakhs from target file
+            ach_pct=(_nr_lacs/coll_target*100) if coll_target>0 else 0
             incentive=_bm_milestone(ach_pct,S["bm_kcd"]); total=int(incentive)
             out.update({
                 "scheme":"BM KCD","gross_coll":_gc,"refund":_rv,"net_coll":_nr,
-                "gross_coll_cr":_gc,"refund_cr":_rv,"net_coll_cr":_nr,  # KCD: all Rs (no conversion)
+                "gross_coll_cr":_gc,"refund_cr":_rv,"net_coll_cr":_nr_lacs,
                 "coll_target":coll_target,"ach_pct":round(ach_pct,2),
                 "payout_eligible":"Yes" if incentive>0 else "No",
                 "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
@@ -1605,14 +1630,16 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         else:  # CH-KCD
             net_coll = data.get("net_coll",0)
-            coll_target = emp.get("Coll_Target",0)
-            ach_pct = (net_coll/coll_target*100) if coll_target>0 else 0
+            # KCD targets are in Lakhs → convert collection to Lakhs
+            net_coll_lacs = round(net_coll / 1e5, 4)
+            coll_target = emp.get("Coll_Target",0)  # in Lakhs
+            ach_pct = (net_coll_lacs/coll_target*100) if coll_target>0 else 0
             incentive = _bm_milestone(ach_pct, S["ch_kcd"])
             total = int(incentive)
             out.update({
-                "scheme":"CH KCD","net_coll":net_coll,
-                "ach_pct":round(ach_pct,2),"base_inc":incentive,
-                "total_inc":total,"paid_inc":0,"bal_inc":total,
+                "scheme":"CH KCD","net_coll":net_coll,"net_coll_lacs":net_coll_lacs,
+                "coll_target":coll_target,"ach_pct":round(ach_pct,2),
+                "base_inc":incentive,"total_inc":total,"paid_inc":0,"bal_inc":total,
                 "sp2_6_gross":0,"sp7_12_gross":0,"sp20_30_gross":0,
             })
 
