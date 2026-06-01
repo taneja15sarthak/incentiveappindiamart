@@ -1422,7 +1422,19 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
             incr = (int(max(0, pcdv_total - tgt_pcdv) / 200) * 1000) if grid > 0 else 0
             base_incentive = grid + incr
             cmr_tgt = emp.get("CMR_Target_Pct", S["csd_cmr_tgt"])
-            mult_val = _cmr_mult(cmr_pct, cmr_tgt, S["csd_cmr_mult"])
+            # FAQ Q7 CSD: count-based CMR gate for sent<5
+            # sent=0→100%, sent=1→recd>=0(0/1 ok), sent=2→recd>=1, sent=3/4→recd>=2, sent>=5→use CMR%Grid
+            if   cmr_sent == 0:              _cmr_gate_ok = True
+            elif cmr_sent == 1:              _cmr_gate_ok = True  # 0/1 recd both ok per FAQ
+            elif cmr_sent == 2:              _cmr_gate_ok = (cmr_recd >= 1)
+            elif cmr_sent in (3, 4):         _cmr_gate_ok = (cmr_recd >= 2)
+            else:                            _cmr_gate_ok = True  # use CMR% grid (mult_val handles this)
+            if not _cmr_gate_ok:
+                mult_val = 0.0
+            else:
+                mult_val = _cmr_mult(cmr_pct, cmr_tgt, S["csd_cmr_mult"]) if cmr_sent >= 5 else 1.0
+                # Apply tier multiplier from scheme (0%, 100%, 120%) only for sent>=5
+                if cmr_sent < 5: mult_val = 1.0  # count table always gives 100% payout
             gross_inc = round(base_incentive * mult_val, 0)
             # Spot (Exec-CSD): 2nd txn=₹500, 3rd onwards=₹750 each
             # Eligibility: base incentive achieved (min CMR or PCDV target)
@@ -1449,12 +1461,14 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
 
         elif desig == "L2":  # Reln Mgr-CSD
             tgt_pcdv = S["csd_targets"].get(vint) or {"0-90":1500,"90-270":1800,"270+":2200}.get(vint, 1800)
+            # FAQ Q9: if any L1 in team has <90D vintage → all PCDV bucket thresholds × 80%
+            _lt90 = int(emp.get("lt90_count", 0) or 0)
+            _q9_factor = 0.8 if _lt90 > 0 else 1.0
             # RM-CSD scheme: 3×3 PCDV × CMR matrix (PDF: 1800/2000/2200 × Target/+2.5%/+5%)
-            # pcdv bucket determines base payout tier
-            if   pcdv_total >= 2200: pcdv_bucket = 2200
-            elif pcdv_total >= 2000: pcdv_bucket = 2000
-            elif pcdv_total >= 1800: pcdv_bucket = 1800
-            else:                    pcdv_bucket = 0
+            if   pcdv_total >= 2200 * _q9_factor: pcdv_bucket = 2200
+            elif pcdv_total >= 2000 * _q9_factor: pcdv_bucket = 2000
+            elif pcdv_total >= 1800 * _q9_factor: pcdv_bucket = 1800
+            else:                                  pcdv_bucket = 0
 
             if pcdv_bucket > 0:
                 # CMR% achievement vs individual target
@@ -1539,7 +1553,14 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
         rm1_slabs   = S.get("kcd_25cr_rm_1_12", S["kcd_rm_1_12"]) if is_25cr else S["kcd_rm_1_12"]
         rm2_slabs   = S["kcd_rm_20_30"]
         # SS+ Multiplier for KCD: SS+ CMR% >= 65% → 100%, < 65% → 50%
-        _ss_pct = data.get("ss_cmr_pct", 0) * 100 if data.get("ss_cmr_pct", 0) <= 1 else data.get("ss_cmr_pct", 0)
+        # Use ss_pct from cmr dict (already computed from renewal file)
+        _ss_pct_raw = ss_pct if ss_pct > 0 else data.get("ss_cmr_pct", 0)
+        _ss_pct = _ss_pct_raw * 100 if _ss_pct_raw <= 1 else _ss_pct_raw
+        # FAQ Q7 SS+ count-based gate: sent=0→100%, sent=1&recd=1→100%, sent=2&recd=2→100%, sent>=3→use CMR% grid
+        if ss_sent == 0: _ss_pct = 100.0  # no renewals due → full payout
+        elif ss_sent == 1 and ss_recd >= 1: _ss_pct = 100.0
+        elif ss_sent == 2 and ss_recd >= 2: _ss_pct = 100.0
+        # else: use actual CMR% (already set)
         ss_m = 1.0 if _ss_pct >= 65 else 0.5
 
         if desig == "L1":
@@ -1557,12 +1578,33 @@ def calc_employee(emp, data, cmr, S, is_25cr=False):
                     if ach_pct_kcd >= ms.get("Min_Ach_Pct", 0):
                         kcd_rate_pct = ms.get("Grid_Pct", ms.get("Grid", 0))
                         break
-                # Grid_Pct stored as 1.0/1.3/1.6 (multiply by DV/100)
                 grid = round(dv_total * kcd_rate_pct / 100, 0) if kcd_rate_pct <= 10 else round(dv_total * kcd_rate_pct, 0)
             else:
                 grid = 0
-            incr = 0  # KCD exec has no incremental — DV% covers it
-            gross_inc = round(grid * ss_m, 0)
+            incr = 0
+
+            # FAQ Q6 KCD: CMR count-based gate for sent<5
+            if   cmr_sent == 0:    _kcd_cmr_ok = True
+            elif cmr_sent == 1:    _kcd_cmr_ok = (cmr_recd >= 1)
+            elif cmr_sent == 2:    _kcd_cmr_ok = (cmr_recd >= 1)
+            elif cmr_sent == 3:    _kcd_cmr_ok = (cmr_recd >= 2)
+            elif cmr_sent == 4:    _kcd_cmr_ok = (cmr_recd >= 3)
+            else:                  _kcd_cmr_ok = True  # CMR% grid applies
+
+            # CMR% multiplier (FAQ Q11: cmr<62.5%→0%, 62.5-65%→70%, 65-70%→100%, >=70%→120%)
+            if not _kcd_cmr_ok:
+                _kcd_cmr_mult = 0.0
+            elif cmr_sent < 5:
+                _kcd_cmr_mult = 1.0  # count gate passed → 100%
+            else:
+                cmr_tgt_kcd = emp.get("CMR_Target_Pct", 0)
+                # Use absolute CMR% thresholds (scheme: 62.5/65/70%)
+                _cmr_abs = cmr_pct * 100 if cmr_pct <= 1 else cmr_pct
+                _kcd_cmr_mult = (1.2 if _cmr_abs >= 70 else
+                                 1.0 if _cmr_abs >= 65 else
+                                 0.7 if _cmr_abs >= 62.5 else 0.0)
+
+            gross_inc = round(grid * _kcd_cmr_mult * ss_m, 0)
 
             sp1_inc = _pcdv_spot(pcdv_1_12,  spot1_slabs)
             sp2_inc = _pcdv_spot(pcdv_20_30, spot2_slabs)
@@ -1859,8 +1901,8 @@ def build_excel_output(results_dict, sel_month):
                     "L4 ID":r.get("L4 ID",""),"L4 Name":r.get("L4 Name",""),
                     "L5 ID":r.get("L5 ID",""),"L5 Name":r.get("L5 Name",""),
                     "L6  ID":r.get("L6 ID",""),"L6 Name":r.get("L6 Name",""),
-                    "Location":r.get("Location",""),"Client-A":r.get("Client-A",0),
-                    "Client-C":r.get("Client-C",0),
+                    "Location":r.get("Location",""),"Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                    "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "MDC":r.get("MDC",0),"Star":r.get("Star",0),"Leader":r.get("Leader",0),
                     "WS-M":r.get("WS-M",0),"WS-A":r.get("WS-A",0),"IVE":r.get("IVE",0),
                     "MDC.1":r.get("MDC.1",0),"Star.1":r.get("Star.1",0),"Leader.1":r.get("Leader.1",0),
@@ -2098,7 +2140,8 @@ def build_excel_output(results_dict, sel_month):
                     "Location":r.get("Location",""),
                     "Joining Date":str(r.get("Joining Date",""))[:10],
                     "IIL Vertical Name":"Tele Annual CSD",
-                    "Client-A":r.get("Client-A",0),"Client-C":r.get("Client-C",0),
+                    "Client-A":r.get("Client-A_Agg", r.get("Client-A", 0)),
+                    "Client-C":r.get("Client-C_Agg", r.get("Client-C", 0)),
                     "Target\nOf 1L+ Deal":r.get("deal_target",0),
                     "Net Collection":round(r.get("net_coll",0),2),
                     "AOP":r.get("aop",0),"AOP%":round(r.get("aop_pct",0),2),
@@ -2142,8 +2185,8 @@ def build_excel_output(results_dict, sel_month):
                     "IIL Vertical Name":"Tele Annual KCD","Group":r.get("Group",""),
                     "Aeging":r.get("Ageing",0),"Vintage":r.get("Vintage",""),
                     "Target":tgt,
-                    "Client-A":r.get("Client-A",0),
-                    "Client-C":r.get("Client-C",0),
+                    "Client-A":r.get("Client-A_Agg",r.get("Client-A",0)),
+                    "Client-C":r.get("Client-C_Agg",r.get("Client-C",0)),
                     "Deal Value":round(r.get("deal_val",0),2),"PCDV":round(pcdv,2),
                     "Sent":r.get("cmr_sent",0),"Recd":r.get("cmr_recd",0),
                     "Ren %":round(r.get("cmr_pct",0)/100,4),
@@ -2835,8 +2878,11 @@ if calc_btn:
         elif not emp.get("Group",""):
             emp["Group"] = "Tele-A CSD"
 
-        # Sir uses Client-C for PCDV (aggregated from L1s for L2 RMs)
-        cc_agg = emp.get("Client-C_Agg", emp.get("Client-C", ca))
+        # PCDV denominator: CSD uses Client-C; KCD uses Client-A
+        if vert == "KCD":
+            cc_agg = emp.get("Client-A_Agg", emp.get("Client-A", ca))
+        else:
+            cc_agg = emp.get("Client-C_Agg", emp.get("Client-C", ca))
         cc = max(float(cc_agg or ca), 1)
 
         # Receipt data
